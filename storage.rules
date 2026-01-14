@@ -1,0 +1,42 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    function isAudio() {
+      return request.resource.contentType.matches('audio/.*');
+    }
+    
+    function isValidSize() {
+      // Images: max 10MB, Audio: max 50MB
+      return (isImage() && request.resource.size < 10 * 1024 * 1024) ||
+             (isAudio() && request.resource.size < 50 * 1024 * 1024);
+    }
+
+    // Attachments organized by user
+    match /attachments/{userId}/{allPaths=**} {
+      // Read: anyone (for shared memories)
+      allow read: if true;
+      
+      // Write: only owner, valid file type and size
+      allow write: if isOwner(userId) && 
+                      (isImage() || isAudio()) && 
+                      isValidSize();
+      
+      // Delete: only owner
+      allow delete: if isOwner(userId);
+    }
+  }
+}

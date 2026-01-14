@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+    
+    function hasSharedAccess(sessionData) {
+      return isAuthenticated() && 
+             sessionData.sharedWith != null &&
+             sessionData.sharedWith.hasAny([request.auth.uid]);
+    }
+
+    // Sessions (memories) - User data isolation
+    match /sessions/{sessionId} {
+      // Users can only read their own sessions
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      
+      // Authenticated users can create sessions
+      allow create: if isAuthenticated();
+      
+      // Users can only update their own sessions
+      allow update: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      
+      // Users can only delete their own sessions
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+    }
+
+    // Public shares
+    match /shares/{shareId} {
+      // Anyone can read (for public links)
+      allow read: if true;
+      
+      // Only authenticated users can create
+      allow create: if isAuthenticated();
+      
+      // Only system (Cloud Functions) can update
+      allow update: if false;
+      
+      // Owner can delete
+      allow delete: if isAuthenticated();
+    }
+
+    // Notifications
+    match /notifications/{notificationId} {
+      // Users can only read their own notifications
+      allow read: if isOwner(resource.data.uid);
+      
+      // Users can update their own notifications (mark as read)
+      allow update: if isOwner(resource.data.uid) && 
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      
+      // Only Cloud Functions can create
+      allow create: if false;
+      
+      // Users can delete their own notifications
+      allow delete: if isOwner(resource.data.uid);
+    }
+
+    // Users collection
+    match /users/{userId} {
+      // Anyone can read (for user search/sharing)
+      allow read: if true;
+      
+      // Users can only create/update their own profile
+      allow create, update: if isOwner(userId);
+      
+      // Users can delete their own profile
+      allow delete: if isOwner(userId);
+    }
+  }
+}
