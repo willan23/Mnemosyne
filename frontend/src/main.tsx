@@ -44,29 +44,33 @@ createRoot(document.getElementById('root')!).render(
             <App />
             <AppUpdatePrompt />
             <Toaster
-            position="top-right"
-            toastOptions={{
-              duration: 4000,
-              style: {
-                background: 'rgba(255, 255, 255, 0.05)',
-                backdropFilter: 'blur(10px)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                color: '#ededed',
-              },
-              success: {
-                iconTheme: {
-                  primary: '#10b981',
-                  secondary: '#ededed',
+              position="top-right"
+              toastOptions={{
+                duration: 4000,
+                style: {
+                  background: '#0f172a',
+                  color: '#f8fafc',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5)',
+                  borderRadius: '0.75rem',
+                  padding: '0.75rem 1rem',
+                  fontSize: '0.875rem',
+                  fontWeight: '500',
                 },
-              },
-              error: {
-                iconTheme: {
-                  primary: '#ef4444',
-                  secondary: '#ededed',
+                success: {
+                  iconTheme: {
+                    primary: '#10b981',
+                    secondary: '#0f172a',
+                  },
                 },
-              },
-            }}
-          />
+                error: {
+                  iconTheme: {
+                    primary: '#f43f5e',
+                    secondary: '#0f172a',
+                  },
+                },
+              }}
+            />
           </UIProvider>
         </ThemeProvider>
       </BrowserRouter>

@@ -39,7 +39,6 @@ interface ImageGenerationResponsePayload {
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36';
 const HUGGINGFACE_TEXT_MODEL_DEFAULT = 'openai/gpt-oss-120b:cheapest';
 const HUGGINGFACE_IMAGE_MODEL_DEFAULT = 'black-forest-labs/FLUX.1-schnell';
-const HUGGINGFACE_IMAGE_PROVIDER_DEFAULT = 'hf-inference';
 const OPENAI_TEXT_MODEL_DEFAULT = 'gpt-4o-mini';
 const NVIDIA_TEXT_MODEL_DEFAULT = 'meta/llama-3.1-70b-instruct';
 const STOPWORDS = new Set([
@@ -544,11 +543,9 @@ const generateImageWithHuggingFace = async (
 ): Promise<ImageGenerationResponsePayload> => {
     const apiKey = envValue('HUGGINGFACE_API_KEY', 'HF_TOKEN', 'HUGGINGFACE_HUB_TOKEN');
     if (!apiKey) throw new Error('HUGGINGFACE_API_KEY/HF_TOKEN não configurada');
-    const baseUrl = normalizeBaseUrl(envValue('HUGGINGFACE_API_BASE_URL') || 'https://router.huggingface.co');
-    const provider = envValue('HUGGINGFACE_IMAGE_PROVIDER') || HUGGINGFACE_IMAGE_PROVIDER_DEFAULT;
     const model = requestedModel || envValue('HUGGINGFACE_IMAGE_MODEL') || HUGGINGFACE_IMAGE_MODEL_DEFAULT;
     const { width, height } = imageSizeToDimensions(size);
-    const response = await fetch(`${baseUrl}/${provider}/models/${model}`, {
+    const response = await fetchWithTimeout(`https://api-inference.huggingface.co/models/${model}`, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -563,7 +560,7 @@ const generateImageWithHuggingFace = async (
                 num_inference_steps: imageQualityToSteps(quality),
             },
         }),
-    });
+    }, 60000);
 
     if (!response.ok) {
         const detail = (await response.text()).slice(0, 320);
@@ -587,6 +584,38 @@ const generateImageWithHuggingFace = async (
     };
 };
 
+const generateImageWithPollinations = async (
+    prompt: string,
+    requestedModel: string | undefined,
+    size: unknown,
+    quality: unknown,
+): Promise<ImageGenerationResponsePayload> => {
+    const { width, height } = imageSizeToDimensions(size);
+    const seed = Math.floor(Math.random() * 1000000);
+    const encodedPrompt = encodeURIComponent(normalizeText(prompt));
+    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=flux`;
+
+    const response = await fetchWithTimeout(url, {
+        method: 'GET',
+        headers: { 'Accept': 'image/jpeg, image/png, image/*' },
+    }, 45000);
+
+    if (!response.ok) {
+        throw new Error(`Pollinations falhou: ${response.status}`);
+    }
+
+    const mediaType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
+    const imageBase64 = Buffer.from(await response.arrayBuffer()).toString('base64');
+    return {
+        image_base64: imageBase64,
+        image_url: url,
+        media_type: mediaType,
+        model: 'flux-pollinations',
+        provider: 'pollinations',
+        revised_prompt: null,
+    };
+};
+
 const generateImageWithNvidia = async (
     prompt: string,
     requestedModel: string | undefined,
@@ -595,7 +624,7 @@ const generateImageWithNvidia = async (
 ): Promise<ImageGenerationResponsePayload> => {
     const apiKey = envValue('NVIDIA_API_KEY', 'NVIDIA_API_KEY_FAST', 'NVIDIA_API_KEY_CORE');
     if (!apiKey) throw new Error('NVIDIA_API_KEY não configurada');
-    const model = requestedModel || envValue('NVIDIA_IMAGE_MODEL') || 'stabilityai/stable-diffusion-xl';
+    const model = requestedModel || envValue('NVIDIA_IMAGE_MODEL') || 'stabilityai/sdxl-turbo';
     const url = `https://ai.api.nvidia.com/v1/genai/${model}`;
 
     const response = await fetchWithTimeout(url, {
@@ -744,7 +773,7 @@ export const generateImageHandler = async (req: functions.Request, res: function
     const quality = req.body?.quality;
     const warnings: string[] = [];
 
-    for (const provider of [generateImageWithNvidia, generateImageWithHuggingFace, generateImageWithOpenAI]) {
+    for (const provider of [generateImageWithNvidia, generateImageWithHuggingFace, generateImageWithOpenAI, generateImageWithPollinations]) {
         try {
             const generated = await provider(prompt, model, size, quality);
             res.status(200).json(generated);

@@ -114,6 +114,37 @@ async function generateWithBackendFallback(prompt: string, preferredBase?: strin
   throw new Error(`Backend de geração indisponível. ${failures.join(' | ')}`);
 }
 
+async function requestPollinationsImage(prompt: string): Promise<GeneratedImageResult> {
+  const seed = Math.floor(Math.random() * 1000000);
+  const encodedPrompt = encodeURIComponent(prompt.trim());
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${seed}&nologo=true&model=flux`;
+
+  const response = await fetch(imageUrl, {
+    method: 'GET',
+    headers: { Accept: 'image/jpeg, image/png, image/*' },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Pollinations client falhou: ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  return {
+    dataUrl,
+    imageUrl,
+    mediaType: blob.type || 'image/jpeg',
+    model: 'flux-pollinations',
+    provider: 'pollinations',
+  };
+}
+
 async function generateImageWithBackendFallback(prompt: string, preferredBase?: string, model?: string): Promise<GeneratedImageResult> {
   const webResearchEndpoint = import.meta.env.VITE_WEB_RESEARCH_ENDPOINT as string | undefined;
   const candidates = unique([
@@ -136,7 +167,12 @@ async function generateImageWithBackendFallback(prompt: string, preferredBase?: 
     }
   }
 
-  throw new Error(`Backend de imagem indisponível. ${failures.join(' | ')}`);
+  // Fallback garantido sem necessidade de API key
+  try {
+    return await requestPollinationsImage(prompt);
+  } catch (pollinationsError) {
+    throw new Error(`Backend de imagem indisponível. ${failures.join(' | ')} | Pollinations: ${pollinationsError instanceof Error ? pollinationsError.message : 'falhou'}`);
+  }
 }
 
 export async function generateTextFromPrompt(prompt: string): Promise<string> {
