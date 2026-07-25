@@ -345,3 +345,99 @@ export const grantReviewerAccess = functions.https.onCall(async (data, context) 
         throw new functions.https.HttpsError('internal', error instanceof Error ? error.message : 'Unknown error');
     }
 });
+
+/**
+ * Public MCP (Model Context Protocol) & Unified API Gateway Endpoint
+ * Provides standardized JSON-RPC handshake, tool schemas, and health diagnostics.
+ */
+export const mcpGateway = regionalFunctions.https.onRequest((req, res) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+        res.status(204).send('');
+        return;
+    }
+
+    const mcpTools = [
+        {
+            name: 'search_memories',
+            description: 'Searches the user\'s private 3D cognitive memory graph by semantic concept or keywords.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    query: { type: 'string', description: 'Search term or question.' },
+                    limit: { type: 'string', description: 'Max items to return.' }
+                },
+                required: ['query']
+            }
+        },
+        {
+            name: 'create_memory',
+            description: 'Creates a new memory node in the 3D cognitive universe.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    title: { type: 'string', description: 'Memory title.' },
+                    content: { type: 'string', description: 'Memory content.' }
+                },
+                required: ['content']
+            }
+        },
+        {
+            name: 'query_cognitive_graph',
+            description: 'Queries relationship links and clusters between memory nodes in 3D space.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    clusterId: { type: 'string', description: 'Cluster filter ID.' }
+                }
+            }
+        }
+    ];
+
+    if (req.path === '/health' || req.method === 'GET') {
+        res.status(200).json({
+            status: 'online',
+            service: 'Mnemosyne MCP & Unified API Gateway',
+            version: '1.0.7',
+            mcpVersion: '1.0',
+            tools: mcpTools,
+            timestamp: Date.now()
+        });
+        return;
+    }
+
+    if (req.method === 'POST') {
+        const body = req.body || {};
+        if (body.jsonrpc === '2.0') {
+            if (body.method === 'tools/list') {
+                res.status(200).json({
+                    jsonrpc: '2.0',
+                    id: body.id || 1,
+                    result: { tools: mcpTools }
+                });
+                return;
+            }
+            if (body.method === 'ping') {
+                res.status(200).json({
+                    jsonrpc: '2.0',
+                    id: body.id || 1,
+                    result: { status: 'pong' }
+                });
+                return;
+            }
+        }
+
+        res.status(200).json({
+            status: 'ok',
+            message: 'Mnemosyne MCP request received',
+            tools: mcpTools
+        });
+        return;
+    }
+
+    res.status(405).json({ error: 'Method not allowed' });
+});
+

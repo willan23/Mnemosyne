@@ -13,6 +13,7 @@ import toast from 'react-hot-toast';
 import { resetOnboarding } from './OnboardingTour';
 import { PlansModal } from './PlanosModal';
 import { SyncConflictPanel } from './SyncConflictPanel';
+import { McpIntegrationPanel } from './McpIntegrationPanel';
 import { learnDocumentBatch } from '../services/learningService';
 import { isTauriRuntime, selectAndReadTauriDirectory } from '../utils/tauriFolderImporter';
 import {
@@ -1372,10 +1373,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <section className="space-y-6">
                                 <SectionHeader
                                     icon={Download}
-                                    title="Integrações"
-                                    description="Expande o Mnemosyne para o sistema operativo e acompanha o estado do plano."
+                                    title="Integrações & Servidor MCP"
+                                    description="Expande o Mnemosyne com Protocolo MCP para Claude, Cursor AI, APIs REST e descarrega a app desktop."
                                 />
-                                <div className="space-y-4">
+                                <div className="space-y-6">
+                                    <McpIntegrationPanel />
                                     <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
                                         <div className="flex items-center gap-3">
                                             <span className="text-sm font-medium text-[#e2e8f0]">Windows Explorer Context Menu</span>
