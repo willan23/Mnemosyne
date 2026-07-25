@@ -369,4 +369,4 @@ O Mnemosyne e um sistema de memoria cognitiva privada. Ele transforma ideias em 
 
 A promessa do sistema e simples:
 
-> dar ao utilizador uma mente digital privada, expansivel e viva, onde memoria nao e apenas armazenada, mas compreendida, conectada e protegida.
+> dar ao utilizador uma mente digital privada, expansivel e viva, onde memoria nao e apenas armazenada, mas compreendida, conectada e protegida.
