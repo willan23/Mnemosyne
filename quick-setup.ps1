@@ -12,7 +12,6 @@ if (-not (Test-Path "frontend") -or -not (Test-Path "functions")) {
 
 Write-Host "📦 Instalando dependências do Capacitor..." -ForegroundColor Yellow
 npm install @capacitor/core @capacitor/cli @capacitor/android
-npm install @capacitor/assets --save-dev
 
 Write-Host ""
 Write-Host "✅ Capacitor instalado!" -ForegroundColor Green

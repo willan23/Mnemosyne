@@ -35,8 +35,9 @@ export class ErrorBoundary extends Component<Props, State> {
             errorInfo
         });
 
-        // TODO: Send to error tracking service (Sentry, LogRocket, etc.)
-        // logErrorToService(error, errorInfo);
+        window.dispatchEvent(new CustomEvent('mnemosyne:error', {
+            detail: { message: error.message, componentStack: errorInfo.componentStack }
+        }));
     }
 
     private handleReset = () => {

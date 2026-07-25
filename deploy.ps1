@@ -1,91 +1,91 @@
-# 🚀 Deploy Script para Mnemosyne
-# Execute este script para fazer deploy completo
+# Deploy Script for Mnemosyne
+# Execute this script to do a full deploy
 
-Write-Host "🚀 Iniciando deploy do Mnemosyne..." -ForegroundColor Cyan
+Write-Host "Starting Mnemosyne deployment..." -ForegroundColor Cyan
 Write-Host ""
 
-# Verificar se está logado no Firebase
-Write-Host "📋 Verificando autenticação Firebase..." -ForegroundColor Yellow
-$firebaseUser = firebase login:list 2>&1
+# Check Firebase login
+Write-Host "Checking Firebase authentication..." -ForegroundColor Yellow
+$firebaseUser = firebase.cmd login:list 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ Não está logado no Firebase. Execute: firebase login" -ForegroundColor Red
+    Write-Host "Not logged into Firebase. Please run: firebase login" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ Autenticado no Firebase" -ForegroundColor Green
+Write-Host "Authenticated in Firebase" -ForegroundColor Green
 Write-Host ""
 
-# Verificar projeto
-Write-Host "📋 Verificando projeto Firebase..." -ForegroundColor Yellow
+# Check project
+Write-Host "Checking Firebase project..." -ForegroundColor Yellow
 $project = Get-Content .firebaserc | ConvertFrom-Json
 $projectId = $project.projects.default
-Write-Host "✅ Projeto: $projectId" -ForegroundColor Green
+Write-Host "Project: $projectId" -ForegroundColor Green
 Write-Host ""
 
 # Build Functions
-Write-Host "🔨 Building Cloud Functions..." -ForegroundColor Yellow
+Write-Host "Building Cloud Functions..." -ForegroundColor Yellow
 Set-Location functions
-npm run build
+npm.cmd run build
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ Erro ao buildar functions" -ForegroundColor Red
+    Write-Host "Error building functions" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ Functions buildadas" -ForegroundColor Green
+Write-Host "Functions built successfully" -ForegroundColor Green
 Set-Location ..
 Write-Host ""
 
 # Build Frontend
-Write-Host "🔨 Building Frontend..." -ForegroundColor Yellow
+Write-Host "Building Frontend..." -ForegroundColor Yellow
 Set-Location frontend
-npm run build
+npm.cmd run build
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ Erro ao buildar frontend" -ForegroundColor Red
+    Write-Host "Error building frontend" -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ Frontend buildado" -ForegroundColor Green
+Write-Host "Frontend built successfully" -ForegroundColor Green
 Set-Location ..
 Write-Host ""
 
 # Deploy Firestore Rules
-Write-Host "📤 Deploying Firestore Rules..." -ForegroundColor Yellow
-firebase deploy --only firestore:rules
+Write-Host "Deploying Firestore Rules..." -ForegroundColor Yellow
+firebase.cmd deploy --only firestore:rules
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "⚠️ Erro ao deployar Firestore rules" -ForegroundColor Yellow
+    Write-Host "Warning: Error deploying Firestore rules" -ForegroundColor Yellow
 }
 Write-Host ""
 
 # Deploy Storage Rules
-Write-Host "📤 Deploying Storage Rules..." -ForegroundColor Yellow
-firebase deploy --only storage:rules
+Write-Host "Deploying Storage Rules..." -ForegroundColor Yellow
+firebase.cmd deploy --only storage:rules
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "⚠️ Erro ao deployar Storage rules" -ForegroundColor Yellow
+    Write-Host "Warning: Error deploying Storage rules" -ForegroundColor Yellow
 }
 Write-Host ""
 
 # Deploy Functions
-Write-Host "📤 Deploying Cloud Functions..." -ForegroundColor Yellow
-firebase deploy --only functions
+Write-Host "Deploying Cloud Functions..." -ForegroundColor Yellow
+firebase.cmd deploy --only functions
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "⚠️ Erro ao deployar functions" -ForegroundColor Yellow
+    Write-Host "Warning: Error deploying functions" -ForegroundColor Yellow
 }
 Write-Host ""
 
 # Deploy Hosting
-Write-Host "📤 Deploying Hosting..." -ForegroundColor Yellow
-firebase deploy --only hosting
+Write-Host "Deploying Hosting..." -ForegroundColor Yellow
+firebase.cmd deploy --only hosting
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ Erro ao deployar hosting" -ForegroundColor Red
+    Write-Host "Error deploying hosting" -ForegroundColor Red
     exit 1
 }
 Write-Host ""
 
-Write-Host "✅ Deploy concluído com sucesso!" -ForegroundColor Green
+Write-Host "Deploy completed successfully!" -ForegroundColor Green
 Write-Host ""
-Write-Host "🌐 URLs:" -ForegroundColor Cyan
+Write-Host "URLs:" -ForegroundColor Cyan
 Write-Host "   Hosting: https://$projectId.web.app" -ForegroundColor White
 Write-Host "   Console: https://console.firebase.google.com/project/$projectId" -ForegroundColor White
 Write-Host ""
-Write-Host "📊 Próximos passos:" -ForegroundColor Yellow
-Write-Host "   1. Acesse o app e teste funcionalidades" -ForegroundColor White
-Write-Host "   2. Verifique logs: firebase functions:log" -ForegroundColor White
-Write-Host "   3. Configure domínio customizado (opcional)" -ForegroundColor White
+Write-Host "Next steps:" -ForegroundColor Yellow
+Write-Host "   1. Access the app and test functionalities" -ForegroundColor White
+Write-Host "   2. Check logs: firebase functions:log" -ForegroundColor White
+Write-Host "   3. Configure custom domain (optional)" -ForegroundColor White
 Write-Host ""

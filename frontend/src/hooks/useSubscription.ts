@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react';
 import { auth, db, default as app } from '../firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { getPlanLimits, normalizePlanName } from '../config/planLimits';
 
-export type SubscriptionTier = 'free' | 'pro' | 'business';
+export type SubscriptionTier = 'free' | 'pro' | 'sovereign';
+export type SubscriptionState = 'active' | 'trialing' | 'past_due' | 'canceled' | 'incomplete' | 'incomplete_expired' | 'paused' | 'unpaid' | string;
 
 export interface SubscriptionLimits {
     memoriesPerMonth: number;
@@ -18,7 +20,7 @@ export interface SubscriptionLimits {
 
 export interface SubscriptionStatus {
     tier: SubscriptionTier;
-    status: string;
+    status: SubscriptionState;
     currentPeriodEnd: number | null;
     cancelAtPeriodEnd: boolean;
     limits: SubscriptionLimits;
@@ -29,35 +31,17 @@ export interface SubscriptionStatus {
 }
 
 const getSubscriptionLimits = (tier: string): SubscriptionLimits => {
-    const limits = {
-        free: {
-            memoriesPerMonth: 30,
-            storageGB: 1,
-            canUploadAttachments: false,
-            canSharePrivately: false,
-            hasNotifications: false,
-            hasAdvancedAnalytics: false
-        },
-        pro: {
-            memoriesPerMonth: -1, // unlimited
-            storageGB: 50,
-            canUploadAttachments: true,
-            canSharePrivately: true,
-            hasNotifications: true,
-            hasAdvancedAnalytics: true
-        },
-        business: {
-            memoriesPerMonth: -1, // unlimited
-            storageGB: 500,
-            canUploadAttachments: true,
-            canSharePrivately: true,
-            hasNotifications: true,
-            hasAdvancedAnalytics: true,
-            hasAPIAccess: true,
-            maxTeamMembers: 10
-        }
+    const plan = getPlanLimits(tier);
+    return {
+        memoriesPerMonth: plan.memories.monthly,
+        storageGB: plan.storage.maxGB,
+        canUploadAttachments: Object.values(plan.attachments).some((attachment) => attachment.enabled),
+        canSharePrivately: plan.features.privateSharing,
+        hasNotifications: plan.features.notifications,
+        hasAdvancedAnalytics: plan.features.advancedAnalytics,
+        hasAPIAccess: plan.features.apiAccess,
+        maxTeamMembers: plan.features.teamMembers,
     };
-    return limits[tier as keyof typeof limits] || limits.free;
 };
 
 /**
@@ -68,12 +52,11 @@ export function useSubscription() {
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        let unsubscribeAuth: (() => void) | undefined;
         let unsubscribeDoc: (() => void) | undefined;
 
         console.log('🚀 [useSubscription] Configurando listener');
 
-        unsubscribeAuth = auth.onAuthStateChanged((user) => {
+        const unsubscribeAuth = auth.onAuthStateChanged((user) => {
             console.log('👤 [useSubscription] Auth state changed:', user?.uid);
 
             if (!user) {
@@ -91,7 +74,7 @@ export function useSubscription() {
                     const data = docSnap.data();
                     const subData = data.subscription || {};
                     const usageData = data.usage || {};
-                    const tier = subData.tier || 'free';
+                    const tier = normalizePlanName(subData.tier || 'free');
 
                     console.log('🔄 [useSubscription] Atualização recebida:', tier);
 
@@ -150,7 +133,7 @@ export function useSubscription() {
 
         const { limits, usage } = subscription;
 
-        // Unlimited for pro/business
+        // Unlimited for paid tiers
         if (limits.memoriesPerMonth === -1) return true;
 
         // Check limit for free tier
@@ -206,7 +189,8 @@ export function useSubscription() {
         isLoading,
         tier: subscription?.tier || 'free',
         isPro: subscription?.tier === 'pro',
-        isBusiness: subscription?.tier === 'business',
+        isSovereign: subscription?.tier === 'sovereign',
+        isBusiness: subscription?.tier === 'sovereign',
         canCreateMemory,
         canUploadAttachment,
         hasStorageSpace,

@@ -17,19 +17,146 @@ service cloud.firestore {
              sessionData.sharedWith.hasAny([request.auth.uid]);
     }
 
+    function p2pRoomExists(roomId) {
+      return exists(/databases/$(database)/documents/p2pRooms/$(roomId));
+    }
+
+    function p2pRoomData(roomId) {
+      return get(/databases/$(database)/documents/p2pRooms/$(roomId)).data;
+    }
+
+    function isP2PRoomParticipant(roomId) {
+      return isAuthenticated() &&
+        p2pRoomExists(roomId) &&
+        (p2pRoomData(roomId).callerId == request.auth.uid ||
+         p2pRoomData(roomId).calleeId == request.auth.uid);
+    }
+
+    function sessionExists(sessionId) {
+      return exists(/databases/$(database)/documents/sessions/$(sessionId));
+    }
+
+    function sessionData(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId)).data;
+    }
+
+    function canReadSession(sessionId) {
+      return isAuthenticated() &&
+        sessionExists(sessionId) &&
+        (sessionData(sessionId).uid == request.auth.uid ||
+         (sessionData(sessionId).sharedWithIds != null && sessionData(sessionId).sharedWithIds.hasAny([request.auth.uid])));
+    }
+
+    function canEditSession(sessionId) {
+      return canReadSession(sessionId);
+    }
+
+    function currentUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function currentSubscriptionTier() {
+      return currentUserData().subscription.tier;
+    }
+
+    function currentSubscriptionStatus() {
+      return currentUserData().subscription.status;
+    }
+
+    function hasPaidAttachmentAccess() {
+      return isAuthenticated() &&
+        (currentSubscriptionTier() in ['pro', 'sovereign', 'business']) &&
+        (currentSubscriptionStatus() in ['active', 'trialing', 'past_due']);
+    }
+
+    function sessionAttachmentsAllowed() {
+      return !request.resource.data.keys().hasAny(['attachments']) ||
+        request.resource.data.attachments == null ||
+        request.resource.data.attachments.size() == 0 ||
+        hasPaidAttachmentAccess();
+    }
+
+    function trustedDeviceExists(deviceId) {
+      return exists(/databases/$(database)/documents/trustedDevices/$(deviceId));
+    }
+
+    function trustedDeviceData(deviceId) {
+      return get(/databases/$(database)/documents/trustedDevices/$(deviceId)).data;
+    }
+
+    function isActiveTrustedDevice(deviceId) {
+      return trustedDeviceExists(deviceId) &&
+        trustedDeviceData(deviceId).ownerUid == request.auth.uid &&
+        trustedDeviceData(deviceId).status == 'active';
+    }
+
     // Sessions (memories) - User data isolation
     match /sessions/{sessionId} {
-      // Users can only read their own sessions
-      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      // Owners and explicitly shared recipients can read sessions.
+      allow read: if isAuthenticated() &&
+        (resource.data.uid == request.auth.uid ||
+         (resource.data.sharedWithIds != null && resource.data.sharedWithIds.hasAny([request.auth.uid])));
       
-      // Authenticated users can create sessions
-      allow create: if isAuthenticated();
+      // Authenticated users can create sessions with their own uid
+      allow create: if isAuthenticated() &&
+        request.resource.data.uid == request.auth.uid &&
+        sessionAttachmentsAllowed();
       
-      // Users can only update their own sessions
-      allow update: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      // Owners can update all fields. Shared editors can only edit memory content fields.
+      allow update: if isAuthenticated() &&
+        (
+          (resource.data.uid == request.auth.uid && sessionAttachmentsAllowed()) ||
+          (
+            resource.data.sharedWithIds != null &&
+            resource.data.sharedWithIds.hasAny([request.auth.uid]) &&
+            sessionAttachmentsAllowed() &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'text',
+              'title',
+              'tags',
+              'category',
+              'attachments',
+              'updatedAt',
+              'embedding',
+              'connections',
+              'semanticClusterId',
+              'position',
+              'importance',
+              'celestialType',
+              'processingMethod'
+            ])
+          )
+        );
       
       // Users can only delete their own sessions
       allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+
+      match /versions/{versionId} {
+        allow read: if canReadSession(sessionId);
+        allow create: if canEditSession(sessionId) &&
+          request.resource.data.editorUid == request.auth.uid &&
+          request.resource.data.text is string &&
+          request.resource.data.createdAt is number &&
+          request.resource.data.previousUpdatedAt is number &&
+          request.resource.data.keys().hasOnly([
+            'text',
+            'tags',
+            'category',
+            'attachments',
+            'title',
+            'embedding',
+            'connections',
+            'semanticClusterId',
+            'position',
+            'importance',
+            'celestialType',
+            'processingMethod',
+            'previousUpdatedAt',
+            'createdAt',
+            'editorUid'
+          ]);
+        allow update, delete: if false;
+      }
     }
 
     // Public shares
@@ -65,14 +192,306 @@ service cloud.firestore {
 
     // Users collection
     match /users/{userId} {
-      // Anyone can read (for user search/sharing)
-      allow read: if true;
+      // Users can only read their own profile
+      allow read: if isOwner(userId);
       
       // Users can only create/update their own profile
       allow create, update: if isOwner(userId);
       
       // Users can delete their own profile
       allow delete: if isOwner(userId);
+
+      // Memories subcollection
+      match /memories/{memoryId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Public discovery data for E2E transmission. No plaintext email is stored here.
+    match /publicProfiles/{userId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isOwner(userId) &&
+        request.resource.data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'emailHash',
+          'publicKeyPem',
+          'publicKeyUpdatedAt'
+        ]) &&
+        request.resource.data.uid == userId &&
+        request.resource.data.publicKeyPem is string;
+
+      allow delete: if isOwner(userId);
+    }
+
+    // End-to-end encrypted relay capsules.
+    match /transmissions/{transmissionId} {
+      allow read: if isAuthenticated() &&
+        (resource.data.senderId == request.auth.uid || resource.data.recipientId == request.auth.uid);
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.senderId == request.auth.uid &&
+        request.resource.data.recipientId is string &&
+        request.resource.data.recipientId != request.auth.uid &&
+        request.resource.data.encryptedKey is string &&
+        request.resource.data.encryptedPayload is string &&
+        request.resource.data.payloadIv is string &&
+        request.resource.data.status == 'sent' &&
+        request.resource.data.keys().hasOnly([
+          'senderId',
+          'recipientId',
+          'encryptedKey',
+          'encryptedPayload',
+          'payloadIv',
+          'hasAttachment',
+          'attachmentName',
+          'timestamp',
+          'status'
+        ]);
+
+      allow update: if isAuthenticated() &&
+        resource.data.recipientId == request.auth.uid &&
+        resource.data.status == 'sent' &&
+        request.resource.data.senderId == resource.data.senderId &&
+        request.resource.data.recipientId == resource.data.recipientId &&
+        request.resource.data.encryptedKey == resource.data.encryptedKey &&
+        request.resource.data.encryptedPayload == resource.data.encryptedPayload &&
+        request.resource.data.payloadIv == resource.data.payloadIv &&
+        request.resource.data.hasAttachment == resource.data.hasAttachment &&
+        request.resource.data.attachmentName == resource.data.attachmentName &&
+        request.resource.data.timestamp == resource.data.timestamp &&
+        request.resource.data.status in ['received', 'failed'] &&
+        request.resource.data.receivedAt is number &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'receivedAt'
+        ]);
+      allow delete: if isAuthenticated() &&
+        (resource.data.senderId == request.auth.uid || resource.data.recipientId == request.auth.uid);
+    }
+
+    // Real social graph: users can request contact with a public profile, and the
+    // recipient controls acceptance. No private memory content is stored here.
+    match /friendRequests/{requestId} {
+      allow read: if isAuthenticated() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.fromUid == request.auth.uid &&
+        request.resource.data.toUid is string &&
+        request.resource.data.toUid != request.auth.uid &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.fromLabel is string &&
+        request.resource.data.toLabel is string &&
+        request.resource.data.createdAt is number &&
+        request.resource.data.updatedAt is number &&
+        request.resource.data.keys().hasOnly([
+          'fromUid',
+          'toUid',
+          'fromLabel',
+          'toLabel',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ]);
+
+      allow update: if isAuthenticated() &&
+        resource.data.toUid == request.auth.uid &&
+        resource.data.status == 'pending' &&
+        request.resource.data.fromUid == resource.data.fromUid &&
+        request.resource.data.toUid == resource.data.toUid &&
+        request.resource.data.fromLabel == resource.data.fromLabel &&
+        request.resource.data.toLabel == resource.data.toLabel &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.status in ['accepted', 'rejected'] &&
+        request.resource.data.updatedAt is number &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'updatedAt'
+        ]);
+
+      allow delete: if isAuthenticated() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+    }
+
+    match /devicePairings/{pairingId} {
+      allow create: if isAuthenticated() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.pairingId == pairingId &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.expiresAt is number &&
+        request.resource.data.keys().hasOnly([
+          'version',
+          'pairingId',
+          'ownerUid',
+          'status',
+          'desktopDeviceName',
+          'desktopPublicKeyJwk',
+          'createdAt',
+          'expiresAt'
+        ]);
+
+      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+
+      allow update: if isAuthenticated() &&
+        resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        request.resource.data.pairingId == resource.data.pairingId &&
+        request.resource.data.status in ['pending', 'accepted', 'cancelled', 'expired'] &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'mobileDeviceName',
+          'mobileDeviceId',
+          'mobilePublicKeyJwk',
+          'encryptedHandshake',
+          'acceptedAt',
+          'cancelledAt',
+          'updatedAt'
+        ]);
+
+      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /trustedDevices/{deviceId} {
+      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.deviceId == deviceId &&
+        request.resource.data.status == 'active' &&
+        request.resource.data.name is string &&
+        request.resource.data.pairedAt is number &&
+        request.resource.data.keys().hasOnly([
+          'deviceId',
+          'ownerUid',
+          'name',
+          'status',
+          'pairedAt',
+          'pairingId',
+          'publicKeyJwk',
+          'desktopPublicKeyJwk',
+          'createdAt',
+          'updatedAt'
+        ]);
+
+      allow update: if isAuthenticated() &&
+        resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        request.resource.data.deviceId == resource.data.deviceId &&
+        request.resource.data.status in ['active', 'revoked'] &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'revokedAt',
+          'updatedAt'
+        ]);
+
+      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /mobileSyncEnvelopes/{envelopeId} {
+      allow create: if isAuthenticated() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.deviceId is string &&
+        isActiveTrustedDevice(request.resource.data.deviceId) &&
+        request.resource.data.direction in ['desktop-to-mobile', 'mobile-to-desktop'] &&
+        request.resource.data.payloadType in ['memory-snapshot', 'memory-delta'] &&
+        request.resource.data.status == 'queued' &&
+        request.resource.data.senderPublicKeyJwk is map &&
+        request.resource.data.encryptedPayload is map &&
+        request.resource.data.memoryCount is number &&
+        request.resource.data.tombstoneIds is list &&
+        request.resource.data.expiresAt is number &&
+        request.resource.data.keys().hasOnly([
+          'ownerUid',
+          'deviceId',
+          'direction',
+          'payloadType',
+          'status',
+          'senderPublicKeyJwk',
+          'encryptedPayload',
+          'memoryCount',
+          'tombstoneIds',
+          'createdAt',
+          'updatedAt',
+          'expiresAt'
+        ]);
+
+      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+
+      allow update: if isAuthenticated() &&
+        resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        request.resource.data.deviceId == resource.data.deviceId &&
+        request.resource.data.direction == resource.data.direction &&
+        request.resource.data.payloadType == resource.data.payloadType &&
+        request.resource.data.senderPublicKeyJwk == resource.data.senderPublicKeyJwk &&
+        request.resource.data.encryptedPayload == resource.data.encryptedPayload &&
+        request.resource.data.memoryCount == resource.data.memoryCount &&
+        request.resource.data.tombstoneIds == resource.data.tombstoneIds &&
+        request.resource.data.expiresAt == resource.data.expiresAt &&
+        request.resource.data.status in ['queued', 'pulled', 'failed'] &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'pulledAt',
+          'error',
+          'updatedAt'
+        ]);
+
+      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // WebRTC signaling only. Message payloads still travel E2E encrypted over DataChannel.
+    match /p2pRooms/{roomId} {
+      allow read: if isAuthenticated() &&
+        (resource.data.callerId == request.auth.uid || resource.data.calleeId == request.auth.uid);
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.callerId == request.auth.uid &&
+        request.resource.data.calleeId is string &&
+        request.resource.data.calleeId != request.auth.uid &&
+        request.resource.data.offer is map &&
+        request.resource.data.status == 'offer' &&
+        request.resource.data.keys().hasOnly([
+          'callerId',
+          'calleeId',
+          'callerLabel',
+          'status',
+          'offer',
+          'createdAt',
+          'updatedAt'
+        ]);
+
+      allow update: if isAuthenticated() &&
+        (resource.data.callerId == request.auth.uid || resource.data.calleeId == request.auth.uid) &&
+        request.resource.data.callerId == resource.data.callerId &&
+        request.resource.data.calleeId == resource.data.calleeId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'answer',
+          'status',
+          'updatedAt'
+        ]);
+
+      allow delete: if isAuthenticated() &&
+        (resource.data.callerId == request.auth.uid || resource.data.calleeId == request.auth.uid);
+
+      match /callerCandidates/{candidateId} {
+        allow read: if isP2PRoomParticipant(roomId);
+        allow create: if isP2PRoomParticipant(roomId) &&
+          p2pRoomData(roomId).callerId == request.auth.uid &&
+          request.resource.data.candidate is map &&
+          request.resource.data.uid == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      match /calleeCandidates/{candidateId} {
+        allow read: if isP2PRoomParticipant(roomId);
+        allow create: if isP2PRoomParticipant(roomId) &&
+          p2pRoomData(roomId).calleeId == request.auth.uid &&
+          request.resource.data.candidate is map &&
+          request.resource.data.uid == request.auth.uid;
+        allow update, delete: if false;
+      }
     }
   }
 }

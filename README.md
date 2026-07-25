@@ -1,190 +1,103 @@
-# 🚀 Mnemosyne - Quick Start
+# Mnemosyne 🧠✨
+### *The 3D Cognitive Universe & Self-Evolving Spatial Memory OS*
 
-## Configuração Rápida (5 minutos)
-
-### 1. Execute o script de setup
-
-```powershell
-.\setup.ps1
-```
-
-Este script irá:
-- ✅ Criar arquivos `.env` a partir dos templates
-- ✅ Instalar todas as dependências
-- ✅ Mostrar próximos passos
-
-### 2. Configure suas credenciais
-
-#### Obter credenciais Firebase:
-1. Acesse [Firebase Console](https://console.firebase.google.com)
-2. Selecione seu projeto
-3. ⚙️ Project Settings > Your apps > Config
-4. Copie os valores
-
-#### Editar `frontend/.env`:
-```env
-VITE_FIREBASE_API_KEY=sua-api-key
-VITE_FIREBASE_AUTH_DOMAIN=seu-projeto.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=seu-projeto-id
-VITE_FIREBASE_STORAGE_BUCKET=seu-projeto.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=123456789
-VITE_FIREBASE_APP_ID=1:123456789:web:abc123
-```
-
-#### Editar `.firebaserc`:
-```json
-{
-  "projects": {
-    "default": "seu-projeto-id"
-  }
-}
-```
-
-### 3. Ativar serviços no Firebase Console
-
-- ✅ **Firestore Database** (production mode)
-- ✅ **Authentication** (Email/Password)
-- ✅ **Storage** (production mode)
-- ✅ **Functions** (Blaze Plan - gratuito até 2M invocações/mês)
-
-### 4. Deploy
-
-```bash
-# Login
-firebase login
-
-# Deploy regras
-firebase deploy --only firestore:rules,storage:rules
-
-# Deploy functions
-firebase deploy --only functions
-
-# Deploy frontend (opcional)
-firebase deploy --only hosting
-```
-
-### 5. Testar
-
-```bash
-cd frontend
-npm run dev
-```
-
-Acesse: http://localhost:5173
-
-## ✨ Features Disponíveis
-
-- 🎨 **Tema Dark/Light** - Clique no ícone Sol/Lua
-- 🔍 **Busca em tempo real** - Digite na barra de busca
-- 🏷️ **Filtros** - Data, Tags, Categorias
-- 🧠 **Knowledge Graph** - Automático (com ou sem LLM)
-- 🔗 **Compartilhamento** - Links públicos
-- 💳 **Monetização Stripe** - Sistema completo de assinaturas
-- 📱 **Mobile Ready** - PWA + Capacitor para Android
-
-## 💳 Monetização com Stripe
-
-O Mnemosyne inclui sistema completo de monetização com 3 tiers:
-
-- **Free**: 50 memórias/mês, 1GB storage
-- **Pro** (€9.99/mês): Ilimitado, 50GB, features avançadas
-- **Business** (€29.99/mês): 500GB, API, equipes
-
-### Setup Rápido Stripe
-
-```powershell
-# 1. Execute o script de setup
-.\quick-setup.ps1
-
-# 2. Siga o guia completo
-# Leia: STRIPE_SETUP.md
-```
-
-**Documentação**: [STRIPE_SETUP.md](STRIPE_SETUP.md)
-
-## 📱 Publicação na Play Store
-
-Transforme o Mnemosyne em app Android nativo!
-
-### Setup Capacitor
-
-```bash
-# 1. Instalar dependências (já incluído em quick-setup.ps1)
-npm install @capacitor/core @capacitor/cli @capacitor/android
-
-# 2. Inicializar
-npx cap init
-
-# 3. Adicionar Android
-npx cap add android
-```
-
-**Documentação Completa**: [CAPACITOR_PLAYSTORE_GUIDE.md](CAPACITOR_PLAYSTORE_GUIDE.md)
-
-## 📖 Documentação Completa
-
-- **STRIPE_SETUP.md** - Configuração Stripe passo-a-passo
-- **CAPACITOR_PLAYSTORE_GUIDE.md** - Build Android e publicação
-- **FIREBASE_SETUP.md** - Guia detalhado de configuração Firebase
-- **DEPLOY_GUIDE.md** - Instruções de deploy
-- **MONETIZATION_STRATEGY.md** - Estratégia de monetização
-- **walkthrough.md** - Detalhes técnicos
-
-## 🆘 Problemas?
-
-### "Firebase config is invalid"
-- Verifique se editou `frontend/.env`
-- Reinicie o dev server
-
-### "Permission denied"
-- Deploy das rules: `firebase deploy --only firestore:rules`
-
-### Functions não aparecem
-- Ative o Blaze Plan no Firebase Console
-- Veja logs: `firebase functions:log`
-
-## 💰 Custos
-
-- **MVP**: ~$0.01/mês
-- **1000 memórias/mês**: ~$0.10/mês
-- **Plano gratuito Firebase**: Suficiente para começar!
-
-## 🤖 LLM Configuration
-
-Mnemosyne suporta dois provedores de IA para extração inteligente de entidades:
-
-### Google Gemini (Recomendado - Gratuito)
-- **Custo**: Gratuito (15 req/min, 1500/dia)
-- **Modelo**: gemini-1.5-flash
-- **Qualidade**: Excelente para português
-
-**Setup**:
-1. Obtenha key em: https://aistudio.google.com/app/apikey
-2. Edite `functions/.env`:
-   ```env
-   GEMINI_API_KEY=sua-key-aqui
-   GEMINI_MODEL=gemini-1.5-flash
-   ```
-3. Redeploy: `firebase deploy --only functions`
-
-### OpenAI (Alternativa - Pago)
-- **Custo**: ~$0.15/1M tokens
-- **Modelo**: gpt-4o-mini
-- **Qualidade**: Excelente
-
-**Setup**:
-1. Obtenha key em: https://platform.openai.com/api-keys
-2. Edite `functions/.env`:
-   ```env
-   OPENAI_API_KEY=sk-proj-sua-key
-   ```
-3. Redeploy: `firebase deploy --only functions`
-
-### Fallback Automático
-**Funciona SEM API key** usando extração regex (básica)!
-
-**Prioridade**: Gemini → OpenAI → Regex
+[![Domain](https://img.shields.io/badge/Website-mnemosyne--one.com-cyan.svg?style=for-the-badge&logo=globe)](https://mnemosyne-one.com)
+[![Live Demo](https://img.shields.io/badge/Live_App-mnemosyne--one.web.app-blue.svg?style=for-the-badge&logo=firebase)](https://mnemosyne-one.web.app)
+[![React](https://img.shields.io/badge/React-19.2-61DAFB.svg?style=for-the-badge&logo=react)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6.svg?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
+[![Three.js](https://img.shields.io/badge/Three.js-3D_Engine-black.svg?style=for-the-badge&logo=threedotjs)](https://threejs.org/)
+[![License](https://img.shields.io/badge/License-Proprietary%2FOpen--Core-green.svg?style=for-the-badge)](LICENSE)
 
 ---
 
-**Pronto para começar!** 🚀
+## 🌐 Official Website & Production Portal
+
+- **Official Web Domain**: [https://mnemosyne-one.com](https://mnemosyne-one.com)
+- **Live Production App**: [https://mnemosyne-one.web.app](https://mnemosyne-one.web.app)
+
+---
+
+## 💳 Sistema de Pagamentos / Payment System Architecture
+
+> [!IMPORTANT]
+> **Status do Sistema de Pagamentos**:
+> O **Mnemosyne** possui uma infraestrutura de faturação e assinaturas totalmente desenvolvida em código (integração com **Stripe Checkout**, **Stripe Billing Portal**, webhooks com **Firebase Cloud Functions** e modelos de limites Pro/Enterprise).
+> 
+> **Nota de Ativação**: O sistema de pagamentos **ainda não está ativo no ambiente de produção público**. A aplicação opera no modelo **Founder Preview / Free-First** para permitir a construção de mercado e testes abertos pela comunidade antes da ativação das cobranças comerciais.
+
+---
+
+## 📱 Aplicativo Mobile & Google Play Store
+
+> [!NOTE]
+> **Status da App Mobile (Android)**:
+> O aplicativo móvel Android está completamente desenvolvido e configurado via **Capacitor 8**, porém **ainda não está disponibilizado publicamente na Google Play Store** (em fase de testes internos e compilação de pacotes APK/AAB).
+
+---
+
+## 🌟 Executive Overview / Visão Geral
+
+**Mnemosyne** é um Sistema Operacional de Memória Cognitiva Espacial em 3D. Combinando visualizações gráficas em tempo real (Three.js/WebGL), encriptação Zero-Knowledge (ZK), síntese por inteligência artificial e comunicação E2E entre nós, o Mnemosyne transforma dados fragmentados em universos cognitivos interativos.
+
+> **English**: Mnemosyne is a 3D Spatial Cognitive Memory Operating System. Blending real-time Three.js/WebGL graph visualizations, Zero-Knowledge (ZK) encryption, AI-driven synthesis, and peer-to-peer E2E encrypted communications, Mnemosyne turns fragmented knowledge into immersive 3D cognitive universes.
+
+---
+
+## 🚀 Architectural Pillars / Pilares da Arquitetura
+
+```mermaid
+graph TD
+    subgraph Client Experience Layer
+        Web["🌐 Web PWA (React 19 + Three.js)"]
+        Desktop["🖥️ Desktop App (Tauri 2.0 + Rust)"]
+        Mobile["📱 Mobile App (Capacitor + Android)"]
+    end
+
+    subgraph Security & Cognitive Core
+        ZK["🔐 Zero-Knowledge Encryption Engine"]
+        MemoryGraph["🌌 3D Celestial Force Graph Engine"]
+        Comms["💬 E2E Encrypted Peer-to-Peer Comms"]
+    end
+
+    subgraph Backend & Cloud Infrastructure
+        Functions["⚡ Firebase Cloud Functions (Node.js 22)"]
+        KG["🧠 Python Knowledge Graph Engine (FastAPI)"]
+        Stripe["💳 Stripe Billing Engine (Inativo / Sandbox)"]
+    end
+
+    Web --> ZK
+    Desktop --> ZK
+    Mobile --> ZK
+
+    ZK --> MemoryGraph
+    MemoryGraph --> Functions
+    Functions --> KG
+    Functions --> Stripe
+```
+
+---
+
+## 🔥 Key Features
+
+- **🌌 3D Celestial Graph Engine**: Interactive 3D universe mapping memories as nodes, links, and semantic clusters.
+- **🔐 End-to-End & ZK Security**: Client-side AES-256-GCM encryption with BIP-39 mnemonic key derivation.
+- **🤖 Autonomous AI Summarization**: Local & cloud AI integrations for semantic tagging and cognitive pulse analysis.
+- **💬 Encrypted Communication Channels**: Multi-user direct and group messaging encrypted on device.
+- **💳 Multi-Tier SaaS Ready**: Integrated Stripe subscription architecture (Free, Pro, Enterprise) ready for commercial launch.
+
+---
+
+## 💻 Tech Stack Overview
+
+- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Three.js, React Three Fiber, Framer Motion, Zustand.
+- **Desktop & Mobile**: Tauri 2.0 (Rust), Capacitor 8 (Android).
+- **Backend & Cloud**: Firebase Auth, Firestore, Cloud Storage, Cloud Functions (Node.js 22), Python 3.11 (FastAPI, NetworkX).
+- **Billing**: Stripe API & Webhook Infrastructure (*currently in sandbox/disabled mode*).
+
+---
+
+## 📄 License & Contact
+
+For business inquiries, strategic partnerships, or investment:
+- **Domain**: [https://mnemosyne-one.com](https://mnemosyne-one.com)
+- **App**: [https://mnemosyne-one.web.app](https://mnemosyne-one.web.app)

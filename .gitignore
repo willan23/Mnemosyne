@@ -1,5 +1,73 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+functions/node_modules/
 
-# Android Keystore
+# Build outputs
+dist/
+build/
+frontend/dist/
+frontend/build/
+frontend/dev-dist/
+frontend/src-tauri/target/
+*.apk
+*.aab
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+functions/.env
+config.json
+current_config.json
+.runtimeconfig.json
+
+# Android
 *.jks
+*.keystore
 keystore.properties
 android/keystore.properties
+android/app/build/
+android/.gradle/
+frontend/android/app/*.keystore
+frontend/android/build_log.txt
+
+# IDE
+.vscode/
+.idea/
+frontend/android/.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Python/runtime artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.db
+
+# Local/reference repos outside the SaaS app
+.agents/
+mnemosyne-github/
+obsidian-skills-main/
+skill/

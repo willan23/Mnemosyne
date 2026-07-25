@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, UserPlus, Search, Check, Eye, Edit3, Trash2 } from 'lucide-react';
 import { db, auth } from '../firebase';
-import { collection, query, where, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, getDocs, updateDoc, doc, limit } from 'firebase/firestore';
+import { sha256Hex } from '../utils/crypto';
 
 interface SharedUser {
     uid: string;
-    email: string;
+    label: string;
     permission: 'view' | 'edit';
 }
 
@@ -25,7 +26,11 @@ export const UserShareModal: React.FC<UserShareModalProps> = ({ session, onClose
     useEffect(() => {
         // Load existing shared users
         if (session?.sharedWith) {
-            setSharedUsers(session.sharedWith);
+            setSharedUsers(session.sharedWith.map((user: any) => ({
+                uid: user.uid,
+                label: user.label || user.email || user.uid,
+                permission: user.permission || 'view',
+            })));
         }
     }, [session]);
 
@@ -34,13 +39,13 @@ export const UserShareModal: React.FC<UserShareModalProps> = ({ session, onClose
 
         setIsSearching(true);
         try {
-            // Search for users by email
-            const usersRef = collection(db, 'users');
-            const q = query(usersRef, where('email', '==', searchEmail.trim().toLowerCase()));
+            const emailHash = await sha256Hex(searchEmail);
+            const usersRef = collection(db, 'publicProfiles');
+            const q = query(usersRef, where('emailHash', '==', emailHash), limit(1));
             const snapshot = await getDocs(q);
 
             const results = snapshot.docs.map(doc => ({
-                uid: doc.id,
+                uid: doc.data().uid || doc.id,
                 ...doc.data()
             }));
 
@@ -62,7 +67,7 @@ export const UserShareModal: React.FC<UserShareModalProps> = ({ session, onClose
     const handleAddUser = (user: any, permission: 'view' | 'edit') => {
         const newUser: SharedUser = {
             uid: user.uid,
-            email: user.email,
+            label: user.displayName || user.uid,
             permission
         };
         setSharedUsers([...sharedUsers, newUser]);
@@ -87,6 +92,7 @@ export const UserShareModal: React.FC<UserShareModalProps> = ({ session, onClose
         try {
             await updateDoc(doc(db, 'sessions', session.id), {
                 sharedWith: sharedUsers,
+                sharedWithIds: sharedUsers.map((user) => user.uid),
                 updatedAt: Date.now()
             });
             onClose();
@@ -167,9 +173,9 @@ export const UserShareModal: React.FC<UserShareModalProps> = ({ session, onClose
                                 {searchResults.map(user => (
                                     <div key={user.uid} className="glass-card p-4 flex items-center justify-between">
                                         <div>
-                                            <p className="font-medium">{user.email}</p>
+                                            <p className="font-medium">{user.displayName || user.uid}</p>
                                             {user.displayName && (
-                                                <p className="text-sm text-gray-400">{user.displayName}</p>
+                                                <p className="text-sm text-gray-400 font-mono">{user.uid}</p>
                                             )}
                                         </div>
                                         <div className="flex gap-2">
@@ -202,7 +208,7 @@ export const UserShareModal: React.FC<UserShareModalProps> = ({ session, onClose
                                 {sharedUsers.map(user => (
                                     <div key={user.uid} className="glass-card p-4 flex items-center justify-between">
                                         <div>
-                                            <p className="font-medium">{user.email}</p>
+                                            <p className="font-medium">{user.label}</p>
                                             <p className="text-xs text-gray-400">
                                                 Permissão: {user.permission === 'view' ? 'Visualizar' : 'Editar'}
                                             </p>

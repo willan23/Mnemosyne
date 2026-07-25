@@ -12,7 +12,7 @@ interface PaywallProps {
 
 /**
  * Paywall Modal Component
- * Blocks access to Pro/Business features for Free tier users
+ * Blocks access to paid features for Free tier users
  */
 export const Paywall: React.FC<PaywallProps> = ({
     isOpen,

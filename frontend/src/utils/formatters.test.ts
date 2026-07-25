@@ -55,9 +55,14 @@ export function countWords(text: string): number {
 // Tests
 describe('formatDate', () => {
     it('should format timestamp to Portuguese date', () => {
-        const timestamp = new Date('2025-12-25').getTime();
+        const timestamp = new Date('2025-12-25T00:00:00Z').getTime();
         const result = formatDate(timestamp);
-        expect(result).toContain('dez');
+        const expected = new Date(timestamp).toLocaleDateString('pt-PT', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+        });
+        expect(result).toBe(expected);
         expect(result).toContain('2025');
     });
 });

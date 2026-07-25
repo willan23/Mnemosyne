@@ -27,8 +27,8 @@ service firebase.storage {
 
     // Attachments organized by user
     match /attachments/{userId}/{allPaths=**} {
-      // Read: anyone (for shared memories)
-      allow read: if true;
+      // Read: only owner
+      allow read: if isOwner(userId);
       
       // Write: only owner, valid file type and size
       allow write: if isOwner(userId) && 

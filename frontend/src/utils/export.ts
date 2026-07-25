@@ -126,14 +126,12 @@ export function downloadMemory(memory: Memory, format: ExportFormat = 'txt'): vo
 }
 
 /**
- * Download multiple memories as ZIP
+ * Download multiple memories as individual files.
  */
 export async function downloadMultipleMemories(
     memories: Memory[],
     format: ExportFormat = 'md'
 ): Promise<void> {
-    // For now, download each individually
-    // TODO: Implement ZIP creation with JSZip library
     memories.forEach((memory, index) => {
         setTimeout(() => {
             downloadMemory(memory, format);

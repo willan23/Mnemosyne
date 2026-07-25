@@ -27,6 +27,72 @@
                     "order": "DESCENDING"
                 }
             ]
+        },
+        {
+            "collectionGroup": "mobileSyncEnvelopes",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "ownerUid",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "deviceId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "status",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "mobileSyncEnvelopes",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "ownerUid",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "deviceId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "direction",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "status",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "mobileSyncEnvelopes",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "ownerUid",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "deviceId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "direction",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "status",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "expiresAt",
+                    "order": "ASCENDING"
+                }
+            ]
         }
     ],
     "fieldOverrides": []

@@ -1,558 +1,443 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Routes, Route } from 'react-router-dom';
-import { KeyCeremony } from './components/KeyCeremony';
+import React, { useState, useEffect } from 'react';
+import { Routes, Route, useNavigate, Navigate } from 'react-router-dom';
+import { AuthModal } from './components/AuthModal';
 import { MemoryGraph } from './components/MemoryGraph';
 import { SettingsModal } from './components/SettingsModal';
 import { MemoryEditorModal } from './components/MemoryEditorModal';
-import { NotificationCenter } from './components/NotificationCenter';
-import { SubscriptionStatus } from './components/SubscriptionStatus';
-import { LogoutButton } from './components/LogoutButton';
+import { OrphanedMemoriesWarning } from './components/OrphanedMemoriesWarning';
 import { ShareView } from './pages/ShareView';
-import { AnalyticsDashboard } from './pages/AnalyticsDashboard';
 import { PricingPage } from './pages/PricingPage';
 import { CheckoutSuccess } from './pages/CheckoutSuccess';
 import { CheckoutCancel } from './pages/CheckoutCancel';
-import { SearchBar } from './components/SearchBar';
-import { FilterPanel } from './components/FilterPanel';
-import type { FilterOptions } from './components/FilterPanel';
-import { useTheme } from './contexts/ThemeContext';
-import { Brain, Star, Settings, Mic, StopCircle, Send, Edit3, Eye, Sun, Moon, BarChart3, Crown } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useSpeechToText } from './hooks/useSpeechToText';
+import { PrivacyPage } from './pages/PrivacyPage';
+import { UniversePage } from './pages/UniversePage';
+import { LoginPage } from './pages/LoginPage';
+import { MobilePairingPage } from './pages/MobilePairingPage';
+import { LandingBackground } from './components/landing/LandingBackground';
+import type { FilterOptions, SessionData } from './hooks/useSessions';
+import { Search, Compass, Activity, Brain, Globe, LogOut } from 'lucide-react';
 import { db, auth } from './firebase';
-import { collection, addDoc, onSnapshot, query, orderBy, where } from 'firebase/firestore';
-import { AuthModal } from './components/AuthModal';
-import { onAuthStateChanged } from 'firebase/auth';
-interface Node {
-  id: string;
-  name: string;
-  val: number;
-}
+import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
+import { App as CapacitorApp } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
+import { Toaster } from 'react-hot-toast';
 
-interface Link {
-  source: string;
-  target: string;
-}
+import { useSessions } from './hooks/useSessions';
+import { useGraphData } from './hooks/useGraphData';
+import { useSemanticClusterBackfill } from './hooks/useSemanticClusterBackfill';
+import { useUI } from './contexts/UIContext';
+import { CommandPalette } from './components/CommandPalette';
+import { CognitiveInput } from './components/CognitiveInput';
+import { NotificationSystem } from './components/NotificationSystem';
+import { TransmissionPanel, type TransmissionDraft } from './components/TransmissionPanel';
+import { InsightsPanel } from './components/InsightsPanel';
+import { Radio } from 'lucide-react';
 
-interface GraphData {
-  nodes: Node[];
-  links: Link[];
-}
+const AuthBootScreen: React.FC = () => (
+  <div className="relative min-h-screen overflow-hidden bg-[#020617] text-white">
+    <LandingBackground />
+    <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+      <div className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm text-slate-300 backdrop-blur-xl">
+        <Brain className="h-4 w-4 text-violet-300" />
+        <span>A restaurar sessão...</span>
+      </div>
+    </div>
+  </div>
+);
 
 const App: React.FC = () => {
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState<User | null>(() => auth.currentUser);
+  const [isAuthReady, setIsAuthReady] = useState<boolean>(() => Boolean(auth.currentUser));
   const [mnemonic, setMnemonic] = useState<string[] | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [editingSession, setEditingSession] = useState<any | null>(null);
-  const [manualText, setManualText] = useState('');
-  const [isWritingMode, setIsWritingMode] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filters, setFilters] = useState<FilterOptions>({
+  const isAuthenticated = Boolean(currentUser);
 
+  // States para UI Data
+  const [editingSession, setEditingSession] = useState<SessionData | null>(null);
+
+  // OS Navigation (Tabs/Modes)
+  const [activeMode, setActiveMode] = useState<'flow' | 'insights'>('flow');
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [focusedMemoryId, setFocusedMemoryId] = useState<string | null>(null);
+  const [filters] = useState<FilterOptions>({
     dateRange: 'all',
     tags: [],
     category: undefined
   });
-  const { isListening, transcript, startListening, stopListening } = useSpeechToText();
+
+  const [showOrphanedWarning, setShowOrphanedWarning] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [showMnemonicAuth, setShowMnemonicAuth] = useState(false);
+  const [isTransmissionOpen, setIsTransmissionOpen] = useState(false);
+  const [transmissionDraft, setTransmissionDraft] = useState<TransmissionDraft | null>(null);
+
+  // States do Global Store (UI Context)
+  const {
+    isSettingsOpen, setIsSettingsOpen,
+    openCommandPalette
+  } = useUI();
+
+  // Custom Hooks substituindo lógica pesada
+  // O hook useSessions agora gerencia todo o estado de dados e filtros
+  const {
+    sessions,
+    allSessions,
+    filteredSessions,
+    orphanedCount
+  } = useSessions(currentUser, searchQuery, filters);
+
+  // Hook específico para transformar sessões em dados de grafo
+  const graphData = useGraphData(sessions);
+  useSemanticClusterBackfill(currentUser, sessions, isAuthenticated);
 
   // Auth state listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (!user) {
-        setShowAuthModal(true);
-      } else {
-        setShowAuthModal(false);
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        setCurrentUser(user);
+        setIsAuthReady(true);
+      },
+      (error) => {
+        console.error('Erro ao restaurar sessão:', error);
+        setCurrentUser(null);
+        setIsAuthReady(true);
       }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Load mnemonic from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('mnemosyne_mnemonic');
-    if (saved) {
-      const mn = JSON.parse(saved);
-      setMnemonic(mn);
-    }
-    setIsLoading(false);
-  }, []);
-
-  // Sessions listener (only when mnemonic exists and user is authenticated)
-  useEffect(() => {
-    if (!mnemonic || !auth.currentUser) {
-      return;
-    }
-
-    // Real-time listener for user's own sessions only
-    const q = query(
-      collection(db, "sessions"),
-      where("uid", "==", auth.currentUser.uid),
-      orderBy("timestamp", "desc")
     );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allNodes: Node[] = [];
-      const allLinks: Link[] = [];
-      const allSessions: any[] = [];
-
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        const sess = { id: doc.id, ...data };
-        allSessions.push(sess);
-
-        if (data.nodes) allNodes.push(...data.nodes);
-        if (data.links) allLinks.push(...data.links);
-      });
-
-      setSessions(allSessions);
-      setGraphData({ nodes: allNodes, links: allLinks });
-    });
-
     return () => unsubscribe();
-  }, [mnemonic, auth.currentUser]);
+  }, []);
 
-  // Filter and search logic
-  const filteredSessions = useMemo(() => {
-    let result = [...sessions];
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
 
-    // Search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(s =>
-        s.text?.toLowerCase().includes(query) ||
-        s.tags?.some((tag: string) => tag.toLowerCase().includes(query))
-      );
-    }
-
-    // Date range filter
-    if (filters.dateRange !== 'all') {
-      const now = Date.now();
-      const ranges = {
-        today: 24 * 60 * 60 * 1000,
-        week: 7 * 24 * 60 * 60 * 1000,
-        month: 30 * 24 * 60 * 60 * 1000,
-        year: 365 * 24 * 60 * 60 * 1000
-      };
-      const cutoff = now - ranges[filters.dateRange as keyof typeof ranges];
-      result = result.filter(s => s.timestamp > cutoff);
-    }
-
-    // Tags filter
-    if (filters.tags.length > 0) {
-      result = result.filter(s =>
-        s.tags?.some((tag: string) => filters.tags.includes(tag))
-      );
-    }
-
-    // Category filter
-    if (filters.category) {
-      result = result.filter(s => s.category === filters.category);
-    }
-
-    return result;
-  }, [sessions, searchQuery, filters]);
-
-  // Get all available tags and categories
-  const availableTags = useMemo(() => {
-    const tags = new Set<string>();
-    sessions.forEach(s => {
-      s.tags?.forEach((tag: string) => tags.add(tag));
+    let removeListener: (() => void) | undefined;
+    CapacitorApp.addListener('appUrlOpen', ({ url }) => {
+      try {
+        const openedUrl = new URL(url);
+        if (openedUrl.protocol === 'mnemosyne:' && openedUrl.hostname === 'pair') {
+          const payload = openedUrl.searchParams.get('payload');
+          navigate(payload ? `/mobile/pair?payload=${encodeURIComponent(payload)}` : '/mobile/pair');
+        }
+      } catch (error) {
+        console.warn('Unable to process app URL:', error);
+      }
+    }).then((handle) => {
+      removeListener = () => { void handle.remove(); };
     });
-    return Array.from(tags).sort();
-  }, [sessions]);
 
-  const availableCategories = useMemo(() => {
-    const categories = new Set<string>();
-    sessions.forEach(s => {
-      if (s.category) categories.add(s.category);
-    });
-    return Array.from(categories).sort();
-  }, [sessions]);
+    return () => {
+      removeListener?.();
+    };
+  }, [navigate]);
+
+  // Não carregar mais a mnemônica do localStorage (Zero-Knowledge):
+  // A mnemônica só existirá em memória volátil (state) durante a sessão.
+
+  // Mostrar AuthModal para mnemônica quando autenticado mas sem chave
+  useEffect(() => {
+    if (isAuthenticated && !mnemonic) {
+      setShowMnemonicAuth(true);
+    } else {
+      setShowMnemonicAuth(false);
+    }
+  }, [isAuthenticated, mnemonic]);
+
+  // Monitorar warning de orfãos vindo do hook
+  useEffect(() => {
+    if (orphanedCount > 0 && !mnemonic) {
+      setShowOrphanedWarning(true);
+    } else {
+      setShowOrphanedWarning(false);
+    }
+  }, [orphanedCount, mnemonic]);
 
   const handleKeyComplete = (newMnemonic: string[]) => {
-    localStorage.setItem('mnemosyne_mnemonic', JSON.stringify(newMnemonic));
     setMnemonic(newMnemonic);
   };
 
-  const handleRecordingToggle = async () => {
-    if (isListening) {
-      stopListening();
-      if (transcript.trim()) {
-        try {
-          if (!auth.currentUser) {
-            console.error('Usuário não autenticado');
-            return;
-          }
-          // No MVP, enviamos o texto e metadados. 
-          // O próximo passo será a Cloud Function que extrai o KG.
-          await addDoc(collection(db, "sessions"), {
-            text: transcript,
-            timestamp: Date.now(),
-            updatedAt: Date.now(),
-            uid: auth.currentUser.uid
-          });
-        } catch (e) {
-          console.error("Erro ao sincronizar Firestore:", e);
-        }
-      }
-    } else {
-      startListening();
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setMnemonic(null);
+      setCurrentUser(null);
+      navigate('/');
+    } catch (error) {
+      console.error('Erro ao fazer logout:', error);
     }
   };
 
-  const handleManualSubmit = async () => {
-    if (!manualText.trim()) return;
+  const handleCleanOrphanedMemories = async () => {
+    if (!confirm('⚠️ ATENÇÃO: Isso eliminará TODAS as suas memórias antigas. Continuar?')) return;
 
+    try {
+      if (!auth.currentUser) return;
+
+      const { collection, query, where, getDocs, deleteDoc } = await import('firebase/firestore');
+      const sessionsRef = collection(db, 'sessions');
+      const q = query(sessionsRef, where('uid', '==', auth.currentUser.uid));
+      const snapshot = await getDocs(q);
+
+      await Promise.all(snapshot.docs.map(doc => deleteDoc(doc.ref)));
+
+      alert(`✅ ${snapshot.docs.length} memórias eliminadas.`);
+      setShowOrphanedWarning(false);
+    } catch (error) {
+      const err = error as { message?: string };
+      console.error('Error cleaning orphaned memories:', error);
+      alert(`Erro: ${err.message || 'Erro desconhecido'}`);
+    }
+  };
+
+  const openTransmission = (draft: TransmissionDraft | null = null) => {
+    setTransmissionDraft(draft);
+    setIsTransmissionOpen(true);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    
     if (!auth.currentUser) {
-      console.error('Usuário não autenticado. Aguarde...');
+      alert("Precisas de criar a tua Mente Digital antes de assimilar ficheiros.");
       return;
     }
 
     try {
-      await addDoc(collection(db, "sessions"), {
-        text: manualText.trim(),
-        timestamp: Date.now(),
-        updatedAt: Date.now(),
-        uid: auth.currentUser.uid
-      });
-      setManualText('');
-      setIsWritingMode(false);
-    } catch (e) {
-      console.error("Erro ao sincronizar Firestore:", e);
+      const items = Array.from(e.dataTransfer.items);
+      if (items.length === 0) return;
+
+      const { collection, addDoc } = await import('firebase/firestore');
+
+      // Helper function to process an entry (file or directory)
+      const processEntry = async (entry: any, parentCluster?: string): Promise<void> => {
+        if (entry.isFile) {
+          const file = await new Promise<File>((resolve, reject) => entry.file(resolve, reject));
+            const tags = ['documento'];
+            if (parentCluster) tags.push(`sistema-solar:${parentCluster}`);
+            
+            if (file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+              const text = await file.text();
+              await addDoc(collection(db, 'sessions'), {
+                text: `[Planeta/Documento: ${file.name}]\n\n${text.substring(0, 5000)}`,
+                timestamp: Date.now(),
+                updatedAt: Date.now(),
+                uid: auth.currentUser!.uid,
+                tags,
+                processingMethod: 'file-drop'
+              });
+            } else {
+              alert(`O ficheiro "${file.name}" não foi importado. Nesta versão, o drop aceita apenas .txt e .md para evitar criar memórias sem conteúdo extraído.`);
+            }
+        } else if (entry.isDirectory) {
+          const dirReader = entry.createReader();
+          const entries = await new Promise<any[]>((resolve, reject) => dirReader.readEntries(resolve, reject));
+          await Promise.all(entries.map((subEntry) => processEntry(subEntry, entry.name)));
+        }
+      };
+
+      for (const item of items) {
+        if (item.webkitGetAsEntry) {
+          const entry = item.webkitGetAsEntry();
+          if (entry) {
+            await processEntry(entry);
+          }
+        }
+      }
+      
+      alert('Importação concluída para os documentos .txt/.md suportados.');
+    } catch (err) {
+      console.error(err);
+      alert("❌ Erro ao processar ficheiros.");
     }
   };
 
-
-  if (isLoading) return <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-    <motion.div
-      animate={{ scale: [1, 1.2, 1], opacity: [0.5, 1, 0.5] }}
-      transition={{ duration: 2, repeat: Infinity }}
-      className="w-12 h-12 rounded-full bg-indigo-500/20"
-    />
-  </div>;
+  if (!isAuthReady) {
+    return (
+      <>
+        <Toaster position="top-right" />
+        <NotificationSystem />
+        <AuthBootScreen />
+      </>
+    );
+  }
 
   return (
-    <Routes>
-      <Route path="/share/:shareId" element={<ShareView />} />
-      <Route path="/pricing" element={<PricingPage />} />
-      <Route path="/checkout/success" element={<CheckoutSuccess />} />
-      <Route path="/checkout/cancel" element={<CheckoutCancel />} />
-      <Route path="/analytics" element={
-        <div className="min-h-screen bg-[#0a0a0a] text-[#ededed] p-8">
-          <div className="max-w-7xl mx-auto">
-            <AnalyticsDashboard />
-          </div>
-        </div>
-      } />
-      <Route path="/" element={
-        <div className="min-h-screen bg-[#0a0a0a] text-[#ededed]">
-          {/* Background decoration */}
-          <div className="fixed inset-0 pointer-events-none">
-            <div className="absolute top-[10%] left-[20%] w-[40vw] h-[40vw] bg-indigo-600/5 rounded-full blur-[120px]" />
-            <div className="absolute bottom-[20%] right-[10%] w-[30vw] h-[30vw] bg-purple-600/5 rounded-full blur-[100px]" />
-          </div>
+    <>
+      <Toaster position="top-right" />
+      <NotificationSystem />
+      <Routes>
+        <Route path="/share/:shareId" element={<ShareView />} />
+        <Route path="/pricing"        element={<PricingPage />} />
+        <Route path="/checkout/success" element={<CheckoutSuccess />} />
+        <Route path="/checkout/cancel"  element={<CheckoutCancel />} />
+        <Route path="/privacy"        element={<PrivacyPage />} />
+        <Route path="/universe"       element={<UniversePage />} />
+        <Route path="/mobile/pair"    element={<MobilePairingPage />} />
+        <Route path="/login"          element={!isAuthenticated ? <LoginPage onMnemonicComplete={handleKeyComplete} /> : <Navigate to="/" replace />} />
 
-          {!mnemonic ? (
-            <KeyCeremony onComplete={handleKeyComplete} />
+        <Route path="/" element={
+          !isAuthenticated ? (
+            <LoginPage onMnemonicComplete={handleKeyComplete} />
           ) : (
-            <div className="relative z-10 p-8 max-w-7xl mx-auto">
-              {/* Header */}
-              <header className="flex flex-col gap-6 mb-12">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 glass-card flex items-center justify-center">
-                      <Brain className="w-6 h-6 text-indigo-400" />
-                    </div>
-                    <h1 className="text-2xl font-bold tracking-tighter glow-text">MNEMOSYNE</h1>
-                  </div>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => window.location.href = '/pricing'}
-                      className="glass-button !p-2"
-                      title="Upgrade de Plano"
-                    >
-                      <Crown className="w-5 h-5 text-indigo-400" />
-                    </button>
-                    <button
-                      onClick={() => window.location.href = '/analytics'}
-                      className="glass-button !p-2"
-                      title="Analytics"
-                    >
-                      <BarChart3 className="w-5 h-5" />
-                    </button>
-                    <NotificationCenter />
-                    <button
-                      onClick={toggleTheme}
-                      className="glass-button !p-2"
-                      title={`Mudar para tema ${theme === 'dark' ? 'claro' : 'escuro'}`}
-                    >
-                      {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-                    </button>
-                    <button
-                      onClick={() => setIsSettingsOpen(true)}
-                      className="glass-button !p-2"
-                      title="Configurações"
-                    >
-                      <Settings className="w-5 h-5" />
-                    </button>
-                    <LogoutButton />
-                  </div>
-                </div>
-
-                {/* Search and Filters */}
-                <div className="flex gap-4 items-center">
-                  <SearchBar onSearch={setSearchQuery} />
-                  <FilterPanel
-                    onFilterChange={setFilters}
-                    availableTags={availableTags}
-                    availableCategories={availableCategories}
-                  />
-                </div>
-              </header>
-
-              {/* Main Content Area (Placeholder for Dashboard) */}
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-                <aside className="lg:col-span-1 space-y-6">
-                  <div className="glass-card p-6">
-                    <h3 className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-4">Estatísticas</h3>
-                    <div className="space-y-4">
-                      <div>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span>Total de Memórias</span>
-                          <span className="text-indigo-400 font-bold">{sessions.length}</span>
-                        </div>
-                        <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                          <div className="h-full bg-indigo-500/50" style={{ width: `${Math.min(100, (sessions.length / 20) * 100)}%` }} />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span>Palavras Escritas</span>
-                          <span className="text-purple-400 font-bold">
-                            {sessions.reduce((acc, s) => acc + (s.text?.split(' ').length || 0), 0)}
-                          </span>
-                        </div>
-                        <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-purple-500/50"
-                            style={{ width: `${Math.min(100, (sessions.reduce((acc, s) => acc + (s.text?.split(' ').length || 0), 0) / 500) * 100)}%` }}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span>Esta Semana</span>
-                          <span className="text-green-400 font-bold">
-                            {sessions.filter(s => {
-                              const weekAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
-                              return s.timestamp > weekAgo;
-                            }).length}
-                          </span>
-                        </div>
-                        <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-green-500/50"
-                            style={{
-                              width: `${Math.min(100, (sessions.filter(s => {
-                                const weekAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
-                                return s.timestamp > weekAgo;
-                              }).length / 10) * 100)}%`
-                            }}
-                          />
-                        </div>
-                      </div>
-                      {sessions.length > 0 && (
-                        <div className="pt-3 border-t border-white/5">
-                          <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Última Atividade</div>
-                          <div className="text-xs text-indigo-300">
-                            {new Date(Math.max(...sessions.map(s => s.timestamp))).toLocaleString('pt-PT', {
-                              day: '2-digit',
-                              month: 'short',
-                              hour: '2-digit',
-                              minute: '2-digit'
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Subscription Status */}
-                  <SubscriptionStatus />
-
-                  <nav className="space-y-4">
-                    <div>
-                      <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3 px-2">Navegação</h4>
-                      <div className="space-y-2">
-                        <button className="w-full glass-button flex items-center gap-3 text-indigo-300 bg-indigo-500/10 border-indigo-500/20">
-                          <Star className="w-4 h-4" /> Constelação
-                        </button>
-                      </div>
-                    </div>
-
-                    <div>
-                      <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3 px-2">
-                        Crónicas Recentes
-                        {searchQuery || filters.dateRange !== 'all' || filters.tags.length > 0 || filters.category ? (
-                          <span className="ml-2 text-indigo-400">({filteredSessions.length})</span>
-                        ) : null}
-                      </h4>
-                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                        {filteredSessions.length === 0 ? (
-                          <p className="text-xs text-gray-600 px-2 italic">
-                            {sessions.length === 0 ? 'Nenhuma memória ainda...' : 'Nenhum resultado encontrado'}
-                          </p>
-                        ) : (
-                          filteredSessions.map(s => (
-                            <div
-                              key={s.id}
-                              onClick={() => setEditingSession(s)}
-                              className="glass-card p-3 text-xs border-white/5 hover:border-white/10 hover:bg-white/5 transition-all cursor-pointer group animate-in fade-in slide-in-from-left-2"
-                            >
-                              <div className="flex justify-between items-start mb-1">
-                                <span className="text-indigo-300 truncate max-w-[120px] font-medium group-hover:text-indigo-200">{s.text.substring(0, 20)}...</span>
-                                <span className="text-[10px] text-gray-500">{new Date(s.timestamp).toLocaleDateString()}</span>
-                              </div>
-                              <p className="text-gray-500 group-hover:text-gray-400 truncate text-[11px] leading-tight">{s.text}</p>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </nav>
-                </aside>
-
-                <main className="lg:col-span-3">
-                  <div className="glass-card h-[600px] flex flex-col relative overflow-hidden">
-                    {isWritingMode ? (
-                      <div className="flex-1 flex flex-col p-6">
-                        <div className="flex justify-between items-center mb-4">
-                          <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest">Nova Memória</h3>
-                          <button
-                            onClick={() => setIsWritingMode(false)}
-                            className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-2 transition-colors"
-                          >
-                            <Eye className="w-4 h-4" /> Ver Grafo
-                          </button>
-                        </div>
-                        <textarea
-                          value={manualText}
-                          onChange={(e) => setManualText(e.target.value)}
-                          placeholder="Comece a escrever a sua memória aqui..."
-                          className="flex-1 bg-transparent text-indigo-100 placeholder-gray-700 border-none focus:ring-0 resize-none text-lg leading-relaxed font-light"
-                          autoFocus
-                        />
-                        <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-white/5">
-                          <button
-                            onClick={() => {
-                              setManualText('');
-                              setIsWritingMode(false);
-                            }}
-                            className="px-6 py-2 text-gray-400 hover:text-white transition-colors text-sm font-bold uppercase tracking-tighter"
-                          >
-                            Cancelar
-                          </button>
-                          <button
-                            onClick={handleManualSubmit}
-                            disabled={!manualText.trim()}
-                            className="flex items-center gap-2 px-8 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-sm font-bold uppercase tracking-tighter shadow-lg shadow-indigo-500/20"
-                          >
-                            <Send className="w-4 h-4" /> Guardar Memória
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <MemoryGraph data={graphData} />
-
-                        {/* Recording UI */}
-                        <div className="absolute bottom-10 right-10 flex flex-col items-end gap-4">
-                          <AnimatePresence>
-                            {isListening && (
-                              <motion.div
-                                initial={{ opacity: 0, x: 20 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: 20 }}
-                                className="bg-red-500/20 border border-red-500/40 px-4 py-2 rounded-full flex items-center gap-3"
-                              >
-                                <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                                <span className="text-xs font-bold text-red-400 uppercase tracking-tighter">
-                                  {transcript ? "Processando..." : "Escutando..."}
-                                </span>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-
-                          {isListening && transcript && (
-                            <motion.div
-                              initial={{ opacity: 0, y: 10 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className="glass-card p-3 max-w-xs text-[10px] text-indigo-200 border-indigo-500/30"
-                            >
-                              <p className="italic">"{transcript}..."</p>
-                            </motion.div>
-                          )}
-
-                          {!isListening && (
-                            <motion.div
-                              initial={{ opacity: 0, scale: 0.95 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              className="flex items-center gap-2"
-                            >
-                              <button
-                                onClick={() => setIsWritingMode(true)}
-                                className="p-4 glass-card hover:bg-white/10 text-indigo-400 rounded-full transition-all shadow-xl hover:scale-110"
-                                title="Escrever memória"
-                              >
-                                <Edit3 className="w-6 h-6" />
-                              </button>
-                            </motion.div>
-                          )}
-
-                          <button
-                            onClick={handleRecordingToggle}
-                            className={`w-20 h-20 rounded-full flex items-center justify-center transition-all hover:scale-110 shadow-2xl shrink-0 ${isListening
-                              ? 'bg-red-600/40 border-red-500 shadow-red-500/30'
-                              : 'bg-indigo-600/40 border-indigo-400/30 shadow-indigo-500/20'
-                              } border`}
-                          >
-                            {isListening ? <StopCircle className="w-10 h-10 text-white" /> : <Mic className="w-10 h-10 text-white" />}
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </main>
+            <div className="min-h-screen text-[#ededed]">
+              <div className="fixed inset-0 pointer-events-none z-0">
+                <div className="absolute top-[10%] left-[20%] w-[40vw] h-[40vw] bg-indigo-600/5 rounded-full blur-[120px]" />
+                <div className="absolute bottom-[20%] right-[10%] w-[30vw] h-[30vw] bg-purple-600/5 rounded-full blur-[100px]" />
               </div>
 
-              <SettingsModal
-                isOpen={isSettingsOpen}
-                onClose={() => setIsSettingsOpen(false)}
-                mnemonic={mnemonic}
-                onResetKey={() => {
-                  localStorage.removeItem('mnemosyne_mnemonic');
-                  setMnemonic(null);
-                }}
-              />
+              {!mnemonic ? (
+                <>
+                  <div className="fixed inset-0 z-[-1] pointer-events-none">
+                    <LandingBackground />
+                  </div>
+                  <AuthModal
+                    isOpen={showMnemonicAuth}
+                    onClose={() => setShowMnemonicAuth(false)}
+                    initialMode="mnemonic"
+                    onMnemonicComplete={handleKeyComplete}
+                  />
+                </>
+              ) : (
+                <div className="relative z-10 w-full h-screen flex flex-col overflow-hidden bg-transparent">
+                  <header className="absolute top-0 left-0 w-full p-8 flex justify-between items-start z-40">
+                    <div className="flex items-center gap-3 pointer-events-none opacity-40 mix-blend-difference">
+                      <Brain className="w-5 h-5 text-white" />
+                    </div>
+                    <button
+                      onClick={handleLogout}
+                      className="flex items-center gap-2 px-4 py-2 rounded-full border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition-all duration-300 backdrop-blur-md"
+                      title="Sair (Logout)"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span className="text-xs font-medium tracking-wider uppercase">Sair</span>
+                    </button>
+                  </header>
 
-              <MemoryEditorModal
-                session={editingSession}
-                onClose={() => setEditingSession(null)}
-              />
+                  {showOrphanedWarning && (
+                    <div className="absolute top-24 left-1/2 -translate-x-1/2 z-50">
+                      <OrphanedMemoriesWarning
+                        memoriesCount={orphanedCount}
+                        onResetAndClean={handleCleanOrphanedMemories}
+                        onDismiss={() => setShowOrphanedWarning(false)}
+                      />
+                    </div>
+                  )}
 
-              <AuthModal
-                isOpen={showAuthModal}
-                onClose={() => setShowAuthModal(false)}
-              />
+                  <main 
+                    className="flex-1 w-full h-full relative"
+                    onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+                    onDrop={handleDrop}
+                  >
+                    {isDragging && (
+                      <div className="absolute inset-0 z-[100] bg-indigo-500/20 backdrop-blur-sm border-2 border-dashed border-indigo-500/50 flex flex-col items-center justify-center rounded-2xl m-4 pointer-events-none transition-all">
+                        <div className="p-4 bg-indigo-900/40 rounded-full mb-4">
+                          <Activity className="w-8 h-8 text-indigo-400 animate-pulse" />
+                        </div>
+                        <h2 className="text-2xl font-bold text-white tracking-widest uppercase">Assimilar Ficheiros</h2>
+                        <p className="text-indigo-200/60 mt-2">Larga os documentos para criar novas memórias ou sistemas solares.</p>
+                      </div>
+                    )}
+
+                    <div className={`absolute inset-0 transition-opacity duration-[2000ms] ${activeMode === 'insights' ? 'opacity-100 z-30' : 'opacity-40 z-0'}`}>
+                      <MemoryGraph
+                        data={graphData}
+                        sessions={sessions}
+                        searchResultNodeIds={searchQuery.trim() ? filteredSessions.map((session) => session.id) : []}
+                        focusedNodeId={focusedMemoryId}
+                        onTransmitMemory={(session) => openTransmission({
+                          memoryId: session.id,
+                          title: session.title,
+                          text: session.text,
+                        })}
+                      />
+                    </div>
+
+                    {activeMode === 'flow' && <CognitiveInput />}
+                    {activeMode === 'insights' && (
+                      <InsightsPanel sessions={sessions} onMemoryClick={setEditingSession} />
+                    )}
+
+                    <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-2 z-50 p-2 rounded-full border border-white/5 bg-[#020617]/80 backdrop-blur-3xl shadow-2xl mix-blend-screen overflow-hidden">
+                      <button
+                        onClick={() => setActiveMode('flow')}
+                        className={`flex items-center gap-2 px-6 py-3 rounded-full transition-all duration-300 ${activeMode === 'flow' ? 'bg-white/10 text-white shadow-[inset_0_0_20px_rgba(255,255,255,0.05)]' : 'text-white/40 hover:text-white/80'}`}
+                      >
+                        <Compass className="w-4 h-4" />
+                        <span className="text-[10px] uppercase tracking-widest font-medium">Flow</span>
+                      </button>
+
+                      <button
+                        onClick={() => setActiveMode('insights')}
+                        className={`flex items-center gap-2 px-6 py-3 rounded-full transition-all duration-300 ${activeMode === 'insights' ? 'bg-white/10 text-white shadow-[inset_0_0_20px_rgba(255,255,255,0.05)]' : 'text-white/40 hover:text-white/80'}`}
+                      >
+                        <Activity className="w-4 h-4" />
+                        <span className="text-[10px] uppercase tracking-widest font-medium">Insights</span>
+                      </button>
+
+                      <button
+                        onClick={() => { setActiveMode('flow'); openCommandPalette(); }}
+                        className="flex items-center gap-2 px-6 py-3 rounded-full text-white/40 hover:text-white/80 hover:bg-white/5 transition-all duration-300 border-l border-white/5 ml-2"
+                      >
+                        <Search className="w-4 h-4" />
+                        <span className="text-[10px] uppercase tracking-widest font-medium">Search</span>
+                      </button>
+
+                      <button
+                        onClick={() => navigate('/universe')}
+                        className="flex items-center gap-2 px-6 py-3 rounded-full text-white/40 hover:text-white/80 hover:bg-white/5 transition-all duration-300 border-l border-white/5 ml-2"
+                      >
+                        <Globe className="w-4 h-4" />
+                        <span className="text-[10px] uppercase tracking-widest font-medium">Universe</span>
+                      </button>
+
+                      <button
+                        onClick={() => openTransmission(null)}
+                        className="flex items-center gap-2 px-6 py-3 rounded-full text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 transition-all duration-300 border-l border-white/5 ml-2"
+                      >
+                        <Radio className="w-4 h-4" />
+                        <span className="text-[10px] uppercase tracking-widest font-medium">Comms</span>
+                      </button>
+                    </div>
+                  </main>
+
+                  <CommandPalette
+                    memories={filteredSessions}
+                    searchQuery={searchQuery}
+                    onSearchQueryChange={(query) => {
+                      setSearchQuery(query);
+                      if (!query.trim()) setFocusedMemoryId(null);
+                    }}
+                    onMemorySelect={(memory) => {
+                      setActiveMode('flow');
+                      setFocusedMemoryId(memory.id);
+                    }}
+                  />
+                  <SettingsModal
+                    isOpen={isSettingsOpen}
+                    onClose={() => setIsSettingsOpen(false)}
+                    mnemonic={mnemonic}
+                    onResetKey={() => { setMnemonic(null); }}
+                    sessions={allSessions}
+                  />
+                  <MemoryEditorModal session={editingSession} allMemories={sessions} onMemoryClick={setEditingSession} onClose={() => setEditingSession(null)} />
+                  <TransmissionPanel
+                    isOpen={isTransmissionOpen}
+                    onClose={() => {
+                      setIsTransmissionOpen(false);
+                      setTransmissionDraft(null);
+                    }}
+                    mnemonic={mnemonic}
+                    initialDraft={transmissionDraft}
+                  />
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      } />
-    </Routes>
+          )
+        } />
+      </Routes>
+    </>
   );
 };
 

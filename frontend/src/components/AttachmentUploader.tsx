@@ -4,6 +4,9 @@ import { Upload, Image, Mic, X, Play, Pause, StopCircle, Trash2, Check } from 'l
 import { uploadFile, validateFile, formatFileSize, compressImage } from '../utils/storage';
 import { useAudioRecorder, formatDuration } from '../hooks/useAudioRecorder';
 import { auth } from '../firebase';
+import { useSubscription } from '../hooks/useSubscription';
+import { getPlanLimits } from '../config/planLimits';
+import { useNavigate } from 'react-router-dom';
 
 export interface Attachment {
     type: 'image' | 'audio';
@@ -30,6 +33,13 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     const [uploadProgress, setUploadProgress] = useState(0);
     const [showAudioRecorder, setShowAudioRecorder] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const navigate = useNavigate();
+    const { tier } = useSubscription();
+    const planLimits = getPlanLimits(tier);
+    const canUploadImages = planLimits.attachments.images.enabled;
+    const canUploadAudio = planLimits.attachments.audio.enabled;
+    const effectiveMaxImages = canUploadImages ? maxImages : 0;
+    const effectiveMaxAudios = canUploadAudio ? maxAudios : 0;
 
     const {
         isRecording,
@@ -50,6 +60,11 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(e.target.files || []);
         if (files.length === 0) return;
+        if (!canUploadImages) {
+            alert('Anexos de imagem exigem plano Pro ou Sovereign.');
+            navigate('/pricing');
+            return;
+        }
 
         for (const file of files) {
             // Validate file
@@ -60,8 +75,8 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
             }
 
             // Check limit
-            if (images.length >= maxImages) {
-                alert(`Máximo de ${maxImages} imagens permitidas`);
+            if (images.length >= effectiveMaxImages) {
+                alert(`Máximo de ${effectiveMaxImages} imagens permitidas`);
                 break;
             }
 
@@ -105,10 +120,15 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     const handleSaveAudio = async () => {
         const recording = getRecording();
         if (!recording) return;
+        if (!canUploadAudio) {
+            alert('Gravação de áudio exige plano Pro ou Sovereign.');
+            navigate('/pricing');
+            return;
+        }
 
         // Check limit
-        if (audios.length >= maxAudios) {
-            alert(`Máximo de ${maxAudios} áudios permitidos`);
+        if (audios.length >= effectiveMaxAudios) {
+            alert(`Máximo de ${effectiveMaxAudios} áudios permitidos`);
             return;
         }
 
@@ -159,20 +179,20 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
             <div className="flex gap-3">
                 <button
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={isUploading || images.length >= maxImages}
+                    disabled={isUploading || !canUploadImages || images.length >= effectiveMaxImages}
                     className="flex items-center gap-2 px-4 py-2 glass-button text-sm disabled:opacity-50"
                 >
                     <Image className="w-4 h-4" />
-                    Adicionar Imagem ({images.length}/{maxImages})
+                    Adicionar Imagem ({images.length}/{effectiveMaxImages})
                 </button>
 
                 <button
                     onClick={() => setShowAudioRecorder(!showAudioRecorder)}
-                    disabled={isUploading || audios.length >= maxAudios}
+                    disabled={isUploading || !canUploadAudio || audios.length >= effectiveMaxAudios}
                     className="flex items-center gap-2 px-4 py-2 glass-button text-sm disabled:opacity-50"
                 >
                     <Mic className="w-4 h-4" />
-                    Gravar Áudio ({audios.length}/{maxAudios})
+                    Gravar Áudio ({audios.length}/{effectiveMaxAudios})
                 </button>
 
                 <input
@@ -184,6 +204,11 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
                     className="hidden"
                 />
             </div>
+            {(!canUploadImages || !canUploadAudio) && (
+                <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-xs text-indigo-200">
+                    Anexos estão bloqueados no plano Free. Faz upgrade para ativar imagens e áudio.
+                </div>
+            )}
 
             {/* Upload Progress */}
             <AnimatePresence>

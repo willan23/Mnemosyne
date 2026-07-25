@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Shield, Key, ArrowRight, RefreshCw, CheckCircle2 } from 'lucide-react';
-import { generateMnemonic } from '../utils/crypto';
+import { Shield, Key, ArrowRight, RefreshCw, CheckCircle2, Copy, Check } from 'lucide-react';
+import { generateMnemonic, validateBip39Mnemonic } from '../utils/crypto';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface KeyCeremonyProps {
@@ -12,9 +12,10 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
     const [mnemonic, setMnemonic] = useState<string[]>([]);
     const [verified, setVerified] = useState(false);
     const [restoreInput, setRestoreInput] = useState('');
+    const [copied, setCopied] = useState(false);
 
-    const startCeremony = () => {
-        setMnemonic(generateMnemonic());
+    const startCeremony = async () => {
+        setMnemonic(await generateMnemonic());
         setStep(2);
     };
 
@@ -22,10 +23,10 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
         setStep(3);
     };
 
-    const handleRestoreSubmit = () => {
+    const handleRestoreSubmit = async () => {
         const words = restoreInput.trim().split(/\s+/);
-        if (words.length !== 12) {
-            alert("A mnemonica deve ter exatamente 12 palavras.");
+        if (!(await validateBip39Mnemonic(words))) {
+            alert("A mnemónica deve conter exatamente 12 palavras BIP39 válidas.");
             return;
         }
         onComplete(words);
@@ -37,6 +38,12 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
         setTimeout(() => {
             onComplete(mnemonic);
         }, 1500);
+    };
+
+    const handleCopy = async () => {
+        await navigator.clipboard.writeText(mnemonic.join(' '));
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
     };
 
     return (
@@ -97,10 +104,20 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
                         {!verified ? (
                             <div className="flex gap-4">
                                 <button
-                                    onClick={() => setMnemonic(generateMnemonic())}
+                                    onClick={async () => setMnemonic(await generateMnemonic())}
                                     className="glass-button flex-1 flex items-center justify-center gap-2 opacity-60 hover:opacity-100"
                                 >
                                     Regerar <RefreshCw className="w-4 h-4" />
+                                </button>
+                                <button
+                                    onClick={handleCopy}
+                                    className="glass-button flex-1 flex items-center justify-center gap-2"
+                                >
+                                    {copied ? (
+                                        <>Copiado! <Check className="w-4 h-4" /></>
+                                    ) : (
+                                        <>Copiar <Copy className="w-4 h-4" /></>
+                                    )}
                                 </button>
                                 <button
                                     onClick={confirmPassphrase}

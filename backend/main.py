@@ -55,19 +55,37 @@ def process_memory(session_id: str, text: str, db: Session):
     
     db.commit()
 
+from pydantic import BaseModel
+
+class SessionRequest(BaseModel):
+    text: str
+
+@app.post("/api/v1/extract")
+async def extract_knowledge(request: SessionRequest):
+    """
+    Endpoint puro para extração de conhecimento via NVIDIA NIM.
+    Não salva no banco de dados local (SQLite).
+    Utilizado pelo frontend para persistência no Firebase.
+    """
+    nodes, links = kg_extractor.extract(request.text, "temp-session")
+    return {
+        "nodes": [{"id": n.id, "name": n.name, "val": n.val} for n in nodes],
+        "links": [{"source": l.source, "target": l.target} for l in links]
+    }
+
 @app.post("/sessions")
-async def create_session(text: str = "Início da jornada Mnemosyne. Design e E2EE são fundamentais.", db: Session = Depends(get_session)):
+async def create_session(request: SessionRequest, db: Session = Depends(get_session)):
     new_session = MemorySession(
         id=str(uuid.uuid4()),
         timestamp=time.time(),
-        title="Memória: " + text[:20] + "..."
+        title="Memória: " + request.text[:20] + "..."
     )
     db.add(new_session)
     db.commit()
     db.refresh(new_session)
     
     # Process the text to extract KG
-    process_memory(new_session.id, text, db)
+    process_memory(new_session.id, request.text, db)
     
     return {"session": new_session, "message": "Memória guardada e grafo atualizado."}
 

@@ -7,3 +7,5 @@ passlib[bcrypt]
 python-multipart
 pydantic-settings
 python-dotenv
+gunicorn
+uvicorn

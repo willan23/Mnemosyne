@@ -1,12 +1,73 @@
-import * as functions from 'firebase-functions';
+import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { LLMKGExtractor } from './kg-extractor';
+import { OwnerAckState, tombstoneAckedByAllActiveDevices } from './mobileSyncRetention';
 
 // Initialize Firebase Admin
 admin.initializeApp();
 
 const db = admin.firestore();
-const extractor = new LLMKGExtractor();
+const regionalFunctions = functions.region('europe-west1');
+const MOBILE_SYNC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+const getRuntimeConfig = (): Record<string, any> => {
+    const compatFunctions = functions as unknown as { config?: () => Record<string, any> };
+    return typeof compatFunctions.config === 'function' ? compatFunctions.config() : {};
+};
+
+const deleteRefsInBatches = async (refs: FirebaseFirestore.DocumentReference[]): Promise<void> => {
+    let batch = db.batch();
+    let operationCount = 0;
+
+    for (const ref of refs) {
+        batch.delete(ref);
+        operationCount += 1;
+
+        if (operationCount >= 450) {
+            await batch.commit();
+            batch = db.batch();
+            operationCount = 0;
+        }
+    }
+
+    if (operationCount > 0) {
+        await batch.commit();
+    }
+};
+
+const loadOwnerAckState = async (ownerUid: string): Promise<OwnerAckState> => {
+    const trustedSnapshot = await db.collection('trustedDevices')
+        .where('ownerUid', '==', ownerUid)
+        .get();
+    const activeDeviceIds = trustedSnapshot.docs
+        .map((trustedDoc) => trustedDoc.data())
+        .filter((device) => device.status === 'active' && typeof device.deviceId === 'string')
+        .map((device) => device.deviceId as string);
+
+    const envelopesSnapshot = await db.collection('mobileSyncEnvelopes')
+        .where('ownerUid', '==', ownerUid)
+        .get();
+    const pulledTombstonesByDevice = new Map<string, Set<string>>();
+
+    for (const envelopeDoc of envelopesSnapshot.docs) {
+        const envelope = envelopeDoc.data();
+        if (
+            envelope.status !== 'pulled' ||
+            envelope.direction !== 'desktop-to-mobile' ||
+            typeof envelope.deviceId !== 'string' ||
+            !Array.isArray(envelope.tombstoneIds)
+        ) {
+            continue;
+        }
+
+        const ackedIds = pulledTombstonesByDevice.get(envelope.deviceId) || new Set<string>();
+        envelope.tombstoneIds
+            .filter((memoryId): memoryId is string => typeof memoryId === 'string')
+            .forEach((memoryId) => ackedIds.add(memoryId));
+        pulledTombstonesByDevice.set(envelope.deviceId, ackedIds);
+    }
+
+    return { activeDeviceIds, pulledTombstonesByDevice };
+};
 
 // Export Stripe functions
 export {
@@ -16,6 +77,59 @@ export {
     handleStripeWebhook
 } from './stripe';
 
+export const cleanupMobileSyncRetention = regionalFunctions.pubsub
+    .schedule('every 24 hours')
+    .timeZone('Europe/Lisbon')
+    .onRun(async () => {
+        const cutoff = Date.now() - MOBILE_SYNC_RETENTION_MS;
+        const staleEnvelopeSnapshot = await db.collection('mobileSyncEnvelopes')
+            .where('expiresAt', '<', cutoff)
+            .limit(500)
+            .get();
+        const envelopeDeletes = staleEnvelopeSnapshot.docs
+            .filter((envelopeDoc) => {
+                const envelope = envelopeDoc.data();
+                const isTerminal = envelope.status === 'pulled' || envelope.status === 'failed';
+                const staleByExpiry = typeof envelope.expiresAt === 'number' && envelope.expiresAt < cutoff;
+                const staleByPulledAt = typeof envelope.pulledAt === 'number' && envelope.pulledAt < cutoff;
+                return isTerminal && (staleByExpiry || staleByPulledAt);
+            })
+            .map((envelopeDoc) => envelopeDoc.ref);
+
+        const staleTombstoneSnapshot = await db.collection('sessions')
+            .where('deletedAt', '<', cutoff)
+            .limit(500)
+            .get();
+        const ownerAckStateCache = new Map<string, Promise<OwnerAckState>>();
+        const tombstoneDeletes: FirebaseFirestore.DocumentReference[] = [];
+        let retainedTombstones = 0;
+
+        for (const tombstoneDoc of staleTombstoneSnapshot.docs) {
+            const tombstone = tombstoneDoc.data();
+            if (
+                typeof tombstone.uid !== 'string' ||
+                (Array.isArray(tombstone.tags) && tombstone.tags.includes('sync-conflict'))
+            ) {
+                continue;
+            }
+
+            if (!ownerAckStateCache.has(tombstone.uid)) {
+                ownerAckStateCache.set(tombstone.uid, loadOwnerAckState(tombstone.uid));
+            }
+            const ackState = await ownerAckStateCache.get(tombstone.uid);
+            if (ackState && tombstoneAckedByAllActiveDevices(tombstoneDoc.id, tombstone.deletedByDeviceId, ackState)) {
+                tombstoneDeletes.push(tombstoneDoc.ref);
+            } else {
+                retainedTombstones += 1;
+            }
+        }
+
+        await deleteRefsInBatches(envelopeDeletes);
+        await deleteRefsInBatches(tombstoneDeletes);
+        console.log(`Mobile sync retention: deleted ${envelopeDeletes.length} envelope(s), ${tombstoneDeletes.length} tombstone(s), retained ${retainedTombstones} tombstone(s).`);
+        return null;
+    });
+
 /**
  * Cloud Function triggered when a new session is created
  * Extracts knowledge graph and updates the session document
@@ -23,70 +137,13 @@ export {
 export const processMemoryKG = functions.firestore
     .document('sessions/{sessionId}')
     .onCreate(async (snap, context) => {
-        const sessionId = context.params.sessionId;
-        const data = snap.data();
-
-        console.log(`🧠 Processing memory: ${sessionId}`);
-
-        // Skip if already processed
-        if (data.nodes && data.links) {
-            console.log('⏭️ Already processed, skipping');
-            return null;
-        }
-
-        const text = data.text;
-        if (!text || text.trim().length === 0) {
-            console.log('⚠️ Empty text, skipping');
-            return null;
-        }
-
-        try {
-            // Extract knowledge graph
-            const result = await extractor.extract(text);
-
-            // Convert to Firestore format
-            const nodes = result.entities.map((entity, index) => ({
-                id: `${sessionId}-${index}`,
-                name: entity.name,
-                val: 5 // Default importance value
-            }));
-
-            const links = result.relations.map(rel => ({
-                source: rel.source,
-                target: rel.target,
-                type: rel.type
-            }));
-
-            // Determine which processing method was used
-            let processingMethod = 'fallback';
-            if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your-gemini-key-here') {
-                processingMethod = 'gemini';
-            } else if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'sk-proj-your-key-here') {
-                processingMethod = 'openai';
-            }
-
-            // Update session with extracted KG
-            await snap.ref.update({
-                nodes,
-                links,
-                processedAt: admin.firestore.FieldValue.serverTimestamp(),
-                processingMethod
-            });
-
-            console.log(`✅ Processed: ${nodes.length} nodes, ${links.length} links`);
-
-            return { success: true, nodes: nodes.length, links: links.length };
-        } catch (error) {
-            console.error('❌ Error processing memory:', error);
-
-            // Mark as failed but don't throw (to avoid retries)
-            await snap.ref.update({
-                processingError: error instanceof Error ? error.message : 'Unknown error',
-                processedAt: admin.firestore.FieldValue.serverTimestamp()
-            });
-
-            return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-        }
+        // [DEPRECATION NOTICE: Zero-Knowledge Architecture Migration]
+        // This cloud-based extraction has been disabled to prevent sending
+        // unencrypted user memories to OpenAI/Gemini endpoints.
+        // Extraction is now handled locally entirely in the client's browser
+        // via Xenova/transformers.js BEFORE adding the document, ensuring E2EE.
+        console.log(`🔒 Cloud extraction disabled for E2EE compliance. Client will handle extraction.`);
+        return null;
     });
 
 /**
@@ -134,6 +191,9 @@ export const onMemoryShared = functions.firestore
         return null;
     });
 
+/**
+ * Delete user account and all associated data
+ */
 /**
  * Delete user account and all associated data
  */
@@ -220,5 +280,52 @@ export const deleteUserAccount = functions.https.onCall(async (data, context) =>
             'Failed to delete account',
             error instanceof Error ? error.message : 'Unknown error'
         );
+    }
+});
+
+
+/**
+ * Admin-only reviewer flag. This does not create Stripe subscriptions.
+ */
+export const grantReviewerAccess = functions.https.onCall(async (data, context) => {
+    const { email, secret } = data;
+    const reviewerSecret = getRuntimeConfig().reviewer?.secret;
+
+    if (!reviewerSecret) {
+        throw new functions.https.HttpsError('failed-precondition', 'Reviewer access is not configured');
+    }
+
+    if (secret !== reviewerSecret) {
+        console.warn(`⛔ Unauthorized attempt to grant access to ${email}`);
+        throw new functions.https.HttpsError('permission-denied', 'Invalid secret key');
+    }
+
+    if (!email) {
+        throw new functions.https.HttpsError('invalid-argument', 'Email is required');
+    }
+
+    try {
+        console.log(`🔓 Granting reviewer flag to: ${email}`);
+        const userRecord = await admin.auth().getUserByEmail(email);
+        const uid = userRecord.uid;
+
+        await db.collection('users').doc(uid).set({
+            reviewerAccess: {
+                enabled: true,
+                grantedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        console.log(`✅ Reviewer flag granted to ${email} (${uid})`);
+
+        return {
+            success: true,
+            message: `Reviewer flag granted to ${email}`,
+            uid: uid
+        };
+    } catch (error) {
+        console.error("❌ Error granting access:", error);
+        throw new functions.https.HttpsError('internal', error instanceof Error ? error.message : 'Unknown error');
     }
 });
