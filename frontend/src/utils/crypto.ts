@@ -5,6 +5,16 @@ const volatileIdentities = new Map<string, { publicKey: CryptoKey, privateKey: C
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// Cleanup legacy keys once on load
+if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+        window.localStorage.removeItem('mnemosyne_private_jwk');
+        window.localStorage.removeItem('mnemosyne_public_jwk');
+    } catch (e) {
+        console.warn('LocalStorage cleanup skipped:', e);
+    }
+}
+
 const bytesToBinary = (bytes: Uint8Array): string =>
     Array.from(bytes).map((byte) => byte.toString(2).padStart(8, '0')).join('');
 
@@ -219,11 +229,17 @@ function identityVaultKey(scope: string): string {
     return `mnemosyne_identity_vault_${scope}`;
 }
 
+export function clearIdentityVault(scope: string = 'session'): void {
+    localStorage.removeItem(identityVaultKey(scope));
+    for (const key of Array.from(volatileIdentities.keys())) {
+        if (key === scope || key.startsWith(`${scope}:vault:`)) {
+            volatileIdentities.delete(key);
+        }
+    }
+}
+
 // Identidade criptográfica soberana. Com mnemónica, a chave privada é guardada apenas cifrada.
 export async function getOrCreateIdentity(scope: string = 'session', mnemonic?: string[] | null): Promise<{ publicKey: CryptoKey, privateKey: CryptoKey, pemPublic: string }> {
-    localStorage.removeItem('mnemosyne_private_jwk');
-    localStorage.removeItem('mnemosyne_public_jwk');
-
     const mnemonicFingerprint = mnemonic ? await sha256Hex(normalizeMnemonic(mnemonic)) : null;
     const cacheScope = mnemonicFingerprint ? `${scope}:vault:${mnemonicFingerprint}` : scope;
     const cachedIdentity = volatileIdentities.get(cacheScope);

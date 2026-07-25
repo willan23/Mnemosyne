@@ -1,6 +1,12 @@
 import React, { useEffect, useRef } from 'react';
 import { useNotificationStore, type Notification } from '../store/notificationStore';
 import { X, CheckCircle2, AlertCircle, Info, Inbox, SendHorizonal } from 'lucide-react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '../firebase';
+import {
+  markCapsuleNoticeRead,
+  watchCapsuleImportNotices,
+} from '../services/capsuleService';
 
 const ICONS: Record<string, React.ReactNode> = {
   success: <CheckCircle2 className="w-4 h-4 text-emerald-400" />,
@@ -81,8 +87,33 @@ const ToastItem: React.FC<{ notif: Notification }> = ({ notif }) => {
 };
 
 export const NotificationSystem: React.FC = () => {
-  const { notifications } = useNotificationStore();
+  const { notifications, addNotification } = useNotificationStore();
   const visible = notifications.slice(0, 5);
+
+  // Escuta assimilações de cápsulas que tu criaste
+  useEffect(() => {
+    let unsubNotices: (() => void) | undefined;
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      unsubNotices?.();
+      unsubNotices = undefined;
+      if (!user) return;
+      unsubNotices = watchCapsuleImportNotices(user.uid, (notice) => {
+        const label = notice.titleHint?.trim() || 'a tua cápsula';
+        const count = notice.itemCount > 1 ? ` (${notice.itemCount} memórias)` : '';
+        addNotification({
+          type: 'received',
+          title: 'Cápsula assimilada',
+          message: `Alguém importou “${label}”${count}`,
+          isPulsing: true,
+        });
+        void markCapsuleNoticeRead(notice.id).catch(() => undefined);
+      });
+    });
+    return () => {
+      unsubAuth();
+      unsubNotices?.();
+    };
+  }, [addNotification]);
 
   return (
     <div className="fixed top-4 right-4 z-[200] flex flex-col gap-2 w-72 pointer-events-none">

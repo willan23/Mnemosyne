@@ -2,6 +2,7 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Lock, Zap } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { isFreeFirstMode } from '../config/monetization';
 
 interface PaywallProps {
     isOpen: boolean;
@@ -21,6 +22,8 @@ export const Paywall: React.FC<PaywallProps> = ({
     description
 }) => {
     const navigate = useNavigate();
+
+    if (isFreeFirstMode) return null;
 
     const handleUpgrade = () => {
         navigate('/pricing');
@@ -90,7 +93,7 @@ export const Paywall: React.FC<PaywallProps> = ({
                                     </li>
                                     <li className="flex items-center gap-2">
                                         <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
-                                        <span>50GB de armazenamento</span>
+                                        <span>Armazenamento ampliado</span>
                                     </li>
                                     <li className="flex items-center gap-2">
                                         <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />

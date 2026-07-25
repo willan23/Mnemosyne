@@ -1,0 +1,32 @@
+- generic [ref=e67]:
+  - generic [ref=e68]:
+    - button "Voltar" [ref=e69]:
+      - img [ref=e70]
+      - text: Voltar
+    - generic [ref=e72]:
+      - img [ref=e74]
+      - generic [ref=e82]: Mnemosyne
+  - generic [ref=e83]:
+    - generic [ref=e84]:
+      - heading "Entrar com Zero-Knowledge" [level=2] [ref=e85]
+      - paragraph [ref=e86]: Autentica a tua identidade e desbloqueia a chave local apenas em memória. A seed nunca sai deste dispositivo.
+    - generic [ref=e89]: identidade + chave local
+    - generic [ref=e91]:
+      - generic [ref=e92]:
+        - generic:
+          - img
+        - textbox "Email" [ref=e93]
+      - generic [ref=e94]:
+        - generic:
+          - img
+        - textbox "Password" [ref=e95]
+        - button [ref=e97]:
+          - img [ref=e98]
+      - generic [ref=e101]:
+        - generic:
+          - img
+        - textbox "12 palavras da tua chave soberana" [ref=e102]
+      - button "Desbloquear mente" [ref=e103] [cursor=pointer]:
+        - img [ref=e104]
+        - text: Desbloquear mente
+    - button "Voltar ao login por email" [ref=e108]

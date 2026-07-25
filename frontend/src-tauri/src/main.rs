@@ -5,9 +5,15 @@
 
 fn main() {
     tauri::Builder::default()
-        .setup(|_app| {
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .setup(|app| {
             // Mnemosyne Desktop Shell initialization
             // Hotkeys, Tray icon, and Deep links can be configured here
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![])

@@ -38,4 +38,25 @@ export const auth = createPersistentAuth();
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 
+/**
+ * App Check opcional — ativa só com site key configurada.
+ * Protege Functions/Firestore de abuso automatizado sem bloquear dev local.
+ * Docs: https://firebase.google.com/docs/app-check
+ */
+export async function initAppCheckIfConfigured(): Promise<boolean> {
+  const siteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY as string | undefined;
+  if (!siteKey || typeof window === 'undefined') return false;
+  try {
+    const { initializeAppCheck, ReCaptchaV3Provider } = await import('firebase/app-check');
+    initializeAppCheck(app, {
+      provider: new ReCaptchaV3Provider(siteKey),
+      isTokenAutoRefreshEnabled: true,
+    });
+    return true;
+  } catch (error) {
+    console.warn('App Check não inicializado:', error);
+    return false;
+  }
+}
+
 export default app;

@@ -123,11 +123,11 @@ describe('firestore security rules', () => {
     await assertSucceeds(getDoc(doc(bobDb, 'sessions', 'memory-1')))
   })
 
-  it('blocks Free attachments but allows paid active attachment access', async () => {
+  it('allows attachments during Free-first while paid entitlement rules stay seeded', async () => {
     const aliceDb = testEnv.authenticatedContext('alice').firestore()
     const proDb = testEnv.authenticatedContext('pro-user').firestore()
 
-    await assertFails(setDoc(doc(aliceDb, 'sessions', 'free-attachment'), memory('alice', {
+    await assertSucceeds(setDoc(doc(aliceDb, 'sessions', 'free-attachment'), memory('alice', {
       attachments: [{ name: 'voice.wav', size: 123 }],
     })))
     await assertSucceeds(setDoc(doc(proDb, 'sessions', 'pro-attachment'), memory('pro-user', {
@@ -188,5 +188,120 @@ describe('firestore security rules', () => {
 
     await assertFails(deleteDoc(doc(bobDb, 'trustedDevices', 'alice-device')))
     await assertSucceeds(deleteDoc(doc(aliceDb, 'trustedDevices', 'alice-device')))
+  })
+
+  it('accepts encrypted capsule shares and rejects plaintext payloads', async () => {
+    const aliceDb = testEnv.authenticatedContext('alice').firestore()
+    const bobDb = testEnv.authenticatedContext('bob').firestore()
+    const anonDb = testEnv.unauthenticatedContext().firestore()
+
+    const encryptedShare = {
+      sessionId: 'memory-1',
+      encrypted: true,
+      ciphertext: 'base64-ciphertext-payload-long-enough',
+      titleHint: 'Memória',
+      pack: false,
+      itemCount: 1,
+      createdAt: 1,
+      expiresAt: 999999,
+      views: 0,
+      importCount: 0,
+      uid: 'alice',
+    }
+
+    await assertSucceeds(setDoc(doc(aliceDb, 'shares', 'cap-1'), encryptedShare))
+    await assertSucceeds(getDoc(doc(anonDb, 'shares', 'cap-1')))
+
+    await assertFails(setDoc(doc(aliceDb, 'shares', 'cap-plain'), {
+      ...encryptedShare,
+      encrypted: false,
+      text: 'should not be allowed',
+    }))
+
+    await assertFails(setDoc(doc(aliceDb, 'shares', 'cap-missing-cipher'), {
+      sessionId: 'memory-1',
+      encrypted: true,
+      views: 0,
+      importCount: 0,
+      uid: 'alice',
+    }))
+
+    await assertFails(setDoc(doc(bobDb, 'shares', 'cap-spoof'), {
+      ...encryptedShare,
+      uid: 'alice',
+    }))
+
+    await assertSucceeds(updateDoc(doc(anonDb, 'shares', 'cap-1'), { views: 1 }))
+    await assertSucceeds(updateDoc(doc(bobDb, 'shares', 'cap-1'), {
+      importCount: 1,
+      lastImportedAt: 2,
+    }))
+    await assertFails(updateDoc(doc(bobDb, 'shares', 'cap-1'), {
+      ciphertext: 'tampered',
+    }))
+    await assertFails(deleteDoc(doc(bobDb, 'shares', 'cap-1')))
+    await assertSucceeds(deleteDoc(doc(aliceDb, 'shares', 'cap-1')))
+  })
+
+  it('allows friend requests between distinct users only', async () => {
+    const aliceDb = testEnv.authenticatedContext('alice').firestore()
+    const bobDb = testEnv.authenticatedContext('bob').firestore()
+
+    const request = {
+      fromUid: 'alice',
+      toUid: 'bob',
+      fromLabel: 'Alice',
+      toLabel: 'Bob',
+      status: 'pending',
+      createdAt: 1,
+      updatedAt: 1,
+    }
+
+    await assertSucceeds(setDoc(doc(aliceDb, 'friendRequests', 'fr-1'), request))
+    await assertFails(setDoc(doc(aliceDb, 'friendRequests', 'fr-self'), {
+      ...request,
+      toUid: 'alice',
+    }))
+    await assertSucceeds(updateDoc(doc(bobDb, 'friendRequests', 'fr-1'), {
+      status: 'accepted',
+      updatedAt: 2,
+    }))
+  })
+
+  it('enforces E2E transmission relay fields and recipient status transitions', async () => {
+    const aliceDb = testEnv.authenticatedContext('alice').firestore()
+    const bobDb = testEnv.authenticatedContext('bob').firestore()
+
+    const capsule = {
+      senderId: 'alice',
+      recipientId: 'bob',
+      encryptedKey: 'rsa-wrapped-key',
+      encryptedPayload: 'aes-ciphertext',
+      payloadIv: 'iv-base64',
+      hasAttachment: false,
+      attachmentName: null,
+      status: 'sent',
+      timestamp: 1,
+    }
+
+    await assertSucceeds(setDoc(doc(aliceDb, 'transmissions', 'tx-1'), capsule))
+    await assertFails(setDoc(doc(aliceDb, 'transmissions', 'tx-self'), {
+      ...capsule,
+      recipientId: 'alice',
+    }))
+    await assertFails(setDoc(doc(aliceDb, 'transmissions', 'tx-extra'), {
+      ...capsule,
+      channel: 'relay',
+    }))
+
+    await assertSucceeds(updateDoc(doc(bobDb, 'transmissions', 'tx-1'), {
+      status: 'received',
+      receivedAt: 2,
+    }))
+    // Sender cannot mutate status after delivery
+    await assertFails(updateDoc(doc(aliceDb, 'transmissions', 'tx-1'), {
+      status: 'failed',
+      receivedAt: 3,
+    }))
   })
 })

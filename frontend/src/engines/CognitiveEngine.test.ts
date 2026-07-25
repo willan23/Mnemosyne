@@ -86,4 +86,47 @@ describe('CognitiveEngine autolink and graph behavior', () => {
       vi.useRealTimers();
     }
   });
+
+  it('adds syndrome density and repair candidates to orphan memories', () => {
+    vi.setSystemTime(new Date('2026-05-12T12:00:00Z'));
+    const engine = new CognitiveEngine();
+
+    try {
+      const anomalies = engine.detectAnomalies([
+        memory({ id: 'orphan', embedding: [1, 0], connections: [], timestamp: Date.now() }),
+        memory({ id: 'candidate', embedding: [0.9, 0.1], connections: [], timestamp: Date.now() }),
+        memory({ id: 'distant', embedding: [0, 1], connections: [], timestamp: Date.now() }),
+      ]);
+
+      expect(anomalies).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          memoryId: 'orphan',
+          issue: 'Memória Órfã Recente',
+          relatedMemoryId: 'candidate',
+          severity: 'medium',
+        }),
+      ]));
+      const orphan = anomalies.find((item) => item.memoryId === 'orphan');
+      expect(orphan?.confidence).toBeGreaterThan(0.9);
+      expect(orphan?.syndromeDensity).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('flags low-similarity declared links as weak connections', () => {
+    const engine = new CognitiveEngine();
+
+    const anomalies = engine.detectAnomalies([
+      memory({ id: 'a', embedding: [1, 0], connections: ['b'] }),
+      memory({ id: 'b', embedding: [0, 1], connections: ['a'] }),
+    ]);
+
+    expect(anomalies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        memoryId: 'a',
+        issue: 'Ligações Fracas',
+      }),
+    ]));
+  });
 });

@@ -3,6 +3,19 @@ import type { MemoryObject, CelestialType, CognitiveGraph, GraphEdge, GraphNode 
 
 const SIMILARITY_THRESHOLD = 0.55;
 const MAX_CONNECTIONS = 7;
+const WEAK_LINK_THRESHOLD = 0.32;
+const REPAIR_LINK_THRESHOLD = 0.4;
+const DUPLICATE_THRESHOLD = 0.96;
+
+export interface CognitiveAnomaly {
+  memoryId: string;
+  issue: string;
+  suggestion: string;
+  severity: 'low' | 'medium' | 'high';
+  confidence: number;
+  syndromeDensity: number;
+  relatedMemoryId?: string;
+}
 
 export class CognitiveEngine {
   private static instance: CognitiveEngine;
@@ -270,53 +283,153 @@ export class CognitiveEngine {
     return meaningful.join(' ');
   }
 
-  // 🧠 CORREÇÃO DE ERROS COGNITIVOS (Ising-inspired)
-  detectAnomalies(memories: MemoryObject[]): Array<{ memoryId: string; issue: string; suggestion: string }> {
-    const anomalies: Array<{ memoryId: string; issue: string; suggestion: string }> = [];
+  // Correcao de erros cognitivos inspirada no fluxo Ising:
+  // detectar sindromes, propor pre-correcao local e deixar a decisao final explicita.
+  detectAnomalies(memories: MemoryObject[]): CognitiveAnomaly[] {
+    const anomalies: CognitiveAnomaly[] = [];
     if (memories.length < 2) return anomalies;
 
     const timeThreshold = Date.now() - 30 * 24 * 60 * 60 * 1000; // 30 days old
+    const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
 
     for (const mem of memories) {
       const isOld = (mem.timestamp || 0) < timeThreshold;
-      const isIsolated = mem.connections.length === 0;
-      
-      // Memory decay / isolation (Síndrome)
+      const existingConnections = mem.connections.filter((connId) => memoryById.has(connId));
+      const brokenLinks = mem.connections.filter((connId) => !memoryById.has(connId));
+      const isIsolated = existingConnections.length === 0;
+      const weakLinks = existingConnections.filter((connId) => {
+        const target = memoryById.get(connId);
+        if (!target || mem.embedding.length === 0 || target.embedding.length === 0) return false;
+        return embeddingService.cosineSimilarity(mem.embedding, target.embedding) < WEAK_LINK_THRESHOLD;
+      });
+      const excludedRepairIds = new Set([mem.id, ...existingConnections]);
+      const repairCandidate = this.findBestRepairCandidate(mem, memories, excludedRepairIds);
+      const duplicateCandidate = this.findBestRepairCandidate(
+        mem,
+        memories,
+        excludedRepairIds,
+        DUPLICATE_THRESHOLD
+      );
+      const syndromeDensity = this.computeSyndromeDensity({
+        brokenLinks: brokenLinks.length,
+        weakLinks: weakLinks.length,
+        isIsolated,
+        isOld,
+        hasRepairCandidate: !!repairCandidate,
+        hasDuplicateCandidate: !!duplicateCandidate,
+      });
+
       if (isIsolated && isOld) {
         anomalies.push({
           memoryId: mem.id,
           issue: 'Memória Isolada e Antiga',
-          suggestion: 'Arquivar'
+          suggestion: repairCandidate
+            ? `Arquivar ou ligar a ${repairCandidate.id}`
+            : 'Arquivar',
+          severity: repairCandidate ? 'medium' : 'high',
+          confidence: repairCandidate ? repairCandidate.similarity : 0.72,
+          syndromeDensity,
         });
       } else if (isIsolated && !isOld) {
-        // Try to find a forced connection
-        const sim = memories
-          .filter(m => m.id !== mem.id && m.embedding?.length > 0 && mem.embedding?.length > 0)
-          .map(m => ({ id: m.id, sim: embeddingService.cosineSimilarity(mem.embedding, m.embedding) }))
-          .sort((a, b) => b.sim - a.sim)[0];
-        
-        if (sim && sim.sim > 0.4) {
+        if (repairCandidate) {
           anomalies.push({
             memoryId: mem.id,
             issue: 'Memória Órfã Recente',
-            suggestion: `Ligar a ${sim.id}`
+            suggestion: `Ligar a ${repairCandidate.id}`,
+            severity: repairCandidate.similarity > SIMILARITY_THRESHOLD ? 'medium' : 'low',
+            confidence: repairCandidate.similarity,
+            syndromeDensity,
+            relatedMemoryId: repairCandidate.id,
           });
         }
       }
 
-      // Broken links
-      const brokenLinks = mem.connections.filter(cId => !memories.find(m => m.id === cId));
       if (brokenLinks.length > 0) {
         anomalies.push({
           memoryId: mem.id,
           issue: 'Ligações Quebradas',
-          suggestion: 'Reorganizar/Limpar'
+          suggestion: `Remover ${brokenLinks.length} ligação(ões) inválida(s)`,
+          severity: 'high',
+          confidence: Math.min(1, 0.68 + brokenLinks.length * 0.08),
+          syndromeDensity,
+        });
+      }
+
+      if (weakLinks.length > 0) {
+        anomalies.push({
+          memoryId: mem.id,
+          issue: 'Ligações Fracas',
+          suggestion: `Revalidar ${weakLinks.length} ligação(ões) com baixa similaridade`,
+          severity: weakLinks.length > 2 ? 'medium' : 'low',
+          confidence: Math.min(1, 0.46 + weakLinks.length * 0.1),
+          syndromeDensity,
+        });
+      }
+
+      if (duplicateCandidate) {
+        anomalies.push({
+          memoryId: mem.id,
+          issue: 'Possível Duplicado',
+          suggestion: `Comparar/fundir com ${duplicateCandidate.id}`,
+          severity: 'low',
+          confidence: duplicateCandidate.similarity,
+          syndromeDensity,
+          relatedMemoryId: duplicateCandidate.id,
         });
       }
     }
 
-    return anomalies;
+    return anomalies.sort((a, b) => (
+      severityRank(b.severity) - severityRank(a.severity) ||
+      b.syndromeDensity - a.syndromeDensity ||
+      b.confidence - a.confidence
+    ));
   }
+
+  private findBestRepairCandidate(
+    memory: MemoryObject,
+    memories: MemoryObject[],
+    excludedIds: Set<string>,
+    minSimilarity = REPAIR_LINK_THRESHOLD
+  ): { id: string; similarity: number } | null {
+    if (memory.embedding.length === 0) return null;
+
+    const candidate = memories
+      .filter((other) => !excludedIds.has(other.id) && other.embedding.length > 0)
+      .map((other) => ({
+        id: other.id,
+        similarity: embeddingService.cosineSimilarity(memory.embedding, other.embedding),
+      }))
+      .filter((other) => other.similarity >= minSimilarity)
+      .sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id))[0];
+
+    return candidate || null;
+  }
+
+  private computeSyndromeDensity(input: {
+    brokenLinks: number;
+    weakLinks: number;
+    isIsolated: boolean;
+    isOld: boolean;
+    hasRepairCandidate: boolean;
+    hasDuplicateCandidate: boolean;
+  }): number {
+    const score =
+      input.brokenLinks * 0.24 +
+      input.weakLinks * 0.14 +
+      (input.isIsolated ? 0.28 : 0) +
+      (input.isOld ? 0.16 : 0) +
+      (input.hasRepairCandidate ? 0.1 : 0) +
+      (input.hasDuplicateCandidate ? 0.08 : 0);
+
+    return Math.min(1, Number(score.toFixed(3)));
+  }
+}
+
+function severityRank(severity: CognitiveAnomaly['severity']): number {
+  if (severity === 'high') return 3;
+  if (severity === 'medium') return 2;
+  return 1;
 }
 
 export const cognitiveEngine = CognitiveEngine.getInstance();

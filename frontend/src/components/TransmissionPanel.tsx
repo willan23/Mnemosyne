@@ -1,15 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Send, Lock, Zap, ShieldAlert, Paperclip, FileText, Radar, Fingerprint, Inbox, Search, CheckCircle2, Radio, PlugZap, Users, UserPlus, Check, XCircle } from 'lucide-react';
+import { X, Send, Lock, Zap, ShieldAlert, Paperclip, FileText, Radar, Fingerprint, Inbox, Search, CheckCircle2, Radio, PlugZap, Users, UserPlus, Check, XCircle, Loader2 } from 'lucide-react';
 import { db, auth } from '../firebase';
-import { collection, addDoc, query, where, onSnapshot, doc, setDoc, serverTimestamp, getDoc, getDocs, limit, updateDoc, type Unsubscribe } from 'firebase/firestore';
-import { getOrCreateIdentity, importPublicKey, rsaEncrypt, rsaDecrypt, encryptBytesAesGcm, sha256Hex } from '../utils/crypto';
+import { collection, addDoc, query, where, onSnapshot, doc, setDoc, getDoc, getDocs, limit, updateDoc, type Unsubscribe } from 'firebase/firestore';
+import { importPublicKey, rsaEncrypt, rsaDecrypt, encryptBytesAesGcm, sha256Hex } from '../utils/crypto';
 import { getRtcConfiguration } from '../services/rtcConfig';
+import { publishCommsIdentity, resetAndPublishCommsIdentity } from '../services/commsIdentity';
+import {
+    buildFriendRequestPayload,
+    buildP2PTransmissionMessage,
+    buildRelayTransmissionPayload,
+} from '../services/commsService';
+import { useUniverseMemories } from '../hooks/useUniverseMemories';
+import { useUniverseStore } from '../store/universeStore';
+import { cognitiveEngine } from '../engines/CognitiveEngine';
+import { v4 as uuidv4 } from 'uuid';
+import type { Attachment } from '../types/attachments';
+import type { MemoryObject } from '../types/universe';
+import toast from 'react-hot-toast';
+
 
 export interface TransmissionDraft {
     memoryId?: string;
     title?: string;
     text: string;
+    /** true se o texto for um pack multi-memória */
+    isPack?: boolean;
+    packCount?: number;
 }
 
 interface TransmissionPanelProps {
@@ -73,12 +90,20 @@ type EncryptedTransmissionData = Partial<TransmissionEnvelope> & {
 
 type TransmissionStatus = 'sent' | 'received' | 'failed' | 'p2p';
 
+interface DecryptedAttachment {
+    name: string;
+    type: string;
+    size: number;
+    dataUrl: string;
+}
+
 type InboxMessage = EncryptedTransmissionData & {
     id: string;
     senderId: string;
     timestamp: number;
     status: TransmissionStatus;
     decryptedMessage: string;
+    decryptedAttachment?: DecryptedAttachment | null;
 };
 
 type OutboxMessage = EncryptedTransmissionData & {
@@ -88,7 +113,210 @@ type OutboxMessage = EncryptedTransmissionData & {
     status: TransmissionStatus;
 };
 
+const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return window.btoa(binary);
+};
+
+const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
+    const binary = window.atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+};
+
+const importAesKeyFromBase64 = async (base64Key: string): Promise<CryptoKey> => (
+    window.crypto.subtle.importKey(
+        'raw',
+        base64ToArrayBuffer(base64Key),
+        { name: 'AES-GCM' },
+        false,
+        ['decrypt']
+    )
+);
+
+const decryptEnvelope = async (
+    data: EncryptedTransmissionData,
+    privateKey: CryptoKey
+): Promise<{ message: string; attachment: DecryptedAttachment | null }> => {
+    if (data.encryptedKey && data.encryptedPayload && data.payloadIv) {
+        const rawAesKeyBase64 = await rsaDecrypt(data.encryptedKey, privateKey);
+        const aesKey = await importAesKeyFromBase64(rawAesKeyBase64);
+        const plaintextBytes = await window.crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: new Uint8Array(base64ToArrayBuffer(data.payloadIv)) },
+            aesKey,
+            base64ToArrayBuffer(data.encryptedPayload)
+        );
+        const payload = JSON.parse(new TextDecoder().decode(plaintextBytes));
+        let decryptedAttachment: DecryptedAttachment | null = null;
+        if (payload.attachment?.iv && payload.attachment?.data) {
+            const attachmentBytes = await window.crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: new Uint8Array(base64ToArrayBuffer(payload.attachment.iv)) },
+                aesKey,
+                base64ToArrayBuffer(payload.attachment.data)
+            );
+            const type = payload.attachment.type || 'application/octet-stream';
+            decryptedAttachment = {
+                name: payload.attachment.name || 'mnemosyne-attachment',
+                type,
+                size: payload.attachment.size || attachmentBytes.byteLength,
+                dataUrl: `data:${type};base64,${arrayBufferToBase64(attachmentBytes)}`,
+            };
+        }
+        return {
+            message: payload.message || '[Transmissão sem texto]',
+            attachment: decryptedAttachment,
+        };
+    }
+
+    if (data.encryptedData) {
+        return {
+            message: await rsaDecrypt(data.encryptedData, privateKey),
+            attachment: null,
+        };
+    }
+
+    return {
+        message: 'Formato de transmissão desconhecido.',
+        attachment: null,
+    };
+};
+
 export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, onClose, mnemonic, initialDraft }) => {
+    const { saveMemory } = useUniverseMemories();
+    const { memories, addMemory, setIsLoading } = useUniverseStore();
+    const [importingMsgId, setImportingMsgId] = useState<string | null>(null);
+
+    const parseSharedMemory = (messageText: string) => {
+        const lines = messageText.split('\n');
+        const headerPrefix = "Memória partilhada: ";
+        let title = 'Memória Partilhada';
+        let originalId: string | undefined = undefined;
+        let textStartLine = 1;
+        
+        const firstLine = lines[0] || '';
+        if (firstLine.startsWith(headerPrefix)) {
+            title = firstLine.slice(headerPrefix.length).trim();
+        } else if (firstLine.startsWith("Shared memory: ")) {
+            title = firstLine.slice("Shared memory: ".length).trim();
+        } else {
+            return {
+                title: messageText.slice(0, 40).trim() || 'Pensamento Transmitido',
+                text: messageText,
+            };
+        }
+        
+        const secondLine = lines[1] || '';
+        if (secondLine.startsWith("ID: ")) {
+            originalId = secondLine.slice(4).trim();
+            textStartLine = 2;
+        }
+        
+        let textStartIndex = textStartLine;
+        while (textStartIndex < lines.length && lines[textStartIndex].trim() === '') {
+            textStartIndex++;
+        }
+        
+        const text = lines.slice(textStartIndex).join('\n').trim();
+        return {
+            title,
+            text: text || messageText,
+            originalId,
+        };
+    };
+
+    const handleImportMemory = async (msgId: string, msgText: string, msgAttachment: DecryptedAttachment | null) => {
+        if (!auth.currentUser) return;
+        setImportingMsgId(msgId);
+        setIsLoading(true);
+        try {
+            const parsed = parseSharedMemory(msgText);
+            const { isCapsulePackText, decodeCapsulePack } = await import('../services/capsuleService');
+            const { importCapsuleAsMemory } = await import('../services/learningService');
+
+            // Pack multi-memória via Comms (mesmo formato das cápsulas públicas)
+            if (isCapsulePackText(parsed.text)) {
+                const pack = decodeCapsulePack(parsed.text);
+                if (!pack?.items.length) {
+                    throw new Error('Pack vazio ou inválido.');
+                }
+                const result = await importCapsuleAsMemory(
+                    auth.currentUser.uid,
+                    {
+                        text: parsed.text,
+                        titleHint: parsed.title,
+                        shareId: null,
+                        ownerUid: null,
+                    },
+                    [],
+                );
+                // Sync store for immediate Universe feedback
+                for (const mid of result.memoryIds) {
+                    // memories will refresh via firestore listeners on sessions
+                    void mid;
+                }
+                alert(
+                    result.importedCount > 1
+                        ? `${result.importedCount} memórias do pack assimiladas no teu Universo!`
+                        : 'Memória assimilada com sucesso no teu Universo!',
+                );
+                return;
+            }
+
+            const exists = memories.some(m => m.text === parsed.text || (parsed.originalId && m.id === parsed.originalId));
+            if (exists) {
+                alert('Esta memória (ou uma idêntica) já existe no seu Universo.');
+                setIsLoading(false);
+                setImportingMsgId(null);
+                return;
+            }
+            
+            const result = await cognitiveEngine.processMemory(parsed.text, memories);
+            
+            let attachments: Attachment[] = [];
+            if (msgAttachment) {
+                attachments = [{
+                    url: msgAttachment.dataUrl,
+                    name: msgAttachment.name,
+                    type: msgAttachment.type.startsWith('image/') ? 'image' : 
+                          msgAttachment.type.startsWith('audio/') ? 'audio' :
+                          msgAttachment.type.startsWith('video/') ? 'video' : 'document',
+                    size: msgAttachment.size,
+                }];
+            }
+            
+            const newMemory: MemoryObject = {
+                id: parsed.originalId || uuidv4(),
+                text: parsed.text,
+                title: parsed.title,
+                celestialType: result.celestialType,
+                position: result.position,
+                embedding: result.embedding,
+                connections: result.connections,
+                semanticClusterId: result.semanticClusterId,
+                importance: result.importance,
+                timestamp: Date.now(),
+                updatedAt: Date.now(),
+                uid: auth.currentUser.uid,
+                scale: 1,
+                attachments,
+                processingMethod: 'universe+local-embedding',
+            };
+            
+            addMemory(newMemory);
+            await saveMemory(newMemory);
+            alert('Memória assimilada com sucesso no seu Universo!');
+        } catch (error) {
+            console.error('Failed to import memory:', error);
+            alert('Não foi possível importar a memória. Erro no processamento cognitivo.');
+        } finally {
+            setIsLoading(false);
+            setImportingMsgId(null);
+        }
+    };
+
     const [activeTab, setActiveTab] = useState<'compose' | 'contacts' | 'inbox' | 'sent' | 'identity'>('compose');
     const [inboxMsgs, setInboxMsgs] = useState<InboxMessage[]>([]);
     const [outboxMsgs, setOutboxMsgs] = useState<OutboxMessage[]>([]);
@@ -111,11 +339,24 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
     
     // Criptografia
     const [myIdentity, setMyIdentity] = useState<{ publicKey: CryptoKey, privateKey: CryptoKey, pemPublic: string } | null>(null);
+    const [identityError, setIdentityError] = useState<string | null>(null);
+    const [isRepairingIdentity, setIsRepairingIdentity] = useState(false);
     const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelRef = useRef<RTCDataChannel | null>(null);
     const p2pUnsubscribersRef = useRef<Unsubscribe[]>([]);
 
     const formatMemoryDraft = (draft: TransmissionDraft): string => {
+        // Packs já vêm codificados (CAPSULE_PACK_MARKER) — enviar raw para importação completa
+        if (draft.isPack || draft.text.trimStart().startsWith('[[MNEMOSYNE_CAPSULE_PACK_V1]]')) {
+            const header = draft.title?.trim() || 'Pack de memórias Mnemosyne';
+            return [
+                `Memória partilhada: ${header}`,
+                draft.memoryId ? `ID: ${draft.memoryId}` : null,
+                draft.packCount ? `Pack: ${draft.packCount} itens` : null,
+                '',
+                draft.text,
+            ].filter((line): line is string => line !== null).join('\n');
+        }
         const title = draft.title?.trim() || 'Memória Mnemosyne';
         return [
             `Memória partilhada: ${title}`,
@@ -134,30 +375,6 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
         setActiveTab('compose');
     };
 
-    const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
-        const bytes = new Uint8Array(buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        return window.btoa(binary);
-    };
-
-    const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
-        const binary = window.atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-    };
-
-    const importAesKeyFromBase64 = async (base64Key: string): Promise<CryptoKey> => (
-        window.crypto.subtle.importKey(
-            'raw',
-            base64ToArrayBuffer(base64Key),
-            { name: 'AES-GCM' },
-            false,
-            ['decrypt']
-        )
-    );
-
     const getTransmissionStatusLabel = (status: TransmissionStatus) => {
         if (status === 'p2p') return 'P2P aberto';
         if (status === 'received') return 'Recebida';
@@ -170,26 +387,6 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
         if (status === 'received') return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20';
         if (status === 'failed') return 'bg-rose-500/10 text-rose-300 border-rose-500/20';
         return 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20';
-    };
-
-    const decryptEnvelope = async (data: EncryptedTransmissionData, privateKey: CryptoKey): Promise<string> => {
-        if (data.encryptedKey && data.encryptedPayload && data.payloadIv) {
-            const rawAesKeyBase64 = await rsaDecrypt(data.encryptedKey, privateKey);
-            const aesKey = await importAesKeyFromBase64(rawAesKeyBase64);
-            const plaintextBytes = await window.crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv: new Uint8Array(base64ToArrayBuffer(data.payloadIv)) },
-                aesKey,
-                base64ToArrayBuffer(data.encryptedPayload)
-            );
-            const payload = JSON.parse(new TextDecoder().decode(plaintextBytes));
-            return payload.message || '[Transmissão sem texto]';
-        }
-
-        if (data.encryptedData) {
-            return rsaDecrypt(data.encryptedData, privateKey);
-        }
-
-        return 'Formato de transmissão desconhecido.';
     };
 
     const clearP2PSubscriptions = () => {
@@ -282,14 +479,15 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
             try {
                 const payload = JSON.parse(event.data) as EncryptedTransmissionData & { type?: string };
                 if (payload.type !== 'mnemosyne-transmission') return;
-                const decryptedMessage = await decryptEnvelope(payload, myIdentity.privateKey);
+                const decrypted = await decryptEnvelope(payload, myIdentity.privateKey);
                 setInboxMsgs((current) => [{
                     id: `p2p-${Date.now()}`,
                     ...payload,
                     timestamp: payload.timestamp || Date.now(),
                     senderId: payload.senderId || 'desconhecido',
                     status: 'p2p',
-                    decryptedMessage,
+                    decryptedMessage: decrypted.message,
+                    decryptedAttachment: decrypted.attachment,
                 }, ...current]);
             } catch (error) {
                 console.error('P2P message decrypt failed', error);
@@ -320,30 +518,40 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
 
     useEffect(() => {
         if (isOpen) {
-            getOrCreateIdentity(auth.currentUser?.uid ?? 'session', mnemonic).then(async identity => {
+            const user = auth.currentUser;
+            setIdentityError(null);
+            setMyIdentity(null);
+            if (!user) {
+                setIdentityError('Entra na tua conta para ativar Comms.');
+                return;
+            }
+
+            publishCommsIdentity(user, mnemonic).then((identity) => {
                 setMyIdentity(identity);
-                const user = auth.currentUser;
-                if (user) {
-                    const emailHash = user.email ? await sha256Hex(user.email) : null;
-                    await setDoc(doc(db, 'users', user.uid), {
-                        publicKeyPem: identity.pemPublic,
-                        publicKeyUpdatedAt: serverTimestamp(),
-                    }, { merge: true });
-                    await setDoc(doc(db, 'publicProfiles', user.uid), {
-                        uid: user.uid,
-                        displayName: user.displayName || user.email?.split('@')[0] || 'Mnemosyne User',
-                        emailHash,
-                        publicKeyPem: identity.pemPublic,
-                        publicKeyUpdatedAt: serverTimestamp(),
-                    }, { merge: true });
-                }
             }).catch((error) => {
                 console.error('Identity unlock failed', error);
-                alert(error instanceof Error ? error.message : 'Não foi possível desbloquear a identidade local.');
-                onClose();
+                setIdentityError(error instanceof Error ? error.message : 'Não foi possível desbloquear a identidade local.');
             });
         }
-    }, [isOpen, mnemonic, onClose]);
+    }, [isOpen, mnemonic]);
+
+    const handleRepairIdentity = async () => {
+        const user = auth.currentUser;
+        if (!user) return;
+        if (!confirm('Regenerar a identidade local de Comms neste dispositivo? Mensagens antigas cifradas para a identidade anterior podem deixar de abrir.')) return;
+
+        setIsRepairingIdentity(true);
+        setIdentityError(null);
+        try {
+            const identity = await resetAndPublishCommsIdentity(user, mnemonic);
+            setMyIdentity(identity);
+            setActiveTab('identity');
+        } catch (error) {
+            setIdentityError(error instanceof Error ? error.message : 'Não foi possível regenerar a identidade de Comms.');
+        } finally {
+            setIsRepairingIdentity(false);
+        }
+    };
 
     useEffect(() => {
         if (!isOpen) {
@@ -372,11 +580,14 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
         const unsubscribe = onSnapshot(q, async (snapshot) => {
             const msgs = await Promise.all(snapshot.docs.map(async (transmissionDoc) => {
                 const data = transmissionDoc.data() as EncryptedTransmissionData;
-                let decrypted = "Erro a desencriptar. Chave privada inválida?";
+                let decryptedMessage = "Erro a desencriptar. Chave privada inválida?";
+                let decryptedAttachment: DecryptedAttachment | null = null;
                 let nextStatus: TransmissionStatus = data.status || 'sent';
                 try {
                     if ((data.encryptedPayload || data.encryptedData) && myIdentity.privateKey) {
-                        decrypted = await decryptEnvelope(data, myIdentity.privateKey);
+                        const decrypted = await decryptEnvelope(data, myIdentity.privateKey);
+                        decryptedMessage = decrypted.message;
+                        decryptedAttachment = decrypted.attachment;
                         if (data.status === 'sent') {
                             nextStatus = 'received';
                             await updateDoc(doc(db, 'transmissions', transmissionDoc.id), {
@@ -403,7 +614,8 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                     senderId: data.senderId || 'desconhecido',
                     timestamp: data.timestamp || Date.now(),
                     status: nextStatus,
-                    decryptedMessage: decrypted,
+                    decryptedMessage,
+                    decryptedAttachment,
                 };
             }));
             msgs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -574,20 +786,17 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
 
         setIsRequestingContact(true);
         try {
-            const now = Date.now();
-            await addDoc(collection(db, 'friendRequests'), {
+            const payload = buildFriendRequestPayload({
                 fromUid: auth.currentUser.uid,
                 toUid: resolvedRecipient.uid,
                 fromLabel: auth.currentUser.displayName || auth.currentUser.email || auth.currentUser.uid,
                 toLabel: resolvedRecipient.label,
-                status: 'pending',
-                createdAt: now,
-                updatedAt: now,
             });
-            alert('Pedido de contacto enviado.');
+            await addDoc(collection(db, 'friendRequests'), payload);
+            toast.success('Pedido de contacto enviado.');
         } catch (error) {
             console.error('Contact request failed:', error);
-            alert('Não foi possível enviar o pedido de contacto.');
+            toast.error(error instanceof Error ? error.message : 'Não foi possível enviar o pedido de contacto.');
         } finally {
             setIsRequestingContact(false);
         }
@@ -687,54 +896,51 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
 
     const handleSend = async () => {
         if (!auth.currentUser || (!message.trim() && !attachment) || !recipientId.trim() || !recipientKeyPem.trim() || !myIdentity) return;
-        if (recipientId.trim() === auth.currentUser.uid) {
-            alert('Escolhe outro utilizador como destinatário. A transmissão para ti próprio foi removida.');
-            return;
-        }
         if (attachment && attachment.size > 750 * 1024) {
-            alert('Anexo demasiado grande para transmissão Firestore direta. Usa um ficheiro até 750KB nesta versão.');
+            toast.error('Anexo demasiado grande para relay Firestore. Usa um ficheiro até 750KB.');
             return;
         }
-        
+
         setIsSending(true);
         setHandshakeMode(true);
-        
+
         try {
             const encryptedEnvelope = await buildEncryptedEnvelope();
-            const payload = {
+            const base = {
                 senderId: auth.currentUser.uid,
                 recipientId: recipientId.trim(),
-                ...encryptedEnvelope,
+                encryptedKey: encryptedEnvelope.encryptedKey,
+                encryptedPayload: encryptedEnvelope.encryptedPayload,
+                payloadIv: encryptedEnvelope.payloadIv,
+                hasAttachment: Boolean(encryptedEnvelope.hasAttachment),
+                attachmentName: encryptedEnvelope.attachmentName ?? null,
                 timestamp: Date.now(),
-                status: p2pStatus === 'open' ? 'p2p' : 'sent'
             };
 
             if (p2pStatus === 'open' && dataChannelRef.current?.readyState === 'open') {
-                dataChannelRef.current.send(JSON.stringify({
-                    type: 'mnemosyne-transmission',
-                    ...payload,
-                }));
+                const p2pMessage = buildP2PTransmissionMessage(base);
+                dataChannelRef.current.send(JSON.stringify(p2pMessage));
+                toast.success('Cápsula enviada por canal P2P cifrado.');
             } else {
-                await addDoc(collection(db, 'transmissions'), payload);
+                const relayPayload = buildRelayTransmissionPayload(base);
+                await addDoc(collection(db, 'transmissions'), relayPayload);
+                toast.success('Cápsula E2E enviada via relay (só o destinatário desencripta).');
             }
-            
+
             setMessage('');
             setAttachment(null);
             setRecipientId('');
             setRecipientKeyPem('');
             setRecipientLookup('');
             setResolvedRecipient(null);
-            
-            setTimeout(() => {
-                setHandshakeMode(false);
-                if (p2pStatus !== 'open') {
-                    onClose();
-                }
-            }, p2pStatus === 'open' ? 600 : 1500);
 
+            setHandshakeMode(false);
+            if (p2pStatus !== 'open') {
+                window.setTimeout(() => onClose(), 400);
+            }
         } catch (error) {
             console.error('Transmission error:', error);
-            alert('Erro ao transmitir. Verifica o destinatário e a chave pública publicada.');
+            toast.error(error instanceof Error ? error.message : 'Erro ao transmitir. Verifica destinatário e chave pública.');
             setHandshakeMode(false);
         } finally {
             setIsSending(false);
@@ -744,7 +950,7 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
     return (
         <AnimatePresence>
             {isOpen && (
-                <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+                <div className="fixed inset-0 z-[200] flex items-center justify-center p-2 sm:p-4">
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
@@ -757,10 +963,10 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                         initial={{ scale: 0.9, opacity: 0, y: 20 }}
                         animate={{ scale: 1, opacity: 1, y: 0 }}
                         exit={{ scale: 0.9, opacity: 0, y: 20 }}
-                        className="relative w-full max-w-2xl glass-card overflow-hidden bg-[#0b1120]/80 border border-indigo-500/20 shadow-[0_0_80px_rgba(99,102,241,0.15)] rounded-[2rem]"
+                        className="mnem-comms-panel relative flex w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-indigo-500/20 bg-[#0b1120]/85 shadow-[0_0_80px_rgba(99,102,241,0.15)] backdrop-blur-md sm:rounded-[2rem]"
                     >
                         {handshakeMode ? (
-                            <div className="p-16 flex flex-col items-center justify-center space-y-6">
+                            <div className="flex min-h-0 flex-1 flex-col items-center justify-center space-y-6 p-8 sm:p-16">
                                 <div className="relative flex items-center justify-center">
                                     <motion.div 
                                         animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0, 0.5] }}
@@ -787,29 +993,29 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                             </div>
                         ) : (
                             <>
-                                <div className="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 flex items-center justify-center border border-indigo-500/30">
+                                <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/5 bg-white/5 p-3 sm:p-4 lg:p-5">
+                                    <div className="flex min-w-0 items-center gap-3">
+                                        <div className="flex h-10 w-10 flex-none items-center justify-center rounded-xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/20 to-purple-500/20">
                                             <Zap className="w-5 h-5 text-indigo-400" />
                                         </div>
-                                        <div>
-                                            <h2 className="text-lg font-bold text-white tracking-widest uppercase">Transmissão Cósmica</h2>
+                                        <div className="min-w-0">
+                                            <h2 className="truncate text-base font-bold uppercase tracking-widest text-white sm:text-lg">Transmissão Cósmica</h2>
                                             <p className="text-[10px] text-indigo-300/60 uppercase tracking-widest flex items-center gap-1 mt-0.5">
                                                 <ShieldAlert className="w-3 h-3" /> E2E Zero-Knowledge
                                             </p>
                                         </div>
                                     </div>
                                     
-                                    <div className="flex items-center gap-2 bg-black/40 p-1 rounded-xl border border-white/10">
+                                    <div className="flex max-w-full items-center gap-1.5 overflow-x-auto rounded-xl border border-white/10 bg-black/40 p-1 custom-scrollbar">
                                         <button 
                                             onClick={() => setActiveTab('compose')}
-                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors ${activeTab === 'compose' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                                            className={`flex-none rounded-lg px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors sm:px-4 ${activeTab === 'compose' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
                                         >
                                             Compor
                                         </button>
                                         <button
                                             onClick={() => setActiveTab('contacts')}
-                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors flex items-center gap-2 ${activeTab === 'contacts' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                                            className={`flex flex-none items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors sm:px-4 ${activeTab === 'contacts' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
                                         >
                                             <Users className="w-3.5 h-3.5" /> Contactos
                                             {incomingRequests.filter((request) => request.status === 'pending').length > 0 && (
@@ -820,7 +1026,7 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                         </button>
                                         <button 
                                             onClick={() => setActiveTab('inbox')}
-                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors flex items-center gap-2 ${activeTab === 'inbox' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                                            className={`flex flex-none items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors sm:px-4 ${activeTab === 'inbox' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
                                         >
                                             <Inbox className="w-3.5 h-3.5" /> Inbox
                                             {inboxMsgs.length > 0 && (
@@ -829,7 +1035,7 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                         </button>
                                         <button
                                             onClick={() => setActiveTab('sent')}
-                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors flex items-center gap-2 ${activeTab === 'sent' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                                            className={`flex flex-none items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors sm:px-4 ${activeTab === 'sent' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
                                         >
                                             <Send className="w-3.5 h-3.5" /> Envios
                                             {outboxMsgs.length > 0 && (
@@ -838,20 +1044,38 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                         </button>
                                         <button 
                                             onClick={() => setActiveTab('identity')}
-                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors flex items-center gap-2 ${activeTab === 'identity' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                                            className={`flex flex-none items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors sm:px-4 ${activeTab === 'identity' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
                                         >
                                             <Lock className="w-3.5 h-3.5" /> Chaves
                                         </button>
                                     </div>
 
-                                    <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+                                    <button onClick={onClose} className="rounded-full p-2 transition-colors hover:bg-white/10">
                                         <X className="w-5 h-5 text-gray-400" />
                                     </button>
                                 </div>
 
+                                {identityError && (
+                                    <div className="mx-4 mt-4 shrink-0 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100 sm:mx-6">
+                                        <div className="mb-2 flex items-center gap-2 font-bold">
+                                            <ShieldAlert className="h-4 w-4" />
+                                            Identidade local bloqueada
+                                        </div>
+                                        <p className="text-xs leading-relaxed text-amber-100/80">{identityError}</p>
+                                        <button
+                                            onClick={handleRepairIdentity}
+                                            disabled={isRepairingIdentity || !mnemonic}
+                                            className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-amber-50 transition hover:bg-amber-300/20 disabled:opacity-40"
+                                        >
+                                            {isRepairingIdentity ? 'A reparar...' : 'Regenerar identidade Comms'}
+                                        </button>
+                                    </div>
+                                )}
+
                                 {activeTab === 'compose' && (
-                                    <div className="p-8 space-y-6">
-                                    <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                                    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                                    <div className="mnem-comms-compose-scroll flex-1 space-y-3 overflow-y-auto p-3 pb-4 custom-scrollbar sm:space-y-4 sm:p-5 lg:p-6">
+                                    <div className="mnem-comms-compact-card space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-3 sm:p-4">
                                         <div className="flex items-center justify-between gap-3">
                                             <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
                                                 <Users className="w-3 h-3 text-cyan-400" /> Contactos aceites
@@ -896,13 +1120,13 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                                     setRecipientId('');
                                                     setRecipientKeyPem('');
                                                 }}
-                                                className="flex-1 bg-[#020617]/50 text-cyan-100 placeholder-cyan-900 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all outline-none font-mono text-xs tracking-wide"
+                                                 className="min-w-0 flex-1 rounded-xl border border-white/10 bg-[#020617]/50 px-4 py-3 font-mono text-xs tracking-wide text-cyan-100 placeholder-cyan-900 outline-none transition-all focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/50"
                                                 placeholder="email ou uid do destinatário"
                                             />
                                             <button
                                                 onClick={resolveRecipient}
                                                 disabled={isResolvingRecipient || !recipientLookup.trim()}
-                                                className="w-12 h-12 flex items-center justify-center rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 disabled:opacity-40 transition-colors"
+                                                 className="flex h-12 w-12 flex-none items-center justify-center rounded-xl border border-cyan-500/20 bg-cyan-500/10 transition-colors hover:bg-cyan-500/20 disabled:opacity-40"
                                                 title="Resolver destinatário"
                                             >
                                                 <Search className={`w-4 h-4 text-cyan-300 ${isResolvingRecipient ? 'animate-pulse' : ''}`} />
@@ -992,7 +1216,7 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                         <textarea
                                             value={recipientKeyPem}
                                             onChange={(e) => setRecipientKeyPem(e.target.value)}
-                                            className="w-full h-24 bg-[#020617]/50 text-indigo-100 placeholder-indigo-900 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all outline-none font-mono text-[10px] tracking-wide custom-scrollbar"
+                                            className="mnem-comms-pem h-16 w-full rounded-xl border border-white/10 bg-[#020617]/50 px-4 py-3 font-mono text-[10px] tracking-wide text-indigo-100 placeholder-indigo-900 outline-none transition-all focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/50 custom-scrollbar sm:h-20"
                                             placeholder="resolve o destinatário para preencher a chave pública"
                                         />
                                     </div>
@@ -1004,11 +1228,13 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                         <textarea
                                             value={message}
                                             onChange={(e) => setMessage(e.target.value)}
-                                            className="w-full h-32 bg-[#020617]/50 text-indigo-100 placeholder-indigo-900 border border-white/10 rounded-xl p-4 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all outline-none resize-none text-sm font-light leading-relaxed custom-scrollbar"
+                                            className="mnem-comms-message h-24 w-full resize-none rounded-xl border border-white/10 bg-[#020617]/50 p-4 text-sm font-light leading-relaxed text-indigo-100 placeholder-indigo-900 outline-none transition-all focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/50 custom-scrollbar sm:h-28"
                                             placeholder="Escreva a mensagem ou pensamento a encapsular..."
                                         />
                                     </div>
+                                    </div>
 
+                                    <div className="mnem-comms-actionbar shrink-0 space-y-3 border-t border-white/10 bg-[#0b1120]/95 p-3 shadow-[0_-20px_40px_rgba(2,6,23,0.55)] backdrop-blur-xl sm:px-5 lg:px-6">
                                     {attachment && (
                                         <motion.div 
                                             initial={{ opacity: 0, y: 10 }}
@@ -1025,8 +1251,8 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                         </motion.div>
                                     )}
 
-                                    <div className="pt-2 flex items-center gap-3">
-                                        <label className="flex items-center justify-center w-12 h-12 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl cursor-pointer transition-colors group relative">
+                                    <div className="flex items-center gap-3">
+                                        <label className="group relative flex h-11 w-11 flex-none cursor-pointer items-center justify-center rounded-xl border border-white/10 bg-white/5 transition-colors hover:bg-white/10">
                                             <input 
                                                 type="file" 
                                                 className="hidden" 
@@ -1045,17 +1271,18 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                         
                                         <button
                                             onClick={handleSend}
-                                            disabled={isSending || (!message.trim() && !attachment) || !recipientId.trim() || !recipientKeyPem.trim()}
-                                            className="flex-1 flex items-center justify-center gap-2 h-12 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:bg-white/5 disabled:text-gray-500 transition-all text-sm font-bold uppercase tracking-widest text-white shadow-[0_0_20px_rgba(79,70,229,0.3)] disabled:shadow-none"
+                                            disabled={isSending || !myIdentity || (!message.trim() && !attachment) || !recipientId.trim() || !recipientKeyPem.trim()}
+                                            className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 text-sm font-bold uppercase tracking-widest text-white shadow-[0_0_20px_rgba(79,70,229,0.3)] transition-all hover:bg-indigo-500 disabled:bg-white/5 disabled:text-gray-500 disabled:opacity-40 disabled:shadow-none"
                                         >
                                             <Send className="w-4 h-4" /> {p2pStatus === 'open' ? 'Transmitir P2P' : 'Transmitir Relay E2E'}
                                         </button>
                                     </div>
                                     </div>
+                                    </div>
                                 )}
 
                                 {activeTab === 'contacts' && (
-                                    <div className="p-6 h-[440px] overflow-y-auto custom-scrollbar space-y-6">
+                                    <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 custom-scrollbar sm:p-6">
                                         <div className="space-y-3">
                                             <div className="flex items-center gap-2">
                                                 <Inbox className="w-4 h-4 text-cyan-300" />
@@ -1140,7 +1367,7 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                 )}
 
                                 {activeTab === 'inbox' && (
-                                    <div className="p-6 h-[400px] overflow-y-auto custom-scrollbar space-y-4">
+                                    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 custom-scrollbar sm:p-6">
                                         {inboxMsgs.length === 0 ? (
                                             <div className="h-full flex flex-col items-center justify-center text-center opacity-50">
                                                 <Radar className="w-12 h-12 text-indigo-400 mb-4 animate-pulse" />
@@ -1174,12 +1401,45 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                                         {msg.decryptedMessage}
                                                     </div>
 
-                                                    {msg.hasAttachment && (
-                                                        <div className="mt-3 flex items-center gap-2 text-xs text-indigo-300 bg-indigo-500/10 p-2 rounded-lg w-max border border-indigo-500/20">
-                                                            <FileText className="w-3.5 h-3.5 text-indigo-400" />
-                                                            Carga anexa bloqueada (Requer chave privada)
-                                                        </div>
-                                                    )}
+                                                    <div className="mt-3 flex flex-wrap gap-2">
+                                                        <button
+                                                            onClick={() => handleImportMemory(msg.id, msg.decryptedMessage, msg.decryptedAttachment || null)}
+                                                            disabled={importingMsgId === msg.id}
+                                                            className="flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs text-indigo-200 transition-colors hover:bg-indigo-500/20 disabled:opacity-50"
+                                                        >
+                                                            {importingMsgId === msg.id ? (
+                                                                <>
+                                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                    <span>A Importar...</span>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <PlugZap className="w-3.5 h-3.5 text-indigo-400" />
+                                                                    <span>
+                                                                        {msg.decryptedMessage.includes('[[MNEMOSYNE_CAPSULE_PACK_V1]]')
+                                                                            ? 'Importar pack'
+                                                                            : 'Importar no Universo'}
+                                                                    </span>
+                                                                </>
+                                                            )}
+                                                        </button>
+
+                                                        {msg.decryptedAttachment ? (
+                                                            <a
+                                                                href={msg.decryptedAttachment.dataUrl}
+                                                                download={msg.decryptedAttachment.name}
+                                                                className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                                                            >
+                                                                <FileText className="w-3.5 h-3.5 text-emerald-300" />
+                                                                Descarregar {msg.decryptedAttachment.name}
+                                                            </a>
+                                                        ) : msg.hasAttachment && (
+                                                            <div className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
+                                                                <FileText className="w-3.5 h-3.5 text-amber-300" />
+                                                                Anexo recebido, mas não foi possível decifrar nesta sessão.
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 </motion.div>
                                             ))
                                         )}
@@ -1187,7 +1447,7 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                 )}
 
                                 {activeTab === 'sent' && (
-                                    <div className="p-6 h-[400px] overflow-y-auto custom-scrollbar space-y-4">
+                                    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 custom-scrollbar sm:p-6">
                                         {outboxMsgs.length === 0 ? (
                                             <div className="h-full flex flex-col items-center justify-center text-center opacity-50">
                                                 <Send className="w-12 h-12 text-indigo-400 mb-4" />
@@ -1237,13 +1497,26 @@ export const TransmissionPanel: React.FC<TransmissionPanelProps> = ({ isOpen, on
                                 )}
 
                                 {activeTab === 'identity' && (
-                                    <div className="p-8 space-y-6 h-[400px]">
+                                    <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 custom-scrollbar sm:p-8">
                                         <div className="text-center space-y-2 mb-6">
                                             <div className="w-16 h-16 bg-indigo-500/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-indigo-500/30">
                                                 <Lock className="w-8 h-8 text-indigo-400" />
                                             </div>
                                             <h3 className="text-lg font-bold text-white tracking-widest uppercase">A Sua Identidade</h3>
                                             <p className="text-xs text-indigo-300">As suas chaves RSA-OAEP são geradas localmente. A chave privada fica apenas em memória nesta sessão; a chave pública é publicada no teu perfil para descoberta segura.</p>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex justify-between items-center">
+                                                <span>UID da conta</span>
+                                                <button onClick={() => {
+                                                    const uid = auth.currentUser?.uid;
+                                                    if (uid) navigator.clipboard.writeText(uid);
+                                                }} className="text-indigo-400 hover:text-indigo-300 underline">Copiar UID</button>
+                                            </label>
+                                            <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 font-mono text-xs text-cyan-100 break-all">
+                                                {auth.currentUser?.uid || 'UID indisponível'}
+                                            </div>
                                         </div>
 
                                         <div className="space-y-2">

@@ -13,9 +13,14 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
     const [verified, setVerified] = useState(false);
     const [restoreInput, setRestoreInput] = useState('');
     const [copied, setCopied] = useState(false);
+    const [verificationIndices, setVerificationIndices] = useState<number[]>([]);
+    const [verificationAnswers, setVerificationAnswers] = useState<Record<number, string>>({});
 
     const startCeremony = async () => {
         setMnemonic(await generateMnemonic());
+        setVerified(false);
+        setVerificationAnswers({});
+        setVerificationIndices([]);
         setStep(2);
     };
 
@@ -32,12 +37,29 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
         onComplete(words);
     };
 
+    const beginVerification = () => {
+        const entropy = new Uint32Array(12);
+        window.crypto.getRandomValues(entropy);
+        const sampled = Array.from({ length: 12 }, (_, index) => ({ index, rank: entropy[index] }))
+            .sort((a, b) => a.rank - b.rank)
+            .slice(0, 3)
+            .map((item) => item.index)
+            .sort((a, b) => a - b);
+        setVerificationAnswers({});
+        setVerificationIndices(sampled);
+        setStep(4);
+    };
+
     const confirmPassphrase = () => {
-        // In a real app, we would ask the user to type back some words
+        const failed = verificationIndices.some((index) => (
+            (verificationAnswers[index] || '').trim().toLowerCase() !== mnemonic[index]
+        ));
+        if (failed) {
+            alert('A verificação falhou. Confirma as palavras e tenta novamente.');
+            return;
+        }
         setVerified(true);
-        setTimeout(() => {
-            onComplete(mnemonic);
-        }, 1500);
+        onComplete(mnemonic);
     };
 
     const handleCopy = async () => {
@@ -120,7 +142,7 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
                                     )}
                                 </button>
                                 <button
-                                    onClick={confirmPassphrase}
+                                    onClick={beginVerification}
                                     className="glass-button flex-1 bg-indigo-600/20 hover:bg-indigo-600/40 border-indigo-500/30 flex items-center justify-center gap-2"
                                 >
                                     Eu Guardei a Chave <ArrowRight className="w-4 h-4" />
@@ -172,6 +194,66 @@ export const KeyCeremony: React.FC<KeyCeremonyProps> = ({ onComplete }) => {
                                 Restaurar Acesso
                             </button>
                         </div>
+                    </motion.div>
+                )}
+
+                {step === 4 && (
+                    <motion.div
+                        key="step4"
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 1.1 }}
+                        className="glass-card p-10 max-w-xl"
+                    >
+                        <h2 className="text-2xl font-bold mb-4 text-indigo-300">Confirmar posse da chave</h2>
+                        <p className="text-gray-400 mb-8">
+                            Escreve as palavras pedidas. A seed continua apenas em memória e não será persistida no dispositivo.
+                        </p>
+
+                        <div className="space-y-4 mb-8">
+                            {verificationIndices.map((index) => (
+                                <label key={index} className="block text-left">
+                                    <span className="block text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">
+                                        Palavra {index + 1}
+                                    </span>
+                                    <input
+                                        value={verificationAnswers[index] || ''}
+                                        onChange={(event) => setVerificationAnswers((current) => ({
+                                            ...current,
+                                            [index]: event.target.value,
+                                        }))}
+                                        autoComplete="off"
+                                        spellCheck={false}
+                                        className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                                    />
+                                </label>
+                            ))}
+                        </div>
+
+                        {!verified ? (
+                            <div className="flex gap-4">
+                                <button
+                                    onClick={() => setStep(2)}
+                                    className="glass-button flex-1"
+                                >
+                                    Voltar
+                                </button>
+                                <button
+                                    onClick={confirmPassphrase}
+                                    className="glass-button flex-1 bg-indigo-600/20 hover:bg-indigo-600/40 border-indigo-500/30 flex items-center justify-center gap-2"
+                                >
+                                    Validar Chave <CheckCircle2 className="w-4 h-4" />
+                                </button>
+                            </div>
+                        ) : (
+                            <motion.div
+                                initial={{ scale: 0 }}
+                                animate={{ scale: 1 }}
+                                className="flex items-center justify-center gap-2 text-green-400 font-bold"
+                            >
+                                <CheckCircle2 className="w-6 h-6" /> Chave Validada. Bem-vindo ao Mnemosyne.
+                            </motion.div>
+                        )}
                     </motion.div>
                 )}
             </AnimatePresence>

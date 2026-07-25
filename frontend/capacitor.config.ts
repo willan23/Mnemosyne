@@ -1,7 +1,7 @@
 import { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-    appId: 'com.mnemosyne.app',
+    appId: 'com.mnemosyne.mobile',
     appName: 'Mnemosyne',
     webDir: 'dist',
     server: {

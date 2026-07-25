@@ -1,11 +1,40 @@
 import { fileURLToPath } from 'node:url'
+import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { createVersionPayload, writeVersionFiles } from './scripts/write-version'
+
+/** Emite version.json e define VITE_APP_* para deteção de updates no cliente. */
+function mnemosyneVersionPlugin(): Plugin {
+  let payload = createVersionPayload()
+  return {
+    name: 'mnemosyne-version',
+    config() {
+      payload = createVersionPayload()
+      writeVersionFiles(payload)
+      return {
+        define: {
+          'import.meta.env.VITE_APP_VERSION': JSON.stringify(payload.version),
+          'import.meta.env.VITE_APP_BUILD_ID': JSON.stringify(payload.buildId),
+          'import.meta.env.VITE_APP_BUILT_AT': JSON.stringify(payload.builtAt),
+        },
+      }
+    },
+    buildStart() {
+      payload = createVersionPayload()
+      writeVersionFiles(payload)
+    },
+    closeBundle() {
+      writeVersionFiles(payload)
+    },
+  }
+}
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [
+    mnemosyneVersionPlugin(),
     react(),
     tailwindcss(),
   ],

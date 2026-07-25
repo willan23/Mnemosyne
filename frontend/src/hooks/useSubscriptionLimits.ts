@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { getPlanLimits, hasReachedLimit, type PlanLimits } from '../config/planLimits';
+import { getEffectivePlanLimits, hasReachedLimit, type PlanLimits } from '../config/planLimits';
 
 export interface UsageStats {
     memories: {
@@ -34,12 +34,12 @@ export interface UsageStats {
 }
 
 export const useSubscriptionLimits = (userPlan: string = 'free') => {
-    const [limits, setLimits] = useState<PlanLimits>(getPlanLimits(userPlan));
+    const [limits, setLimits] = useState<PlanLimits>(getEffectivePlanLimits(userPlan));
     const [usage, setUsage] = useState<UsageStats | null>(null);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        setLimits(getPlanLimits(userPlan));
+        setLimits(getEffectivePlanLimits(userPlan));
     }, [userPlan]);
 
     useEffect(() => {
@@ -75,7 +75,7 @@ export const useSubscriptionLimits = (userPlan: string = 'free') => {
                     for (const attachment of attachments) {
                         if (attachment.type === 'image') imagesCount += 1;
                         if (attachment.type === 'audio') audioCount += 1;
-                        if (attachment.type === 'pdf') pdfsCount += 1;
+                        if (attachment.type === 'pdf' || attachment.type === 'document') pdfsCount += 1;
                     }
                 });
 
@@ -119,7 +119,7 @@ export const useSubscriptionLimits = (userPlan: string = 'free') => {
                     storage: {
                         usedGB: storageUsedGB,
                         limitGB: limits.storage.maxGB,
-                        canUpload: storageUsedGB < limits.storage.maxGB,
+                        canUpload: limits.storage.maxGB === -1 || storageUsedGB < limits.storage.maxGB,
                     },
                 });
             } catch (error) {

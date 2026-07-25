@@ -4,13 +4,12 @@ import {
   Brain, Mail, Lock, ArrowLeft, Eye, EyeOff, Sparkles, KeyRound
 } from 'lucide-react';
 import { auth } from '../../firebase';
-import { deriveAesKeyFromMnemonic, validateBip39Mnemonic } from '../../utils/crypto';
+import { deriveAesKeyFromMnemonic, generateMnemonic, validateBip39Mnemonic } from '../../utils/crypto';
+import { getAuthErrorMessage, isNewAuthUser, signInWithGoogle } from '../../services/authFlow';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
-  GoogleAuthProvider,
-  signInWithPopup,
 } from 'firebase/auth';
 
 type AuthMode = 'login' | 'register' | 'reset' | 'zeroKnowledge';
@@ -19,16 +18,8 @@ interface AuthPageProps {
   initialMode?: AuthMode;
   onBack: () => void;
   onMnemonicComplete?: (mnemonic: string[]) => void;
+  onGeneratedMnemonic?: (mnemonic: string[]) => void;
 }
-
-const ERROR_MESSAGES: Record<string, string> = {
-  'auth/invalid-credential':   'Email ou password incorretos.',
-  'auth/email-already-in-use': 'Este email já está em uso.',
-  'auth/user-not-found':       'Utilizador não encontrado.',
-  'auth/too-many-requests':    'Demasiadas tentativas. Aguarda um momento.',
-  'auth/weak-password':        'A password deve ter pelo menos 6 caracteres.',
-  'auth/popup-closed-by-user': 'Login cancelado. Tenta novamente.',
-};
 
 /* ─── Animated tab indicator ──────────────────────────────── */
 const TabBar: React.FC<{
@@ -134,7 +125,12 @@ const GoogleIcon = () => (
 );
 
 /* ─── AuthPage ────────────────────────────────────────────── */
-export const AuthPage: React.FC<AuthPageProps> = ({ initialMode = 'login', onBack, onMnemonicComplete }) => {
+export const AuthPage: React.FC<AuthPageProps> = ({
+  initialMode = 'login',
+  onBack,
+  onMnemonicComplete,
+  onGeneratedMnemonic,
+}) => {
   const [mode,            setMode]            = useState<AuthMode>(initialMode);
   const [email,           setEmail]           = useState('');
   const [password,        setPassword]        = useState('');
@@ -146,6 +142,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ initialMode = 'login', onBac
   const [error,           setError]           = useState<string | null>(null);
   const [success,         setSuccess]         = useState<string | null>(null);
 
+  const completeGeneratedMnemonic = (words: string[]) => {
+    if (onGeneratedMnemonic) {
+      onGeneratedMnemonic(words);
+      return;
+    }
+    onMnemonicComplete?.(words);
+  };
+
   const switchMode = (next: AuthMode) => {
     setMode(next);
     setError(null);
@@ -156,6 +160,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ initialMode = 'login', onBac
     setError(null);
     setLoading(true);
     try {
+      if (mode !== 'reset' && (!email.trim() || !password)) {
+        setError('Preenche email e password.');
+        return;
+      }
+      if (mode === 'reset' && !email.trim()) {
+        setError('Preenche o email para recuperar a password.');
+        return;
+      }
       if (mode === 'login') {
         await signInWithEmailAndPassword(auth, email, password);
       } else if (mode === 'register') {
@@ -163,7 +175,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ initialMode = 'login', onBac
           setError('As passwords não coincidem.');
           return;
         }
+        const words = await generateMnemonic();
         await createUserWithEmailAndPassword(auth, email, password);
+        completeGeneratedMnemonic(words);
       } else if (mode === 'zeroKnowledge') {
         const words = mnemonic.trim().toLowerCase().split(/\s+/).filter(Boolean);
         if (!(await validateBip39Mnemonic(words))) {
@@ -179,8 +193,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ initialMode = 'login', onBac
         setSuccess('Email de recuperação enviado. Verifica a tua caixa de entrada.');
       }
     } catch (e) {
-      const err = e as { code?: string };
-      setError(ERROR_MESSAGES[err.code ?? ''] ?? 'Ocorreu um erro. Tenta novamente.');
+      setError(getAuthErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -190,11 +203,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ initialMode = 'login', onBac
     setError(null);
     setGoogleLoading(true);
     try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      const credential = await signInWithGoogle();
+      if (credential && isNewAuthUser(credential)) {
+        completeGeneratedMnemonic(await generateMnemonic());
+      }
     } catch (e) {
-      const err = e as { code?: string };
-      setError(ERROR_MESSAGES[err.code ?? ''] ?? 'Erro ao entrar com Google.');
+      setError(getAuthErrorMessage(e, 'Erro ao entrar com Google.'));
     } finally {
       setGoogleLoading(false);
     }

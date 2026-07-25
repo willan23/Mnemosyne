@@ -7,6 +7,7 @@ import { auth, default as app } from '../firebase';
 import { useSubscription } from '../hooks/useSubscription';
 import type { SubscriptionTier } from '../hooks/useSubscription';
 import { showToast } from '../utils/toast';
+import { checkoutEnabled, isFreeFirstMode } from '../config/monetization';
 
 type BillingInterval = 'monthly' | 'yearly';
 type PaidPlanId = 'pro' | 'sovereign';
@@ -36,7 +37,7 @@ const tiers: PricingTier[] = [
         color: 'gray',
         features: [
             { text: '30 memórias por mês', included: true },
-            { text: '1GB de armazenamento', included: true },
+            { text: 'Armazenamento privado inicial', included: true },
             { text: 'Knowledge Graph básico', included: true },
             { text: 'Compartilhamento público', included: true },
             { text: 'Anexos (áudio/imagens)', included: false },
@@ -57,7 +58,7 @@ const tiers: PricingTier[] = [
         recommended: true,
         features: [
             { text: 'Memórias ilimitadas', included: true },
-            { text: '50GB de armazenamento', included: true },
+            { text: 'Armazenamento ampliado', included: true },
             { text: 'Knowledge Graph avançado', included: true },
             { text: 'Anexos (áudio + imagens)', included: true },
             { text: 'Compartilhamento privado', included: true },
@@ -78,7 +79,7 @@ const tiers: PricingTier[] = [
         color: 'cyan',
         features: [
             { text: 'Tudo do Pro, mais:', included: true },
-            { text: '500GB de armazenamento', included: true },
+            { text: 'Armazenamento soberano', included: true },
             { text: 'Anexos completos (+ PDFs)', included: true },
             { text: 'Compartilhamento colaborativo', included: true },
             { text: 'API Access', included: true },
@@ -108,6 +109,16 @@ const iconClasses: Record<PricingTier['color'], { shell: string; icon: string; p
     },
 };
 
+const founderPreviewFeatures: PricingTier['features'] = [
+    { text: 'Memórias ilimitadas no Founder Preview', included: true },
+    { text: 'Universe 3D, Insights e autolink semântico', included: true },
+    { text: 'IA local (Ollama) e embeddings no browser', included: true },
+    { text: 'Comms E2E e cápsulas cifradas (sem link em claro)', included: true },
+    { text: 'Anexos com limites técnicos de fair-use', included: true },
+    { text: 'Desktop (Tauri) e mobile pairing', included: true },
+    { text: 'Planos pagos futuros: equipas, cloud alto, suporte', included: true },
+];
+
 const statusLabel: Record<string, string> = {
     active: 'Ativa',
     trialing: 'Trial',
@@ -129,6 +140,11 @@ export const PricingPage: React.FC = () => {
 
     const handleUpgrade = async (planId: PaidPlanId | undefined, tierName: string) => {
         if (!planId) return;
+
+        if (!checkoutEnabled) {
+            showToast.info('O Mnemosyne está gratuito nesta fase. Planos pagos ficam preparados para uma fase futura.');
+            return;
+        }
 
         if (!auth.currentUser) {
             navigate('/login');
@@ -202,12 +218,20 @@ export const PricingPage: React.FC = () => {
 
                 <div className="text-center mb-12">
                     <h1 className="text-5xl font-bold mb-4 glow-text">
-                        Escolha Seu Plano
+                        {isFreeFirstMode ? 'Founder Preview' : 'Escolha Seu Plano'}
                     </h1>
-                    <p className="text-xl text-gray-400 mb-8">
-                        Desbloqueie todo o potencial do Mnemosyne
-                    </p>
+                    {isFreeFirstMode ? (
+                        <p className="mx-auto mb-8 max-w-2xl text-lg text-slate-400">
+                            O núcleo cognitivo está gratuito enquanto construímos mercado.
+                            Planos pagos ficam latentes para equipas, cloud intensivo e suporte.
+                        </p>
+                    ) : (
+                        <p className="mb-8 text-xl text-gray-400">
+                            Desbloqueie todo o potencial do Mnemosyne
+                        </p>
+                    )}
 
+                    {!isFreeFirstMode && (
                     <div className="inline-flex items-center gap-4 glass-card p-2">
                         <button
                             onClick={() => setIsYearly(false)}
@@ -225,9 +249,10 @@ export const PricingPage: React.FC = () => {
                             </span>
                         </button>
                     </div>
+                    )}
                 </div>
 
-                {subscription && (
+                {subscription && !isFreeFirstMode && (
                     <div className="glass-card p-4 mb-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                         <div className="flex items-start gap-3">
                             {subscription.status === 'past_due' ? (
@@ -237,7 +262,7 @@ export const PricingPage: React.FC = () => {
                             )}
                             <div>
                                 <p className="font-bold">
-                                    Plano atual: {tiers.find((pricingTier) => pricingTier.id === tier)?.name || 'Free'}
+                                    Plano atual: {isFreeFirstMode ? 'Gratuito' : tiers.find((pricingTier) => pricingTier.id === tier)?.name || 'Free'}
                                 </p>
                                 <p className="text-sm text-gray-400">
                                     Estado: {statusLabel[subscription.status] || subscription.status}
@@ -265,8 +290,14 @@ export const PricingPage: React.FC = () => {
                     {tiers.map((pricingTier, index) => {
                         const palette = iconClasses[pricingTier.color];
                         const isCurrentTier = pricingTier.id === tier;
-                        const ctaLabel = isCurrentTier ? 'Plano Atual' : pricingTier.cta;
+                        const ctaLabel = isFreeFirstMode
+                            ? (pricingTier.id === 'free' ? 'Ativo agora' : 'Futuro')
+                            : isCurrentTier ? 'Plano Atual' : pricingTier.cta;
                         const TierIcon = pricingTier.icon;
+                        const displayPrice = isFreeFirstMode && pricingTier.id !== 'free' ? 'Futuro' : pricingTier.price;
+                        const displayPeriod = isFreeFirstMode && pricingTier.id !== 'free' ? '' : pricingTier.period;
+                        const displayName = isFreeFirstMode && pricingTier.id === 'free' ? 'Gratuito' : pricingTier.name;
+                        const displayFeatures = isFreeFirstMode && pricingTier.id === 'free' ? founderPreviewFeatures : pricingTier.features;
 
                         return (
                             <motion.div
@@ -286,11 +317,11 @@ export const PricingPage: React.FC = () => {
                                     <TierIcon className={`w-6 h-6 ${palette.icon}`} />
                                 </div>
 
-                                <h3 className="text-2xl font-bold mb-2">{pricingTier.name}</h3>
+                                <h3 className="text-2xl font-bold mb-2">{displayName}</h3>
                                 <div className="mb-6">
-                                    <span className="text-4xl font-bold">{pricingTier.price}</span>
-                                    <span className="text-gray-400">{pricingTier.period}</span>
-                                    {isYearly && pricingTier.yearlyPrice && (
+                                    <span className="text-4xl font-bold">{displayPrice}</span>
+                                    <span className="text-gray-400">{displayPeriod}</span>
+                                    {!isFreeFirstMode && isYearly && pricingTier.yearlyPrice && (
                                         <div className="text-sm text-green-400 mt-1">
                                             ou {pricingTier.yearlyPrice}
                                         </div>
@@ -298,7 +329,7 @@ export const PricingPage: React.FC = () => {
                                 </div>
 
                                 <ul className="space-y-3 mb-8">
-                                    {pricingTier.features.map((feature) => (
+                                    {displayFeatures.map((feature) => (
                                         <li key={feature.text} className="flex items-start gap-2 text-sm">
                                             {feature.included ? (
                                                 <Check className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
@@ -314,7 +345,7 @@ export const PricingPage: React.FC = () => {
 
                                 <button
                                     onClick={() => handleUpgrade(pricingTier.planId, pricingTier.name)}
-                                    disabled={!pricingTier.planId || isCurrentTier || loading === pricingTier.name}
+                                    disabled={!pricingTier.planId || isCurrentTier || loading === pricingTier.name || (isFreeFirstMode && pricingTier.id !== 'free')}
                                     className={`w-full py-3 rounded-lg font-bold uppercase tracking-tighter transition-all ${pricingTier.recommended || pricingTier.id === 'sovereign' ? palette.primaryButton : 'glass-button'} disabled:opacity-50 disabled:cursor-not-allowed`}
                                 >
                                     {loading === pricingTier.name ? 'Processando...' : ctaLabel}
@@ -330,19 +361,25 @@ export const PricingPage: React.FC = () => {
                         <div className="glass-card p-6">
                             <h3 className="font-bold mb-2">Posso cancelar a qualquer momento?</h3>
                             <p className="text-sm text-gray-400">
-                                Sim. O portal de faturação da Stripe gere cancelamentos, métodos de pagamento e alterações de plano.
+                                {isFreeFirstMode
+                                    ? 'Nesta fase não há cobrança ativa. Quando planos pagos forem introduzidos, a gestão será feita pelo portal Stripe.'
+                                    : 'Sim. O portal de faturação da Stripe gere cancelamentos, métodos de pagamento e alterações de plano.'}
                             </p>
                         </div>
                         <div className="glass-card p-6">
-                            <h3 className="font-bold mb-2">Como funciona o plano anual?</h3>
+                            <h3 className="font-bold mb-2">{isFreeFirstMode ? 'O que será pago no futuro?' : 'Como funciona o plano anual?'}</h3>
                             <p className="text-sm text-gray-400">
-                                O checkout usa Price IDs anuais configurados no backend, sem placeholders no frontend.
+                                {isFreeFirstMode
+                                    ? 'Valor empresarial e custo real: equipas, cloud gerida, retenção ampliada, suporte e compliance.'
+                                    : 'O checkout usa Price IDs anuais configurados no backend, sem placeholders no frontend.'}
                             </p>
                         </div>
                         <div className="glass-card p-6">
-                            <h3 className="font-bold mb-2">O que acontece se o pagamento falhar?</h3>
+                            <h3 className="font-bold mb-2">{isFreeFirstMode ? 'Quando aparece cobrança?' : 'O que acontece se o pagamento falhar?'}</h3>
                             <p className="text-sm text-gray-400">
-                                A assinatura aparece como pagamento pendente e a gestão abre diretamente no portal da Stripe.
+                                {isFreeFirstMode
+                                    ? 'Não aparece cobrança nesta fase. Antes de qualquer plano pago, o produto deve anunciar a mudança e ativar billing de forma explícita.'
+                                    : 'A assinatura aparece como pagamento pendente e a gestão abre diretamente no portal da Stripe.'}
                             </p>
                         </div>
                         <div className="glass-card p-6">

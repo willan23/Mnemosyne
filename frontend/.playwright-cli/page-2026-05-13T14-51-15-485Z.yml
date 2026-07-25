@@ -1,0 +1,37 @@
+- generic [ref=e69]:
+  - generic [ref=e70]:
+    - button "Voltar" [ref=e71]:
+      - img [ref=e72]
+      - text: Voltar
+    - generic [ref=e74]:
+      - img [ref=e76]
+      - generic [ref=e84]: Mnemosyne
+  - generic [ref=e85]:
+    - generic [ref=e86]:
+      - heading "Tu não estás a criar uma conta." [level=2] [ref=e87]
+      - paragraph [ref=e88]: Estás a criar a tua mente digital. As tuas memórias são encriptadas localmente. Só tu controlas a chave.
+    - generic [ref=e89]:
+      - button "Entrar" [ref=e90]
+      - button "Criar conta" [ref=e91]: Criar conta
+    - button "Continuar com Google" [ref=e93]:
+      - img [ref=e94]
+      - text: Continuar com Google
+    - generic [ref=e101]: ou com email
+    - generic [ref=e103]:
+      - generic [ref=e104]:
+        - generic:
+          - img
+        - textbox "Email" [ref=e105]
+      - generic [ref=e106]:
+        - generic:
+          - img
+        - textbox "Password" [ref=e107]
+        - button [ref=e109]:
+          - img [ref=e110]
+      - generic [ref=e113]:
+        - generic:
+          - img
+        - textbox "Confirmar password" [ref=e114]
+      - button "Criar conta" [ref=e115] [cursor=pointer]:
+        - img [ref=e116]
+        - text: Criar conta

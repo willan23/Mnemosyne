@@ -18,11 +18,31 @@ service firebase.storage {
     function isAudio() {
       return request.resource.contentType.matches('audio/.*');
     }
+
+    function isDocument(filePath) {
+      return request.resource.contentType.matches('application/pdf') ||
+             request.resource.contentType.matches('application/json') ||
+             request.resource.contentType.matches('text/.*') ||
+             request.resource.contentType.matches('application/msword') ||
+             request.resource.contentType.matches('application/vnd\\.ms-excel') ||
+             request.resource.contentType.matches('application/vnd\\.ms-powerpoint') ||
+             request.resource.contentType.matches('application/vnd\\.openxmlformats-officedocument\\..*') ||
+             request.resource.contentType.matches('application/vnd\\.oasis\\.opendocument\\..*') ||
+             request.resource.contentType.matches('application/rtf') ||
+             request.resource.contentType.matches('application/x-iwork-.*') ||
+             string(filePath).matches('.*\\.(pdf|txt|md|markdown|csv|json|doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp|rtf|pages|key|numbers)$');
+    }
+
+    function isVideo() {
+      return request.resource.contentType.matches('video/.*');
+    }
     
-    function isValidSize() {
-      // Images: max 10MB, Audio: max 50MB
+    function isValidSize(filePath) {
+      // Images: max 10MB, Audio: max 50MB, documents: max 30MB, videos: max 200MB
       return (isImage() && request.resource.size < 10 * 1024 * 1024) ||
-             (isAudio() && request.resource.size < 50 * 1024 * 1024);
+             (isAudio() && request.resource.size < 50 * 1024 * 1024) ||
+             (isDocument(filePath) && request.resource.size < 30 * 1024 * 1024) ||
+             (isVideo() && request.resource.size < 200 * 1024 * 1024);
     }
 
     // Attachments organized by user
@@ -30,10 +50,8 @@ service firebase.storage {
       // Read: only owner
       allow read: if isOwner(userId);
       
-      // Write: only owner, valid file type and size
-      allow write: if isOwner(userId) && 
-                      (isImage() || isAudio()) && 
-                      isValidSize();
+      // Write: only owner, max 200MB size limit
+      allow write: if isOwner(userId) && request.resource.size < 200 * 1024 * 1024;
       
       // Delete: only owner
       allow delete: if isOwner(userId);

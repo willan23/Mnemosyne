@@ -30,11 +30,50 @@
         ],
         "rewrites": [
             {
+                "source": "/api/v1/web/research",
+                "function": {
+                    "functionId": "webResearch",
+                    "region": "europe-west1"
+                }
+            },
+            {
+                "source": "/api/v1/generate",
+                "function": {
+                    "functionId": "generateText",
+                    "region": "europe-west1"
+                }
+            },
+            {
+                "source": "/api/v1/images/generate",
+                "function": {
+                    "functionId": "generateImage",
+                    "region": "europe-west1"
+                }
+            },
+            {
                 "source": "**",
                 "destination": "/index.html"
             }
         ],
         "headers": [
+            {
+                "source": "/version.json",
+                "headers": [
+                    {
+                        "key": "Cache-Control",
+                        "value": "no-cache, no-store, must-revalidate"
+                    }
+                ]
+            },
+            {
+                "source": "/index.html",
+                "headers": [
+                    {
+                        "key": "Cache-Control",
+                        "value": "no-cache, no-store, must-revalidate"
+                    }
+                ]
+            },
             {
                 "source": "**/*.@(js|css|webp|png|jpg|jpeg|svg|woff2)",
                 "headers": [

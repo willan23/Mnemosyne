@@ -8,15 +8,22 @@ from dotenv import load_dotenv
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
 
-# Inicializar o cliente da OpenAI apontando para a NVIDIA NIM
-# Utilizando a chave fornecida como fallback seguro
-client = OpenAI(
-    base_url="https://integrate.api.nvidia.com/v1",
-    api_key=os.getenv("NVIDIA_API_KEY", "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")
-)
+# Inicializar o cliente OpenAI-compatible apontando para HuggingFace (ou NVIDIA NIM como fallback).
+# A chave deve vir sempre do ambiente/secret manager, nunca do código.
+hf_key = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
 
-# Definir o modelo a ser usado (pegando do .env ou fallback)
-MODEL_CORE = os.getenv("NVIDIA_MODEL_CORE", "meta/llama-3.1-70b-instruct")
+if hf_key:
+    client = OpenAI(
+        base_url=os.getenv("HUGGINGFACE_API_BASE_URL", "https://router.huggingface.co/v1"),
+        api_key=hf_key,
+    )
+    MODEL_CORE = os.getenv("HUGGINGFACE_TEXT_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+else:
+    client = OpenAI(
+        base_url=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+        api_key=os.getenv("NVIDIA_API_KEY") or "missing-nvidia-api-key",
+    )
+    MODEL_CORE = os.getenv("NVIDIA_MODEL_CORE", "meta/llama-3.1-70b-instruct")
 
 class KGExtractor:
     def __init__(self):

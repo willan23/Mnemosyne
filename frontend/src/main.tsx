@@ -4,9 +4,14 @@ import { BrowserRouter } from 'react-router-dom'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { UIProvider } from './contexts/UIContext'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { AppUpdatePrompt } from './components/AppUpdatePrompt'
 import { Toaster } from 'react-hot-toast'
 import './index.css'
 import App from './App.tsx'
+import { initAppCheckIfConfigured } from './firebase'
+
+// App Check (opcional) — só se VITE_FIREBASE_APPCHECK_SITE_KEY estiver definido
+void initAppCheckIfConfigured()
 
 const cleanupLegacyServiceWorkers = () => {
   if (!('serviceWorker' in navigator)) {
@@ -37,6 +42,7 @@ createRoot(document.getElementById('root')!).render(
         <ThemeProvider>
           <UIProvider>
             <App />
+            <AppUpdatePrompt />
             <Toaster
             position="top-right"
             toastOptions={{

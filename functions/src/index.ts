@@ -1,6 +1,7 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
 import { OwnerAckState, tombstoneAckedByAllActiveDevices } from './mobileSyncRetention';
+import { generateImageHandler, generateTextHandler, webResearchHandler } from './webApi';
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -76,6 +77,21 @@ export {
     getSubscriptionStatus,
     handleStripeWebhook
 } from './stripe';
+
+export const webResearch = regionalFunctions
+    .runWith({ timeoutSeconds: 60, memory: '512MB' })
+    .https
+    .onRequest(webResearchHandler);
+
+export const generateText = regionalFunctions
+    .runWith({ timeoutSeconds: 60, memory: '512MB' })
+    .https
+    .onRequest(generateTextHandler);
+
+export const generateImage = regionalFunctions
+    .runWith({ timeoutSeconds: 120, memory: '512MB' })
+    .https
+    .onRequest(generateImageHandler);
 
 export const cleanupMobileSyncRetention = regionalFunctions.pubsub
     .schedule('every 24 hours')

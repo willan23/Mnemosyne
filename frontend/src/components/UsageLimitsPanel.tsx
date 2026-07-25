@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Brain, Image, Mic, FileText, HardDrive, Crown } from 'lucide-react';
 import { useSubscriptionLimits } from '../hooks/useSubscriptionLimits';
 import { useNavigate } from 'react-router-dom';
+import { isFreeFirstMode } from '../config/monetization';
 
 interface UsageLimitsPanelProps {
     userPlan?: string;
@@ -79,9 +80,11 @@ export const UsageLimitsPanel: React.FC<UsageLimitsPanelProps> = ({ userPlan = '
                         {isPro && <Crown className="w-5 h-5 text-yellow-400" />}
                         Plano {limits.name}
                     </h3>
-                    <p className="text-xs text-gray-500">Uso este mês</p>
+                    <p className="text-xs text-gray-500">
+                        {isFreeFirstMode ? 'Founder Preview gratuito' : 'Uso este mês'}
+                    </p>
                 </div>
-                {!isPro && (
+                {!isPro && !isFreeFirstMode && (
                     <button
                         onClick={() => navigate('/pricing')}
                         className="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-lg font-bold transition-all"
@@ -143,7 +146,9 @@ export const UsageLimitsPanel: React.FC<UsageLimitsPanelProps> = ({ userPlan = '
             {/* Warnings */}
             {!usage.memories.canCreate && (
                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400">
-                    ⚠️ Limite de memórias atingido. Faça upgrade para continuar criando.
+                    {isFreeFirstMode
+                        ? 'Limite técnico temporário atingido. Tenta novamente mais tarde.'
+                        : '⚠️ Limite de memórias atingido. Faça upgrade para continuar criando.'}
                 </div>
             )}
 

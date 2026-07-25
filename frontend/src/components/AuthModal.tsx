@@ -3,12 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Mail, Lock, User, AlertCircle, Key } from 'lucide-react';
 import { auth } from '../firebase';
 import { deriveAesKeyFromMnemonic, generateMnemonic, validateBip39Mnemonic } from '../utils/crypto';
+import { getAuthErrorMessage, isNewAuthUser, signInWithGoogle } from '../services/authFlow';
 import {
     signInWithEmailAndPassword,
     createUserWithEmailAndPassword,
     sendPasswordResetEmail,
-    signInWithPopup,
-    GoogleAuthProvider
 } from 'firebase/auth';
 
 interface AuthModalProps {
@@ -16,9 +15,16 @@ interface AuthModalProps {
     onClose: () => void;
     initialMode?: 'login' | 'register' | 'reset' | 'mnemonic';
     onMnemonicComplete?: (mnemonic: string[]) => void;
+    onGeneratedMnemonic?: (mnemonic: string[]) => void;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'login', onMnemonicComplete }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({
+    isOpen,
+    onClose,
+    initialMode = 'login',
+    onMnemonicComplete,
+    onGeneratedMnemonic,
+}) => {
     const [mode, setMode] = useState<'login' | 'register' | 'reset' | 'mnemonic'>(initialMode);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -35,15 +41,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMo
         setSuccess(null);
     }, [initialMode, isOpen]);
 
+    const completeGeneratedMnemonic = (words: string[]) => {
+        if (onGeneratedMnemonic) {
+            onGeneratedMnemonic(words);
+            return;
+        }
+        onMnemonicComplete?.(words);
+    };
+
     const handleGoogleLogin = async () => {
         setLoading(true);
         setError(null);
         try {
-            const provider = new GoogleAuthProvider();
-            await signInWithPopup(auth, provider);
+            const credential = await signInWithGoogle();
+            if (!credential) return;
+            if (isNewAuthUser(credential)) {
+                completeGeneratedMnemonic(await generateMnemonic());
+            }
             onClose();
-        } catch {
-            setError('Erro ao entrar com Google');
+        } catch (error) {
+            setError(getAuthErrorMessage(error, 'Erro ao entrar com Google.'));
         } finally {
             setLoading(false);
         }
@@ -65,20 +82,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMo
         onClose();
     };
 
-    const generateNewMnemonic = async () => {
-        setMnemonic((await generateMnemonic()).join(' '));
-        setError(null);
-    };
-
     const handleLogin = async () => {
         setError(null);
+        if (!email.trim() || !password) {
+            setError('Preenche email e senha.');
+            return;
+        }
         setLoading(true);
         try {
             await signInWithEmailAndPassword(auth, email, password);
             onClose();
         } catch (error) {
-            const err = error as { code?: string };
-            setError(err.code === 'auth/invalid-credential' ? 'Email ou senha incorretos' : 'Erro ao fazer login');
+            setError(getAuthErrorMessage(error, 'Erro ao fazer login.'));
         } finally {
             setLoading(false);
         }
@@ -86,6 +101,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMo
 
     const handleRegister = async () => {
         setError(null);
+        if (!email.trim()) {
+            setError('Digite seu email');
+            return;
+        }
         if (password !== confirmPassword) {
             setError('As senhas não coincidem');
             return;
@@ -96,11 +115,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMo
         }
         setLoading(true);
         try {
+            const words = await generateMnemonic();
             await createUserWithEmailAndPassword(auth, email, password);
+            completeGeneratedMnemonic(words);
             onClose();
         } catch (error) {
-            const err = error as { code?: string };
-            setError(err.code === 'auth/email-already-in-use' ? 'Email já está em uso' : 'Erro ao criar conta');
+            setError(getAuthErrorMessage(error, 'Erro ao criar conta.'));
         } finally {
             setLoading(false);
         }
@@ -117,8 +137,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMo
         try {
             await sendPasswordResetEmail(auth, email);
             setSuccess('Email de recuperação enviado! Verifique sua caixa de entrada.');
-        } catch {
-            setError('Erro ao enviar email de recuperação');
+        } catch (error) {
+            setError(getAuthErrorMessage(error, 'Erro ao enviar email de recuperação.'));
         } finally {
             setLoading(false);
         }
@@ -150,7 +170,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMo
                                     </div>
                                     <div>
                                         <h2 className="text-xl font-bold glow-text">
-                                            {mode === 'login' ? 'Aceder' : mode === 'register' ? 'Iniciar' : mode === 'mnemonic' ? 'Recuperar Mente' : 'Recuperar Senha'}
+                                            {mode === 'login' ? 'Aceder' : mode === 'register' ? 'Iniciar' : mode === 'mnemonic' ? 'Desbloquear Mente' : 'Recuperar Senha'}
                                         </h2>
                                         <p className="text-[10px] text-gray-500 uppercase tracking-widest">
                                             Mnemosyne Cognitive OS
@@ -186,23 +206,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMo
                             {mode === 'mnemonic' ? (
                                 <div className="space-y-3">
                                     <div>
-                                        <label className="text-xs text-gray-400 mb-1 block">Frase de 12 Palavras (Semente Cognitiva)</label>
+                                        <label className="text-xs text-gray-400 mb-1 block">Chave de 12 palavras da conta existente</label>
                                         <div className="relative">
                                             <Key className="absolute left-3 top-3 w-4 h-4 text-gray-500" />
                                             <textarea
                                                 value={mnemonic}
                                                 onChange={(e) => setMnemonic(e.target.value)}
-                                                placeholder="insira as suas 12 palavras separadas por espaço..."
+                                                placeholder="insere as tuas 12 palavras separadas por espaço..."
                                                 className="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[80px] resize-none"
                                             />
                                         </div>
                                     </div>
-                                    <button
-                                        onClick={generateNewMnemonic}
-                                        className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors block text-right w-full"
-                                    >
-                                        Gerar nova chave
-                                    </button>
                                 </div>
                             ) : (
                                 <div className="space-y-3">

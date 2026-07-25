@@ -1,0 +1,33 @@
+- generic [ref=e8]:
+  - banner [ref=e9]:
+    - generic [ref=e10]:
+      - img [ref=e14]
+      - generic [ref=e22]: Mnemosyne
+    - navigation [ref=e23]:
+      - link "Sobre" [ref=e24] [cursor=pointer]:
+        - /url: /
+      - link "Planos" [ref=e25] [cursor=pointer]:
+        - /url: /pricing
+      - button "Entrar" [ref=e26] [cursor=pointer]
+  - main [ref=e27]:
+    - generic [ref=e28]:
+      - generic [ref=e30]:
+        - img [ref=e31]
+        - text: Cognitive Universe Engine
+      - heading "Entra no teu universo mental" [level=1] [ref=e34]:
+        - text: Entra no teu
+        - text: universo mental
+      - paragraph [ref=e35]:
+        - text: Guarda pensamentos, liga ideias e explora a tua memória
+        - text: num espaço vivo e privado.
+      - generic [ref=e36]:
+        - button "Começar grátis" [ref=e37] [cursor=pointer]:
+          - img [ref=e38]
+          - text: Começar grátis
+          - img [ref=e41]
+        - button "Zero-Knowledge" [ref=e43] [cursor=pointer]:
+          - img [ref=e44]
+          - text: Zero-Knowledge
+        - button "Entrar" [ref=e47]:
+          - img [ref=e48]
+          - text: Entrar

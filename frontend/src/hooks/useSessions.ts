@@ -3,6 +3,8 @@ import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestor
 import { db } from '../firebase';
 import type { User } from 'firebase/auth';
 import { embeddingService } from '../services/embeddingService';
+import type { Attachment } from '../types/attachments';
+import { searchMemories } from '../utils/searchMemories';
 
 export interface FilterOptions {
     dateRange: string;
@@ -29,11 +31,17 @@ export interface SessionData {
     importance?: number;
     celestialType?: string;
     title?: string;
+    attachments?: Attachment[];
+    generatedImagePrompt?: string;
+    generatedImageProvider?: string;
+    generatedImageModel?: string;
     semanticScore?: number;
     deletedAt?: number;
     deletedByDeviceId?: string;
     originalMemoryId?: string;
     conflictReason?: string;
+    parentId?: string;
+    processingMethod?: string | null;
 }
 
 export const useSessions = (user: User | null, searchQuery: string, filters: FilterOptions) => {
@@ -72,6 +80,10 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
                     id: doc.id,
                     text: data.text || '',
                     title: data.title,
+                    attachments: Array.isArray(data.attachments) ? data.attachments : [],
+                    generatedImagePrompt: data.generatedImagePrompt,
+                    generatedImageProvider: data.generatedImageProvider,
+                    generatedImageModel: data.generatedImageModel,
                     timestamp: data.timestamp || 0,
                     updatedAt: data.updatedAt || data.timestamp || 0,
                     uid: data.uid,
@@ -86,10 +98,12 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
                     position: Array.isArray(rawPosition) && rawPosition.length === 3 ? rawPosition as [number, number, number] : undefined,
                     importance: data.importance,
                     celestialType: data.celestialType,
+                    parentId: data.parentId,
                     deletedAt: data.deletedAt,
                     deletedByDeviceId: data.deletedByDeviceId,
                     originalMemoryId: data.originalMemoryId,
                     conflictReason: data.conflictReason,
+                    processingMethod: data.processingMethod,
                 } as SessionData);
             });
 
@@ -110,7 +124,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         let cancelled = false;
         const runSemanticSearch = async () => {
             const queryText = searchQuery.trim();
-            if (queryText.length < 3 || sessions.every((session) => !session.embedding?.length)) {
+            if (queryText.length < 2 || sessions.every((session) => !session.embedding?.length)) {
                 setSemanticScores(new Map());
                 return;
             }
@@ -121,7 +135,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
                 for (const session of sessions) {
                     if (!session.embedding?.length || session.embedding.length !== queryEmbedding.length) continue;
                     const score = embeddingService.cosineSimilarity(queryEmbedding, session.embedding);
-                    if (score >= 0.42) nextScores.set(session.id, score);
+                    if (score >= 0.38) nextScores.set(session.id, score);
                 }
                 if (!cancelled) setSemanticScores(nextScores);
             } catch (error) {
@@ -134,24 +148,27 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         return () => { cancelled = true; };
     }, [searchQuery, sessions]);
 
-    // Lógica de Filtro e Busca
+    // Lógica de Filtro e Busca (motor unificado + filtros de data/tags/categoria)
     const filteredSessions = useMemo(() => {
         let result = [...sessions];
 
-        // Filtro de Texto
         if (searchQuery.trim()) {
-            const queryText = searchQuery.toLowerCase();
-            result = result.filter(s =>
-                s.text?.toLowerCase().includes(queryText) ||
-                s.tags?.some((tag: string) => tag.toLowerCase().includes(queryText)) ||
-                (semanticScores.get(s.id) || 0) >= 0.42
-            ).map((session) => ({
-                ...session,
-                semanticScore: semanticScores.get(session.id) || 0,
-            })).sort((a, b) => {
-                const semanticDelta = (b.semanticScore || 0) - (a.semanticScore || 0);
-                return Math.abs(semanticDelta) > 0.01 ? semanticDelta : b.timestamp - a.timestamp;
+            const hits = searchMemories(result, searchQuery, {
+                semanticScores,
+                limit: 500,
+                semanticFloor: 0.38,
             });
+            const byId = new Map(result.map((s) => [s.id, s]));
+            const ranked: SessionData[] = [];
+            for (const hit of hits) {
+                const session = byId.get(hit.memory.id);
+                if (!session) continue;
+                ranked.push({
+                    ...session,
+                    semanticScore: hit.score,
+                });
+            }
+            result = ranked;
         }
 
         // Filtro de Data
@@ -167,7 +184,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
             result = result.filter(s => s.timestamp > cutoff);
         }
 
-        // Filtro de Tags
+        // Filtro de Tags (painel de filtros da UI)
         if (filters.tags.length > 0) {
             result = result.filter(s =>
                 s.tags?.some((tag: string) => filters.tags.includes(tag))

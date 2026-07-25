@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { CheckCircle, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { isFreeFirstMode } from '../config/monetization';
 
 export const CheckoutSuccess: React.FC = () => {
     const navigate = useNavigate();
@@ -40,12 +41,14 @@ export const CheckoutSuccess: React.FC = () => {
 
                     {/* Title */}
                     <h1 className="text-4xl font-bold mb-4 glow-text">
-                        Pagamento Confirmado!
+                        {isFreeFirstMode ? 'Founder Preview Ativo' : 'Pagamento Confirmado!'}
                     </h1>
 
                     {/* Description */}
                     <p className="text-xl text-gray-400 mb-8">
-                        Bem-vindo ao Mnemosyne Premium! 🎉
+                        {isFreeFirstMode
+                            ? 'O core gratuito está aberto durante a fase de construção de mercado.'
+                            : 'Bem-vindo ao Mnemosyne Premium!'}
                     </p>
 
                     <div className="glass-card p-6 mb-8 text-left">
@@ -53,15 +56,15 @@ export const CheckoutSuccess: React.FC = () => {
                         <ul className="space-y-3 text-sm text-gray-400">
                             <li className="flex items-start gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-green-400 mt-2" />
-                                <span>Sua assinatura está ativa imediatamente</span>
+                                <span>{isFreeFirstMode ? 'Não há cobrança ativa nesta fase' : 'Sua assinatura está ativa imediatamente'}</span>
                             </li>
                             <li className="flex items-start gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-green-400 mt-2" />
-                                <span>Todas as features Pro foram desbloqueadas</span>
+                                <span>{isFreeFirstMode ? 'Memórias, Universe e IA local estão abertos' : 'Todas as features Pro foram desbloqueadas'}</span>
                             </li>
                             <li className="flex items-start gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-green-400 mt-2" />
-                                <span>Você receberá um email de confirmação</span>
+                                <span>{isFreeFirstMode ? 'Planos pagos serão comunicados antes de qualquer ativação' : 'Você receberá um email de confirmação'}</span>
                             </li>
                             <li className="flex items-start gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-green-400 mt-2" />

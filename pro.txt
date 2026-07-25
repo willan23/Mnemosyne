@@ -1,0 +1,185 @@
+Transformar o Mnemosyne num universo cognitivo espacial vivo.
+
+Eliminar completamente o conceito tradicional de:
+
+* pastas
+* listas
+* árvores
+* diretórios estáticos
+
+Substituir por uma cosmologia cognitiva dinâmica.
+
+---
+
+# HIERARQUIA ESPACIAL
+
+## Projeto principal
+
+→ estrela / sol
+
+Cada projeto:
+
+* gera gravidade
+* possui identidade visual própria
+* possui cor dominante
+* influencia todos os objetos ao redor
+
+---
+
+## Pasta
+
+→ planeta
+
+Cada pasta:
+
+* orbita o projeto principal
+* representa domínio/subsistema
+
+---
+
+## Subpasta
+
+→ lua
+
+Cada subpasta:
+
+* orbita o planeta principal
+
+---
+
+## Ficheiros
+
+Transformar ficheiros em estruturas espaciais diferentes conforme o tipo:
+
+### Markdown/TXT
+
+→ bibliotecas luminosas
+
+### PDF
+
+→ templos/arquivos antigos
+
+### Código
+
+→ estruturas tecnológicas neon
+
+### Imagem
+
+→ hologramas orbitais
+
+### Vídeo
+
+→ satélites vivos
+
+### Áudio
+
+→ pulsações energéticas
+
+---
+
+# GRAVIDADE COGNITIVA
+
+Quanto mais importante:
+
+* maior massa
+* maior brilho
+* mais influência orbital
+
+---
+
+# EVOLUÇÃO DINÂMICA
+
+Projetos pequenos:
+→ asteroides
+
+Projetos médios:
+→ planetas
+
+Projetos avançados:
+→ sistemas solares
+
+Projetos massivos:
+→ galáxias cognitivas
+
+---
+
+# CONSTELAÇÕES
+
+Projetos semanticamente relacionados:
+
+* conectam-se
+* criam constelações
+
+---
+
+# ROTAS COGNITIVAS
+
+Ficheiros frequentemente usados juntos:
+
+* geram rotas energéticas
+
+---
+
+# DECAY REAL
+
+Memórias esquecidas:
+
+* perdem brilho
+* afastam-se
+* entram em estado dormente
+
+Memórias importantes:
+
+* aproximam-se
+* crescem
+* tornam-se centrais
+
+---
+
+# OBSERVATÓRIO
+
+Adicionar modo:
+"Galaxy View"
+
+Permitir:
+
+* afastar câmara
+* visualizar toda a galáxia cognitiva
+* observar evolução dos projetos
+
+---
+
+# NAVEGAÇÃO
+
+Utilizador deve:
+
+* viajar pelo universo
+* movimentar em 360º
+* usar zoom suave
+* focar sistemas específicos
+
+---
+
+# REGRAS
+
+Nunca parecer:
+
+* file explorer
+* gestor de ficheiros tradicional
+* lista técnica
+
+Sempre parecer:
+
+* universo vivo
+* sistema cognitivo espacial
+* mapa mental orgânico
+
+---
+
+# OBJETIVO FINAL
+
+O utilizador não deve sentir que está:
+"abrindo ficheiros"
+
+Ele deve sentir que está:
+"explorando a própria mente"

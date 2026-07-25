@@ -13,6 +13,7 @@ export interface GraphNode {
     fz?: number;
     cluster?: string;
     celestialType?: string;
+    parentId?: string;
     importance?: number;
     connectionCount?: number;
     isForgotten?: boolean;
@@ -107,17 +108,13 @@ export const useGraphData = (sessions: SessionData[]) => {
                     val: Math.max(4, Math.min(18, 5 + importance * 7 + connectionCount * 0.8 + (ageDays > 60 ? 1 : 0))),
                     cluster: clusterId,
                     celestialType: session.celestialType,
+                    parentId: session.parentId,
                     importance,
                     connectionCount,
                     isForgotten,
                     timestamp: session.timestamp,
                     lastViewedAt: session.lastViewedAt || session.timestamp,
                     ...semanticPosition,
-                    ...(semanticPosition ? {
-                        fx: semanticPosition.x,
-                        fy: semanticPosition.y,
-                        fz: semanticPosition.z,
-                    } : {})
                 });
                 nodeIds.add(memoryNodeId);
             }

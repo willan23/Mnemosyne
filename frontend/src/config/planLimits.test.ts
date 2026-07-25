@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getPlanLimits, getUsagePercentage, hasReachedLimit, normalizePlanName } from './planLimits';
+import { getEffectivePlanLimits, getPlanLimits, getUsagePercentage, hasReachedLimit, normalizePlanName } from './planLimits';
 
 describe('plan limits', () => {
   it('normalizes unsupported and legacy plan names safely', () => {
@@ -18,6 +18,27 @@ describe('plan limits', () => {
     expect(free.attachments.audio.enabled).toBe(false);
     expect(free.attachments.pdfs.enabled).toBe(false);
     expect(free.features.apiAccess).toBe(false);
+  });
+
+  it('opens core limits in Free-first mode without deleting paid plan definitions', () => {
+    const effective = getEffectivePlanLimits('free');
+    const free = getPlanLimits('free');
+    const sovereign = getPlanLimits('sovereign');
+
+    // Paid plan definitions remain intact for latent monetization.
+    expect(free.memories.monthly).toBe(30);
+    expect(sovereign.name).toBe('Sovereign');
+    expect(sovereign.features.prioritySupport).toBe(true);
+
+    // Free-first exposes Founder Preview with fair-use ceilings (not unlimited cloud).
+    expect(effective.name).toBe('Founder Preview');
+    expect(effective.memories.monthly).toBe(-1);
+    expect(effective.storage.maxGB).toBe(5);
+    expect(effective.attachments.images.enabled).toBe(true);
+    expect(effective.attachments.audio.enabled).toBe(true);
+    expect(effective.attachments.pdfs.enabled).toBe(true);
+    expect(effective.features.apiAccess).toBe(true);
+    expect(effective.features.prioritySupport).toBe(false);
   });
 
   it('maps legacy business users to sovereign limits', () => {

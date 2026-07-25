@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Check, Shield, Cpu, Globe, Users } from 'lucide-react';
+import { isFreeFirstMode } from '../config/monetization';
 
 interface PlansModalProps {
     isOpen: boolean;
@@ -9,12 +10,14 @@ interface PlansModalProps {
 
 const plans = [
     {
-        name: 'Free',
+        name: isFreeFirstMode ? 'Founder Preview' : 'Free',
         price: '0',
         icon: <Globe className="w-5 h-5 text-gray-400" />,
         color: 'border-gray-500/30 bg-gray-500/5',
         textColor: 'text-gray-300',
-        features: ['Memórias limitadas (1.000)', 'Universo básico', 'IA local manual', 'Exportação Markdown']
+        features: isFreeFirstMode
+            ? ['Core gratuito na fase de mercado', 'Memórias ilimitadas', 'IA local', 'Universe e Insights']
+            : ['Memórias limitadas (1.000)', 'Universo básico', 'IA local manual', 'Exportação Markdown']
     },
     {
         name: 'Pro',
@@ -64,8 +67,14 @@ export const PlansModal: React.FC<PlansModalProps> = ({ isOpen, onClose }) => {
                     >
                         <div className="p-6 border-b border-white/5 flex justify-between items-center">
                             <div>
-                                <h2 className="text-2xl font-bold text-white tracking-tight">Expande a Tua Mente Digital</h2>
-                                <p className="text-sm text-gray-400 mt-1">Escolhe o modelo arquitetural que melhor serve o teu Universo.</p>
+                                <h2 className="text-2xl font-bold text-white tracking-tight">
+                                    {isFreeFirstMode ? 'Founder Preview Gratuito' : 'Expande a Tua Mente Digital'}
+                                </h2>
+                                <p className="text-sm text-gray-400 mt-1">
+                                    {isFreeFirstMode
+                                        ? 'O core está aberto enquanto construímos mercado. Planos pagos ficam como arquitetura futura.'
+                                        : 'Escolhe o modelo arquitetural que melhor serve o teu Universo.'}
+                                </p>
                             </div>
                             <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
                                 <X className="w-5 h-5 text-gray-400" />
@@ -90,7 +99,7 @@ export const PlansModal: React.FC<PlansModalProps> = ({ isOpen, onClose }) => {
                                             <div className="flex items-baseline gap-1">
                                                 <span className="text-sm text-gray-500">€</span>
                                                 <span className="text-3xl font-bold text-white">{plan.price}</span>
-                                                <span className="text-xs text-gray-500">/mês</span>
+                                                <span className="text-xs text-gray-500">{isFreeFirstMode && plan.name !== 'Founder Preview' ? ' futuro' : '/mês'}</span>
                                             </div>
                                         ) : (
                                             <span className="text-xl font-bold text-white">{plan.price}</span>
@@ -111,7 +120,7 @@ export const PlansModal: React.FC<PlansModalProps> = ({ isOpen, onClose }) => {
                                             ? 'bg-cyan-500 text-black hover:bg-cyan-400' 
                                             : 'bg-white/5 text-white hover:bg-white/10 border border-white/10'
                                     }`}>
-                                        Selecionar
+                                        {isFreeFirstMode && plan.name !== 'Founder Preview' ? 'Futuro' : 'Selecionar'}
                                     </button>
                                 </div>
                             ))}

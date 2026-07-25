@@ -1,3 +1,5 @@
+import { isFreeFirstMode } from './monetization';
+
 // Configuração de limites por plano de assinatura
 
 export interface PlanLimits {
@@ -130,6 +132,42 @@ export const PLAN_LIMITS: Record<PlanName, PlanLimits> = {
     },
 };
 
+/**
+ * Founder Preview: core aberto, com tetos técnicos de fair-use
+ * (storage e anexos) para proteger infraestrutura — não são paywall.
+ */
+export const FREE_FIRST_LIMITS: PlanLimits = {
+    name: 'Founder Preview',
+    memories: {
+        monthly: -1,
+    },
+    storage: {
+        maxGB: 5, // fair-use cloud; local embeddings sem teto
+    },
+    attachments: {
+        images: {
+            enabled: true,
+            monthlyLimit: 200,
+        },
+        audio: {
+            enabled: true,
+            monthlyLimit: 80,
+        },
+        pdfs: {
+            enabled: true,
+            monthlyLimit: 120,
+        },
+    },
+    features: {
+        privateSharing: true,
+        notifications: true,
+        advancedAnalytics: true,
+        apiAccess: true,
+        teamMembers: 3,
+        prioritySupport: false,
+    },
+};
+
 export const normalizePlanName = (planName: string = 'free'): PlanName => {
     const normalizedPlan = planName.toLowerCase();
     if (normalizedPlan === 'business') return 'sovereign';
@@ -140,6 +178,13 @@ export const normalizePlanName = (planName: string = 'free'): PlanName => {
 // Helper para obter limites do plano atual
 export const getPlanLimits = (planName: string = 'free'): PlanLimits => {
     return PLAN_LIMITS[normalizePlanName(planName)];
+};
+
+// Limites efetivos usados pela app. Em Free-first, o core fica aberto e
+// permanecem apenas limites tecnicos/fair-use que protegem infraestrutura.
+export const getEffectivePlanLimits = (planName: string = 'free'): PlanLimits => {
+    if (isFreeFirstMode) return FREE_FIRST_LIMITS;
+    return getPlanLimits(planName);
 };
 
 // Helper para verificar se atingiu o limite

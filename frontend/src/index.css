@@ -114,6 +114,19 @@ body {
   50%      { border-color: rgba(34,211,238,0.4); }
 }
 
+@keyframes notification-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(34, 211, 238, 0); }
+}
+
+.animate-notification-pulse {
+  animation: notification-pulse 1.6s ease-in-out infinite;
+}
+
+.notification-toast {
+  animation: slide-up 0.28s ease forwards;
+}
+
 /* ─── Utility Classes ────────────────────────────────────────── */
 @layer components {
 
@@ -279,6 +292,131 @@ body {
     border-radius: 4px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+  .mnem-flow-panel {
+    max-height: min(70dvh, 640px);
+  }
+
+  /* Bottom navigation dock */
+  .mnem-dock {
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.88) 0%, rgba(2, 6, 23, 0.9) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 9999px;
+    backdrop-filter: blur(32px) saturate(190%);
+    -webkit-backdrop-filter: blur(32px) saturate(190%);
+    box-shadow:
+      0 24px 56px rgba(0, 0, 0, 0.58),
+      0 0 0 1px rgba(139, 92, 246, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 0 40px rgba(99, 102, 241, 0.08);
+  }
+
+  .mnem-dock-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+    padding: 0.65rem 0.9rem;
+    border-radius: 9999px;
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.42);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    white-space: nowrap;
+  }
+  .mnem-dock-item:hover {
+    color: rgba(255, 255, 255, 0.92);
+    background: rgba(255, 255, 255, 0.07);
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.12);
+  }
+  .mnem-dock-item-active {
+    color: #fff;
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.28) 0%, rgba(34, 211, 238, 0.12) 100%);
+    box-shadow:
+      inset 0 0 20px rgba(255, 255, 255, 0.06),
+      0 0 18px rgba(139, 92, 246, 0.25);
+  }
+
+  /* Film grain sutil para o universo 3D */
+  .mnem-universe-grain {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+    background-size: 180px 180px;
+    mix-blend-mode: overlay;
+  }
+
+  .mnem-graph-empty {
+    background: linear-gradient(160deg, rgba(15, 23, 42, 0.88) 0%, rgba(7, 16, 31, 0.92) 100%);
+    border: 1px solid rgba(167, 139, 250, 0.22);
+    box-shadow:
+      0 28px 80px rgba(0, 0, 0, 0.55),
+      0 0 60px rgba(99, 102, 241, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+  .mnem-dock-item-cyan {
+    color: rgba(103, 232, 249, 0.72);
+  }
+  .mnem-dock-item-cyan:hover {
+    color: #ecfeff;
+    background: rgba(34, 211, 238, 0.1);
+  }
+  .mnem-dock-item-indigo {
+    color: rgba(165, 180, 252, 0.85);
+  }
+  .mnem-dock-item-indigo:hover {
+    color: #e0e7ff;
+    background: rgba(99, 102, 241, 0.12);
+  }
+
+  @media (min-width: 640px) {
+    .mnem-dock-item {
+      padding: 0.75rem 1.15rem;
+      font-size: 0.65rem;
+    }
+  }
+
+  .mnem-comms-panel {
+    height: min(760px, calc(100dvh - 1rem));
+    max-height: calc(100dvh - 1rem);
+  }
+
+  .mnem-comms-actionbar {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  @media (min-width: 640px) {
+    .mnem-comms-panel {
+      height: min(760px, calc(100dvh - 2rem));
+      max-height: calc(100dvh - 2rem);
+    }
+  }
+
+  @media (max-height: 760px) {
+    .mnem-comms-panel {
+      height: calc(100dvh - 0.75rem);
+      max-height: calc(100dvh - 0.75rem);
+    }
+
+    .mnem-comms-compose-scroll {
+      gap: 0.75rem;
+    }
+
+    .mnem-comms-compact-card {
+      padding: 0.75rem;
+    }
+
+    .mnem-comms-pem {
+      height: 4rem;
+    }
+
+    .mnem-comms-message {
+      height: 5.75rem;
+    }
+  }
 }
 
 /* ─── Notification & Panel Animations ─────────────────────── */

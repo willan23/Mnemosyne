@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from '../utils/translations';
 
 interface Props {
   memoriesCount: number;
@@ -6,10 +7,13 @@ interface Props {
   onDismiss: () => void;
 }
 
-export const OrphanedMemoriesWarning: React.FC<Props> = ({ memoriesCount, onResetAndClean, onDismiss }) => (
-  <div className="glass-card p-4 text-sm text-amber-400 flex items-center gap-3">
-    <span>{memoriesCount} orphaned memories found.</span>
-    <button onClick={onResetAndClean} className="underline">Clean</button>
-    <button onClick={onDismiss} className="underline">Dismiss</button>
-  </div>
-);
+export const OrphanedMemoriesWarning: React.FC<Props> = ({ memoriesCount, onResetAndClean, onDismiss }) => {
+  const { t } = useTranslation();
+  return (
+    <div className="glass-card p-4 text-sm text-amber-400 flex items-center gap-3">
+      <span>{t('orphanedMemoriesFound', { count: memoriesCount })}</span>
+      <button onClick={onResetAndClean} className="underline">{t('clean')}</button>
+      <button onClick={onDismiss} className="underline">{t('dismiss')}</button>
+    </div>
+  );
+};

@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { auth, db, default as app } from '../firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { getPlanLimits, normalizePlanName } from '../config/planLimits';
+import { getEffectivePlanLimits, normalizePlanName } from '../config/planLimits';
+import { isFreeFirstMode } from '../config/monetization';
 
 export type SubscriptionTier = 'free' | 'pro' | 'sovereign';
 export type SubscriptionState = 'active' | 'trialing' | 'past_due' | 'canceled' | 'incomplete' | 'incomplete_expired' | 'paused' | 'unpaid' | string;
@@ -31,7 +32,7 @@ export interface SubscriptionStatus {
 }
 
 const getSubscriptionLimits = (tier: string): SubscriptionLimits => {
-    const plan = getPlanLimits(tier);
+    const plan = getEffectivePlanLimits(tier);
     return {
         memoriesPerMonth: plan.memories.monthly,
         storageGB: plan.storage.maxGB,
@@ -109,13 +110,15 @@ export function useSubscription() {
                 setIsLoading(false);
             });
 
-            // Force sync with Stripe (background check)
-            try {
-                const functions = getFunctions(app, 'europe-west1');
-                const getStatus = httpsCallable(functions, 'getSubscriptionStatus');
-                getStatus().catch((e) => console.error('⚠️ [useSubscription] Sync check failed:', e));
-            } catch (error) {
-                console.error('⚠️ [useSubscription] Sync check initiation failed:', error);
+            // Stripe remains installed but dormant during the Free-first phase.
+            if (!isFreeFirstMode) {
+                try {
+                    const functions = getFunctions(app, 'europe-west1');
+                    const getStatus = httpsCallable(functions, 'getSubscriptionStatus');
+                    getStatus().catch((e) => console.error('⚠️ [useSubscription] Sync check failed:', e));
+                } catch (error) {
+                    console.error('⚠️ [useSubscription] Sync check initiation failed:', error);
+                }
             }
         });
 
@@ -154,6 +157,7 @@ export function useSubscription() {
         if (!subscription) return false;
 
         const { limits, usage } = subscription;
+        if (limits.storageGB === -1) return true;
         const availableGB = limits.storageGB - (usage.storageUsedMB / 1024);
 
         return (fileSizeMB / 1024) <= availableGB;
@@ -179,6 +183,7 @@ export function useSubscription() {
         if (!subscription) return 0;
 
         const { limits, usage } = subscription;
+        if (limits.storageGB === -1) return 0;
         const usageGB = usage.storageUsedMB / 1024;
 
         return Math.min(100, (usageGB / limits.storageGB) * 100);

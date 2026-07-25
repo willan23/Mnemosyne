@@ -1,10 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
+import QRCode from 'qrcode';
 import { deriveAesKeyFromMnemonic } from '../utils/crypto';
 import { auth } from '../firebase';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Brain, Key, Eye, EyeOff, Shield, AlertTriangle, Cpu, RotateCcw, Smartphone, QrCode, Copy, UploadCloud } from 'lucide-react';
+import { X, Brain, Key, Eye, EyeOff, Shield, AlertTriangle, Cpu, RotateCcw, Smartphone, QrCode, Copy, UploadCloud, Download, Globe, Folder, Compass, Lock, Search, type LucideIcon } from 'lucide-react';
+import {
+    disableLocalPin,
+    enableLocalPin,
+    isLocalPinEnabled,
+} from '../utils/localPin';
+import toast from 'react-hot-toast';
+import { resetOnboarding } from './OnboardingTour';
 import { PlansModal } from './PlanosModal';
 import { SyncConflictPanel } from './SyncConflictPanel';
+import { learnDocumentBatch } from '../services/learningService';
+import { isTauriRuntime, selectAndReadTauriDirectory } from '../utils/tauriFolderImporter';
 import {
     cancelMobilePairingInvite,
     createMobilePairingInvite,
@@ -24,6 +34,10 @@ import {
 } from '../services/mobileSync';
 import { getOrCreateDesktopSyncIdentity } from '../services/desktopSyncIdentity';
 import type { SessionData } from '../hooks/useSessions';
+import { useUniverseStore } from '../store/universeStore';
+import { useTranslation } from '../utils/translations';
+import type { UniverseType } from '../types/universe';
+import { DESKTOP_APP_DOWNLOAD_URL, MOBILE_APP_DOWNLOAD_URL, openExternalDownload } from '../config/downloads';
 import {
     AI_PROVIDERS,
     clearProviderSecret,
@@ -36,27 +50,111 @@ import {
     type LocalAiConfig,
 } from '../services/localAiConfig';
 
+type SettingsSectionId = 'identity' | 'mobile' | 'universe' | 'ai' | 'integrations' | 'privacy' | 'account';
+
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
     mnemonic: string[] | null;
     onResetKey: () => void;
     sessions?: SessionData[];
+    onReplayOnboarding?: () => void;
+    /** Secção inicial (ex: 'privacy', 'ai') — deep-link da Command Palette */
+    initialSection?: SettingsSectionId | string | null;
 }
 
+const SETTINGS_SECTION_KEY = 'mnemosyne.settings.section.v1';
+
+const SETTINGS_SEARCH_INDEX: Record<SettingsSectionId, string[]> = {
+    identity: ['chave', 'mnemónica', 'mnemonic', 'uid', 'identidade', 'seed', 'backup'],
+    mobile: ['android', 'qr', 'sync', 'mobile', 'dispositivo', 'pairing', 'telefone'],
+    universe: ['universo', 'galáxia', 'tema visual', '3d', 'nebulosa', 'void'],
+    ai: ['ia', 'ai', 'ollama', 'openai', 'modelo', 'llm', 'nvidia', 'gemini', 'anthropic', 'mistral', 'permissões'],
+    integrations: ['importar', 'pasta', 'download', 'desktop', 'app', 'integrar', 'ficheiros'],
+    privacy: ['pin', 'privacidade', 'zero-knowledge', 'partilha', 'onboarding', 'segurança', 'idle'],
+    account: ['conta', 'apagar', 'eliminar', 'danger', 'delete'],
+};
+
+const isSettingsSection = (value: string | null | undefined): value is SettingsSectionId =>
+    Boolean(value && value in SETTINGS_SEARCH_INDEX);
+
 const universeTypes = [
-    { id: 'galaxia', name: 'Galáxia', color: 'from-purple-500 to-blue-500' },
-    { id: 'sistema-solar', name: 'Sistema Solar', color: 'from-orange-400 to-yellow-500' },
-    { id: 'nebulosa', name: 'Nebulosa', color: 'from-pink-500 to-rose-400' },
-    { id: 'buraco-negro', name: 'Buraco Negro', color: 'from-gray-700 to-black' }
+    { id: 'galaxia', name: 'Galáxia', universeType: 'stellar' as UniverseType, color: 'from-purple-500 to-blue-500' },
+    { id: 'sistema-solar', name: 'Sistema Solar', universeType: 'solar' as UniverseType, color: 'from-orange-400 to-yellow-500' },
+    { id: 'nebulosa', name: 'Nebulosa', universeType: 'mythic' as UniverseType, color: 'from-pink-500 to-rose-400' },
+    { id: 'buraco-negro', name: 'Buraco Negro', universeType: 'void' as UniverseType, color: 'from-gray-700 to-black' }
 ];
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, mnemonic, onResetKey, sessions = [] }) => {
+interface SettingsTab {
+    id: SettingsSectionId;
+    label: string;
+    description: string;
+    icon: LucideIcon;
+}
+
+
+
+const SectionHeader: React.FC<{
+    icon: LucideIcon;
+    title: string;
+    description: string;
+}> = ({ icon: Icon, title, description }) => (
+    <div className="flex flex-col gap-4 border-b border-white/5 pb-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-4">
+            <div className="rounded-2xl border border-purple-400/20 bg-purple-500/10 p-3">
+                <Icon className="h-5 w-5 text-purple-300" />
+            </div>
+            <div>
+                <h3 className="text-lg font-bold tracking-tight text-[#f8fafc]">{title}</h3>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-[#94a3b8]">{description}</p>
+            </div>
+        </div>
+    </div>
+);
+
+const getErrorMessage = (error: unknown, fallback: string) => (
+    error instanceof Error ? error.message : fallback
+);
+
+export const SettingsModal: React.FC<SettingsModalProps> = ({
+    isOpen,
+    onClose,
+    mnemonic,
+    onResetKey,
+    sessions = [],
+    onReplayOnboarding,
+    initialSection = null,
+}) => {
+    const { t, language } = useTranslation();
+    const setLanguage = useUniverseStore((state) => state.setLanguage);
+
+    const tabs: SettingsTab[] = [
+        { id: 'identity', label: t('tabIdentity'), description: t('tabIdentityDesc'), icon: Key },
+        { id: 'mobile', label: t('tabMobile'), description: t('tabMobileDesc'), icon: Smartphone },
+        { id: 'universe', label: t('tabUniverse'), description: t('tabUniverseDesc'), icon: Brain },
+        { id: 'ai', label: t('tabAi'), description: t('tabAiDesc'), icon: Cpu },
+        { id: 'integrations', label: t('tabIntegrations'), description: t('tabIntegrationsDesc'), icon: Download },
+        { id: 'privacy', label: t('tabPrivacy'), description: t('tabPrivacyDesc'), icon: Shield },
+        { id: 'account', label: t('tabAccount'), description: t('tabAccountDesc'), icon: AlertTriangle },
+    ];
+
     const [showMnemonic, setShowMnemonic] = useState(false);
-    const [universeType, setUniverseType] = useState('galaxia');
     const [shareEnabled, setShareEnabled] = useState(false);
+    const [pinEnabled, setPinEnabled] = useState(() => isLocalPinEnabled());
+    const [pinInput, setPinInput] = useState('');
+    const [pinConfirm, setPinConfirm] = useState('');
+    const [pinBusy, setPinBusy] = useState(false);
     const [planosOpen, setPlanosOpen] = useState(false);
+    const [settingsQuery, setSettingsQuery] = useState('');
+    const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => {
+        try {
+            const saved = localStorage.getItem(SETTINGS_SECTION_KEY) as SettingsSectionId | null;
+            if (saved && SETTINGS_SEARCH_INDEX[saved]) return saved;
+        } catch { /* ignore */ }
+        return 'identity';
+    });
     const [aesKeyReady, setAesKeyReady] = useState(false);
+    const [mobileInstallQr, setMobileInstallQr] = useState<string | null>(null);
     const [localAiConfig, setLocalAiConfig] = useState<LocalAiConfig>(() => getLocalAiConfig());
     const [secretInput, setSecretInput] = useState('');
     const [isSavingSecret, setIsSavingSecret] = useState(false);
@@ -69,13 +167,91 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
     const [mobileSyncMessage, setMobileSyncMessage] = useState<string | null>(null);
     const pairingPrivateKeyRef = useRef<CryptoKey | null>(null);
     const trustedPairingIdRef = useRef<string | null>(null);
+    const mnemonicPanelRef = useRef<HTMLDivElement | null>(null);
+    const settingsFolderInputRef = useRef<HTMLInputElement | null>(null);
+    const [isImportingFolder, setIsImportingFolder] = useState(false);
+    const universeType = useUniverseStore((state) => state.universeType);
+    const setGlobalUniverseType = useUniverseStore((state) => state.setUniverseType);
+    const selectedUniverse = universeTypes.find((type) => type.universeType === universeType) || universeTypes[0];
+    const selectedUniversePreset = selectedUniverse.id;
     const selectedProvider = localAiConfig.primaryProvider;
     const activeProvider = AI_PROVIDERS.find((provider) => provider.id === selectedProvider) || AI_PROVIDERS[0];
     const activeProviderConfig = localAiConfig.providers[selectedProvider];
+    const trustedActiveCount = trustedDevices.filter((device) => device.status === 'active').length;
+    const activeTab = tabs.find((tab) => tab.id === activeSection) || tabs[0];
+    const ActiveTabIcon = activeTab.icon;
+    const activeProviderBadge = activeProvider.label.replace(' Local', '').replace(' Backend', '');
+    const tabBadges: Record<SettingsSectionId, string> = {
+        identity: aesKeyReady ? 'AES' : t('badgeIdentityLocked'),
+        mobile: trustedActiveCount > 0 
+            ? `${trustedActiveCount} ${t('badgeMobileActive')}` 
+            : `0 ${t('badgeMobilePairs')}`,
+        universe: selectedUniverse.id === 'galaxia' ? t('badgeUniverseGalaxy') :
+                  selectedUniverse.id === 'sistema-solar' ? t('badgeUniverseSolar') :
+                  selectedUniverse.id === 'nebulosa' ? t('badgeUniverseNebula') :
+                  selectedUniverse.id === 'buraco-negro' ? t('badgeUniverseVoid') : selectedUniverse.name,
+        ai: activeProviderBadge,
+        integrations: t('badgeIntegrationsFree'),
+        privacy: shareEnabled ? t('badgePrivacySharing') : t('badgePrivacyPrivate'),
+        account: t('badgeAccountCritical'),
+    };
     const providerGroups = [
         { title: 'Local e backend controlado', providers: AI_PROVIDERS.filter((provider) => provider.kind !== 'cloud') },
         { title: 'Cloud com consentimento', providers: AI_PROVIDERS.filter((provider) => provider.kind === 'cloud') },
     ];
+
+    const selectSection = (section: SettingsSectionId) => {
+        setActiveSection(section);
+        try {
+            localStorage.setItem(SETTINGS_SECTION_KEY, section);
+        } catch { /* ignore */ }
+    };
+
+    // Deep-link / última secção ao abrir
+    useEffect(() => {
+        if (!isOpen) return;
+        if (isSettingsSection(initialSection)) {
+            selectSection(initialSection);
+            return;
+        }
+        try {
+            const saved = localStorage.getItem(SETTINGS_SECTION_KEY);
+            if (isSettingsSection(saved)) setActiveSection(saved);
+        } catch { /* ignore */ }
+    }, [isOpen, initialSection]);
+
+    // Atalhos 1–7 para secções quando o modal está aberto
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (event: KeyboardEvent) => {
+            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+            const idx = Number(event.key) - 1;
+            if (idx >= 0 && idx < tabs.length) {
+                event.preventDefault();
+                selectSection(tabs[idx].id);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isOpen, tabs]);
+
+    const visibleTabs = tabs.filter((tab) => {
+        const q = settingsQuery.trim().toLowerCase();
+        if (!q) return true;
+        const keywords = SETTINGS_SEARCH_INDEX[tab.id].join(' ');
+        return (
+            tab.label.toLowerCase().includes(q) ||
+            tab.description.toLowerCase().includes(q) ||
+            keywords.includes(q) ||
+            tab.id.includes(q)
+        );
+    });
+
+    useEffect(() => {
+        if (!settingsQuery.trim()) return;
+        if (visibleTabs.some((tab) => tab.id === activeSection)) return;
+        if (visibleTabs[0]) selectSection(visibleTabs[0].id);
+    }, [settingsQuery, visibleTabs, activeSection]);
 
     // Deriva a chave AES-GCM a partir da mnemônica, apenas em memória
     useEffect(() => {
@@ -101,6 +277,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
         deriveKey();
         return () => { cancelled = true; };
     }, [mnemonic]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        let cancelled = false;
+        QRCode.toDataURL(MOBILE_APP_DOWNLOAD_URL, {
+            errorCorrectionLevel: 'M',
+            margin: 2,
+            width: 220,
+            color: {
+                dark: '#020617',
+                light: '#f8fafc',
+            },
+        }).then((dataUrl) => {
+            if (!cancelled) setMobileInstallQr(dataUrl);
+        }).catch(() => {
+            if (!cancelled) setMobileInstallQr(null);
+        });
+        return () => { cancelled = true; };
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!showMnemonic) return;
+        requestAnimationFrame(() => {
+            mnemonicPanelRef.current?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'nearest',
+            });
+        });
+    }, [showMnemonic]);
 
     useEffect(() => {
         const user = auth.currentUser;
@@ -152,7 +357,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                 }
             }
         });
-    }, [pairingInvite]);
+    }, [mnemonic, pairingInvite]);
 
     const handleResetIdentity = async () => {
         if (!confirm('⚠️ ATENÇÃO: Reiniciar a identidade significa que você NÃO poderá mais descriptografar suas memórias antigas sem o backup da chave. Tem certeza?')) {
@@ -178,9 +383,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
 
             onResetKey();
             onClose();
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Error during identity reset:', error);
-            alert(`❌ Erro ao reiniciar identidade: ${error.message}`);
+            alert(`❌ Erro ao reiniciar identidade: ${getErrorMessage(error, 'Erro desconhecido')}`);
         }
     };
 
@@ -227,8 +432,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
             persistProviderConfig(selectedProvider, { hasSecret: true, enabled: true });
             setSecretInput('');
             alert('API key guardada no cofre local cifrado.');
-        } catch (error: any) {
-            alert(error.message || 'Não foi possível guardar a API key.');
+        } catch (error: unknown) {
+            alert(getErrorMessage(error, 'Não foi possível guardar a API key.'));
         } finally {
             setIsSavingSecret(false);
         }
@@ -246,7 +451,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
         const user = auth.currentUser;
         if (!user) return;
         if (!mnemonic || mnemonic.length !== 12) {
-            setPairingError('Desbloqueia primeiro a mnemónica para criar um convite de pareamento.');
+            setPairingError('Desbloqueia primeiro a mnemónica para criar um convite de emparelhamento.');
             return;
         }
 
@@ -264,7 +469,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
             });
         } catch (error) {
             console.error('Unable to create mobile pairing invite:', error);
-            setPairingError(error instanceof Error ? error.message : 'Não foi possível criar o convite de pareamento.');
+            setPairingError(error instanceof Error ? error.message : 'Não foi possível criar o convite de emparelhamento.');
         } finally {
             setIsCreatingPairing(false);
         }
@@ -402,22 +607,118 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
 
             alert('✅ Mente digital eliminada com sucesso. A regressar ao vazio.');
             window.location.href = '/';
-        } catch (error: any) {
-            alert(`❌ Erro ao eliminar mente digital: ${error.message}`);
+        } catch (error: unknown) {
+            alert(`❌ Erro ao eliminar mente digital: ${getErrorMessage(error, 'Erro desconhecido')}`);
+        }
+    };
+
+    const handleFolderChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+
+        const fileArray = Array.from(files);
+
+        // Filtrar ficheiros ignorados (como node_modules, .git, .vscode, lockfiles, ficheiros ocultos ou de 0 bytes)
+        const ignoredPatterns = [
+            /[\\/]\.git[\\/]/,
+            /[\\/]\.vscode[\\/]/,
+            /[\\/]node_modules[\\/]/,
+            /[\\/]\.next[\\/]/,
+            /[\\/]dist[\\/]/,
+            /[\\/]build[\\/]/,
+            /\.DS_Store$/i,
+            /thumbs\.db$/i,
+            /package-lock\.json$/i,
+            /yarn\.lock$/i,
+            /pnpm-lock\.yaml$/i,
+        ];
+
+        const eligibleFiles = fileArray.filter((file) => {
+            const path = file.webkitRelativePath || file.name;
+            const isIgnored = ignoredPatterns.some((pattern) => pattern.test(path));
+            const isDotFile = file.name.startsWith('.');
+            return !isIgnored && !isDotFile && file.size > 0;
+        });
+
+        if (eligibleFiles.length === 0) {
+            alert(t('noFilesFound'));
+            if (settingsFolderInputRef.current) settingsFolderInputRef.current.value = '';
+            return;
+        }
+
+        let finalFiles = eligibleFiles;
+        if (eligibleFiles.length > 20) {
+            alert(t('folderLimitWarning'));
+            finalFiles = eligibleFiles.slice(0, 20);
+        }
+
+        const user = auth.currentUser;
+        if (!user) return;
+
+        setIsImportingFolder(true);
+        try {
+            await learnDocumentBatch(user.uid, finalFiles, sessions);
+            alert(t('foldersLearnedSuccess', { count: finalFiles.length }));
+        } catch (error: unknown) {
+            console.error('Erro ao assimilar pasta:', error);
+            alert(t('foldersLearnedError'));
+        } finally {
+            setIsImportingFolder(false);
+            if (settingsFolderInputRef.current) settingsFolderInputRef.current.value = '';
+        }
+    };
+
+    const triggerFolderImport = async () => {
+        if (isTauriRuntime()) {
+            try {
+                const { open } = await import('@tauri-apps/plugin-dialog');
+                const selected = await open({
+                    directory: true,
+                    multiple: false,
+                });
+                if (!selected) return;
+
+                setIsImportingFolder(true);
+                const importedFiles = await selectAndReadTauriDirectory(selected);
+
+                if (importedFiles.length === 0) {
+                    alert(t('noFilesFound'));
+                    return;
+                }
+
+                let finalFiles = importedFiles;
+                if (importedFiles.length > 20) {
+                    alert(t('folderLimitWarning'));
+                    finalFiles = importedFiles.slice(0, 20);
+                }
+
+                const user = auth.currentUser;
+                if (!user) return;
+
+                await learnDocumentBatch(user.uid, finalFiles, sessions);
+                alert(t('foldersLearnedSuccess', { count: finalFiles.length }));
+            } catch (error: unknown) {
+                console.error('Erro ao assimilar pasta via Tauri:', error);
+                alert(t('foldersLearnedError'));
+            } finally {
+                setIsImportingFolder(false);
+            }
+        } else {
+            settingsFolderInputRef.current?.click();
         }
     };
 
     return (
         <AnimatePresence>
             {isOpen && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto p-3 sm:items-center sm:p-5">
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.3 }}
                         onClick={onClose}
-                        className="absolute inset-0 bg-[#020617]/40 backdrop-blur-sm"
+                        className="absolute inset-0 bg-[#020617]/55 backdrop-blur-md"
                     />
 
                     <motion.div
@@ -425,37 +726,145 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                         animate={{ scale: 1, opacity: 1, y: 0 }}
                         exit={{ scale: 0.95, opacity: 0, y: 10 }}
                         transition={{ duration: 0.3, ease: "easeOut" }}
-                        className="relative w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col
-                                   bg-[#0a0f1e]/65 backdrop-blur-lg rounded-[24px] 
-                                   border border-white/5 shadow-[0_0_40px_rgba(139,92,246,0.15)]"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="settings-title"
+                        className="relative mx-auto flex h-[calc(100dvh-1.5rem)] max-h-[900px] min-h-0 w-full max-w-6xl flex-col overflow-hidden rounded-[24px]
+                                   border border-white/10 bg-[#070d1b]/90 shadow-[0_24px_90px_rgba(0,0,0,0.55),0_0_48px_rgba(139,92,246,0.14)] backdrop-blur-2xl"
                     >
-                        {/* HEADER */}
-                        <div className="p-6 flex justify-between items-center border-b border-white/[0.03]">
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-purple-500/10 rounded-xl">
-                                    <Brain className="w-5 h-5 text-purple-400" />
+                        <div className="flex flex-col gap-3 border-b border-white/[0.06] px-5 py-4 sm:px-6">
+                            <div className="flex items-center justify-between gap-4">
+                                <div className="flex min-w-0 items-center gap-3">
+                                    <div className="rounded-2xl border border-purple-400/20 bg-purple-500/10 p-2.5">
+                                        <Brain className="h-5 w-5 text-purple-300" />
+                                    </div>
+                                    <div className="min-w-0">
+                                        <h2 id="settings-title" className="text-lg font-bold tracking-tight text-[#f8fafc]">
+                                            Definições
+                                        </h2>
+                                        <p className="hidden truncate text-xs text-[#94a3b8] sm:block">
+                                            Centro de controlo: privacidade, universo, IA e sincronização · teclas 1–7
+                                        </p>
+                                    </div>
                                 </div>
-                                <h2 className="text-xl font-bold text-[#e2e8f0] tracking-wide">
-                                    Definições
-                                </h2>
+                                <button 
+                                    onClick={onClose} 
+                                    className="rounded-full p-2 text-[#94a3b8] transition-all hover:bg-white/5 hover:text-[#e2e8f0]"
+                                    aria-label="Fechar definições"
+                                >
+                                    <X className="h-5 w-5" />
+                                </button>
                             </div>
-                            <button 
-                                onClick={onClose} 
-                                className="p-2 text-[#94a3b8] hover:text-[#e2e8f0] hover:bg-white/5 rounded-full transition-all"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
+                            <div className="relative">
+                                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                                <input
+                                    type="search"
+                                    value={settingsQuery}
+                                    onChange={(e) => setSettingsQuery(e.target.value)}
+                                    placeholder="Procurar em definições (PIN, Ollama, sync, privacidade…)"
+                                    className="w-full rounded-xl border border-white/10 bg-black/30 py-2.5 pl-10 pr-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-violet-400/40 focus:ring-2 focus:ring-violet-400/15"
+                                />
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
+                                    {sessions.length} memórias
+                                </span>
+                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
+                                    PIN {pinEnabled ? 'ativo' : 'off'}
+                                </span>
+                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
+                                    IA · {activeProviderBadge}
+                                </span>
+                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
+                                    Sync · {trustedActiveCount} dispositivo(s)
+                                </span>
+                            </div>
                         </div>
 
-                        {/* CONTENT */}
-                        <div className="p-8 space-y-12 overflow-y-auto flex-1 scrollbar-hide">
-                            
-                            {/* IDENTIDADE */}
-                            <section className="space-y-6">
-                                <div>
-                                    <h3 className="text-sm font-bold text-[#e2e8f0] tracking-widest uppercase mb-1">Identidade</h3>
-                                    <p className="text-xs text-[#94a3b8]">A tua chave define o acesso à tua mente digital.</p>
+                        <div className="grid min-h-0 min-w-0 flex-1 lg:grid-cols-[280px_minmax(0,1fr)]">
+                            <aside className="hidden border-r border-white/[0.06] bg-black/10 p-4 lg:block">
+                                <div className="mb-4 rounded-2xl border border-white/5 bg-white/[0.03] p-4">
+                                    <p className="text-[10px] font-bold uppercase tracking-widest text-purple-200/70">Secção ativa</p>
+                                    <div className="mt-3 flex items-center gap-3">
+                                        <div className="rounded-xl border border-purple-400/20 bg-purple-500/10 p-2">
+                                            <ActiveTabIcon className="h-4 w-4 text-purple-300" />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <p className="truncate text-sm font-bold text-[#f8fafc]">{activeTab.label}</p>
+                                            <p className="truncate text-xs text-[#94a3b8]">{tabBadges[activeTab.id]}</p>
+                                        </div>
+                                    </div>
                                 </div>
+                                <nav className="space-y-1" aria-label="Secções das definições">
+                                    {visibleTabs.map((tab, index) => {
+                                        const Icon = tab.icon;
+                                        const active = activeSection === tab.id;
+                                        const originalIndex = tabs.findIndex((t) => t.id === tab.id);
+                                        return (
+                                            <button
+                                                key={tab.id}
+                                                type="button"
+                                                onClick={() => selectSection(tab.id)}
+                                                className={`flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all ${
+                                                    active
+                                                        ? 'border-purple-400/35 bg-purple-500/12 text-[#f8fafc] shadow-[0_0_24px_rgba(139,92,246,0.10)]'
+                                                        : 'border-transparent text-[#94a3b8] hover:border-white/10 hover:bg-white/[0.04] hover:text-[#e2e8f0]'
+                                                }`}
+                                            >
+                                                <Icon className={`h-4 w-4 shrink-0 ${active ? 'text-purple-200' : 'text-[#64748b]'}`} />
+                                                <span className="min-w-0 flex-1">
+                                                    <span className="block truncate text-sm font-semibold">{tab.label}</span>
+                                                    <span className="block truncate text-[11px] text-[#64748b]">{tab.description}</span>
+                                                </span>
+                                                <span className={`shrink-0 rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-widest ${
+                                                    active ? 'bg-purple-400/15 text-purple-100' : 'bg-white/[0.04] text-[#64748b]'
+                                                }`}>
+                                                    {originalIndex >= 0 ? originalIndex + 1 : index + 1}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                    {visibleTabs.length === 0 && (
+                                        <p className="px-2 py-6 text-center text-xs text-slate-500">
+                                            Nenhuma secção corresponde a “{settingsQuery}”.
+                                        </p>
+                                    )}
+                                </nav>
+                            </aside>
+
+                            <div className="flex min-h-0 min-w-0 flex-col">
+                                <div className="border-b border-white/[0.06] px-4 py-3 lg:hidden">
+                                    <div className="flex min-w-0 gap-2 overflow-x-auto pb-1 scrollbar-hide" aria-label="Secções das definições">
+                                        {visibleTabs.map((tab) => {
+                                            const Icon = tab.icon;
+                                            const active = activeSection === tab.id;
+                                            return (
+                                                <button
+                                                    key={tab.id}
+                                                    type="button"
+                                                    onClick={() => selectSection(tab.id)}
+                                                    className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-all ${
+                                                        active
+                                                            ? 'border-purple-400/35 bg-purple-500/15 text-purple-100'
+                                                            : 'border-white/5 bg-white/[0.03] text-[#94a3b8]'
+                                                    }`}
+                                                >
+                                                    <Icon className="h-3.5 w-3.5" />
+                                                    {tab.label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-5 sm:p-6 lg:p-8 custom-scrollbar">
+                                    {activeSection === 'identity' && (
+                            <section className="space-y-6">
+                                <SectionHeader
+                                    icon={Key}
+                                    title="Identidade"
+                                    description="Gere a tua chave, estado de encriptação, UID e frase de recuperação."
+                                />
                                 
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
@@ -467,12 +876,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                                 <p className="text-sm font-bold text-[#e2e8f0]">Chave ativa</p>
                                                 <p className="text-xs text-cyan-400/80">Encriptação local ativa</p>
                                                 {aesKeyReady ? (
-                                                    <span className="text-green-400 text-xs">Chave AES derivada da mnemônica</span>
+                                                    <span className="text-green-400 text-xs">Chave AES derivada da mnemónica</span>
                                                 ) : (
-                                                    <span className="text-yellow-400 text-xs">Aguardando mnemônica...</span>
+                                                    <span className="text-yellow-400 text-xs">A aguardar mnemónica...</span>
                                                 )}
                                             </div>
                                         </div>
+                                    </div>
+
+                                    <div className="flex items-center justify-between gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-bold text-[#e2e8f0]">UID do utilizador</p>
+                                            <p className="truncate font-mono text-xs text-cyan-300/80">{auth.currentUser?.uid || 'UID indisponível'}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => {
+                                                const uid = auth.currentUser?.uid;
+                                                if (uid) navigator.clipboard.writeText(uid);
+                                            }}
+                                            className="shrink-0 px-3 py-2 rounded-xl border border-cyan-500/20 bg-cyan-500/10 hover:bg-cyan-500/20 transition-all text-[10px] font-bold uppercase tracking-widest text-cyan-100"
+                                        >
+                                            Copiar UID
+                                        </button>
                                     </div>
 
                                     <div className="grid grid-cols-2 gap-3">
@@ -481,7 +906,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                             className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-white/10 bg-transparent hover:bg-white/5 hover:border-white/20 transition-all text-sm font-medium text-[#e2e8f0] hover:scale-[1.02]"
                                         >
                                             {showMnemonic ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                                            {showMnemonic ? 'Ocultar palavras' : 'Ver palavras-chave'}
+                                            {showMnemonic ? 'Ocultar palavras' : 'Ver 12 palavras'}
                                         </button>
                                         
                                         <button
@@ -495,6 +920,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
 
                                     {showMnemonic && mnemonic && (
                                         <motion.div
+                                            ref={mnemonicPanelRef}
                                             initial={{ opacity: 0, height: 0 }}
                                             animate={{ opacity: 1, height: 'auto' }}
                                             className="grid grid-cols-3 gap-2 p-4 bg-black/30 rounded-2xl border border-white/5"
@@ -509,12 +935,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                     )}
                                 </div>
                             </section>
+                                    )}
 
-                            {/* MOBILE SYNC */}
+                                    {activeSection === 'mobile' && (
                             <section className="space-y-6">
-                                <div>
-                                    <h3 className="text-sm font-bold text-[#e2e8f0] tracking-widest uppercase mb-1">Mobile Sync</h3>
-                                    <p className="text-xs text-[#94a3b8]">Pareamento efémero por QR para ligar um dispositivo móvel sem expor a tua semente.</p>
+                                <SectionHeader
+                                    icon={Smartphone}
+                                    title="Mobile Sync"
+                                    description="Instala a app Android, cria convites QR e gere dispositivos confiáveis sem expor a tua semente."
+                                />
+
+                                <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-4">
+                                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                        <div className="flex items-center gap-4 min-w-0">
+                                            <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+                                                <Download className="w-4 h-4 text-emerald-300" />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="text-sm font-bold text-[#e2e8f0]">Instalar app Android</p>
+                                                <p className="text-xs text-emerald-300/70">QR direto para a Play Store.</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => openExternalDownload(MOBILE_APP_DOWNLOAD_URL)}
+                                            className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all text-xs font-bold uppercase tracking-widest text-emerald-100"
+                                        >
+                                            <Smartphone className="w-4 h-4" />
+                                            Abrir Play Store
+                                        </button>
+                                    </div>
+                                    {mobileInstallQr && (
+                                        <div className="grid grid-cols-1 md:grid-cols-[auto,1fr] gap-4 items-center">
+                                            <div className="rounded-2xl bg-slate-50 p-3 w-fit">
+                                                <img
+                                                    src={mobileInstallQr}
+                                                    alt="QR code para instalar a app pela Play Store"
+                                                    className="w-40 h-40"
+                                                />
+                                            </div>
+                                            <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
+                                                <p className="truncate text-[10px] font-mono text-emerald-200/70">
+                                                    {MOBILE_APP_DOWNLOAD_URL}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-4">
@@ -524,7 +989,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                                 <Smartphone className="w-4 h-4 text-cyan-300" />
                                             </div>
                                             <div className="min-w-0">
-                                                <p className="text-sm font-bold text-[#e2e8f0]">Convite de pareamento</p>
+                                            <p className="text-sm font-bold text-[#e2e8f0]">Convite de emparelhamento</p>
                                                 <p className="text-xs text-cyan-300/70">
                                                     {pairingInvite
                                                         ? `Expira às ${new Date(pairingInvite.expiresAt).toLocaleTimeString()}`
@@ -576,13 +1041,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                             <div className="rounded-2xl bg-slate-50 p-3 w-fit">
                                                 <img
                                                     src={pairingInvite.qrDataUrl}
-                                                    alt="QR code de pareamento mobile"
+                                                    alt="QR code de emparelhamento mobile"
                                                     className="w-48 h-48"
                                                 />
                                             </div>
                                             <div className="space-y-3 min-w-0">
                                                 <p className="text-xs leading-relaxed text-[#94a3b8]">
-                                                    O QR contém apenas o convite, a chave pública efémera e o identificador da conta. A chave privada de pareamento fica só nesta sessão do browser.
+                                                    O QR contém apenas o convite, a chave pública efémera e o identificador da conta. A chave privada de emparelhamento fica só nesta sessão do browser.
                                                 </p>
                                                 <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
                                                     <p className="truncate text-[10px] font-mono text-cyan-200/70">
@@ -668,47 +1133,103 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                     <SyncConflictPanel sessions={sessions} />
                                 </div>
                             </section>
+                                    )}
 
-                            {/* UNIVERSO */}
+                                    {activeSection === 'universe' && (
                             <section className="space-y-6">
-                                <div>
-                                    <h3 className="text-sm font-bold text-[#e2e8f0] tracking-widest uppercase mb-1">Universo</h3>
-                                    <p className="text-xs text-[#94a3b8]">Define como a tua mente é representada.</p>
-                                </div>
+                                <SectionHeader
+                                    icon={Brain}
+                                    title={t('universeTitle')}
+                                    description={t('universeDesc')}
+                                />
 
-                                <div className="grid grid-cols-4 gap-3">
+                                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                                     {universeTypes.map((type) => (
                                         <button
                                             key={type.id}
-                                            onClick={() => setUniverseType(type.id)}
+                                            onClick={() => setGlobalUniverseType(type.universeType)}
                                             className={`relative group p-3 rounded-2xl border transition-all duration-300 flex flex-col items-center gap-3 hover:scale-[1.05] ${
-                                                universeType === type.id 
+                                                selectedUniversePreset === type.id
                                                     ? 'border-purple-500/50 bg-purple-500/10' 
                                                     : 'border-white/5 bg-black/20 hover:border-white/20 hover:bg-white/5'
                                             }`}
                                         >
                                             <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${type.color} opacity-80 group-hover:opacity-100 group-hover:shadow-[0_0_15px_rgba(139,92,246,0.5)] transition-all`} />
                                             <span className="text-[10px] font-medium text-[#94a3b8] group-hover:text-[#e2e8f0]">
-                                                {type.name}
+                                                {type.id === 'galaxia' ? t('badgeUniverseGalaxy') :
+                                                 type.id === 'sistema-solar' ? t('badgeUniverseSolar') :
+                                                 type.id === 'nebulosa' ? t('badgeUniverseNebula') :
+                                                 type.id === 'buraco-negro' ? t('badgeUniverseVoid') : type.name}
                                             </span>
                                         </button>
                                     ))}
                                 </div>
-                            </section>
 
-                            {/* INTELIGÊNCIAS */}
-                            <section className="space-y-6">
-                                <div>
-                                    <h3 className="text-sm font-bold text-[#e2e8f0] tracking-widest uppercase mb-1">AI Hub</h3>
-                                    <p className="text-xs text-[#94a3b8]">Escolhe provedores, modelos, permissões e chaves cifradas localmente.</p>
+                                <div className="border-t border-white/5 pt-6">
+                                    <div className="flex flex-col gap-4">
+                                        <div className="flex items-start gap-4">
+                                            <div className="rounded-2xl border border-purple-400/20 bg-purple-500/10 p-3">
+                                                <Globe className="h-5 w-5 text-purple-300" />
+                                            </div>
+                                            <div>
+                                                <h4 className="text-sm font-bold tracking-tight text-[#f8fafc]">{t('languageTitle')}</h4>
+                                                <p className="mt-1 text-xs text-[#94a3b8]">{t('languageDesc')}</p>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3 max-w-lg mt-2">
+                                            <button 
+                                                onClick={() => setLanguage('pt-pt')} 
+                                                className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
+                                                    language === 'pt-pt' 
+                                                        ? 'border-purple-500/50 bg-purple-500/10 text-purple-100' 
+                                                        : 'border-white/5 bg-black/20 text-[#94a3b8] hover:border-white/20'
+                                                }`}
+                                            >
+                                                <span className="text-xs font-semibold">{t('languagePortuguesePT')}</span>
+                                                {language === 'pt-pt' && <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
+                                            </button>
+                                            <button 
+                                                onClick={() => setLanguage('pt-br')} 
+                                                className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
+                                                    language === 'pt-br' 
+                                                        ? 'border-purple-500/50 bg-purple-500/10 text-purple-100' 
+                                                        : 'border-white/5 bg-black/20 text-[#94a3b8] hover:border-white/20'
+                                                }`}
+                                            >
+                                                <span className="text-xs font-semibold">{t('languagePortugueseBR')}</span>
+                                                {language === 'pt-br' && <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
+                                            </button>
+                                            <button 
+                                                onClick={() => setLanguage('en')} 
+                                                className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
+                                                    language === 'en' 
+                                                        ? 'border-purple-500/50 bg-purple-500/10 text-purple-100' 
+                                                        : 'border-white/5 bg-black/20 text-[#94a3b8] hover:border-white/20'
+                                                }`}
+                                            >
+                                                <span className="text-xs font-semibold">{t('languageEnglish')}</span>
+                                                {language === 'en' && <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
+                            </section>
+                                    )}
+
+                                    {activeSection === 'ai' && (
+                            <section className="space-y-6">
+                                <SectionHeader
+                                    icon={Cpu}
+                                    title="Inteligências"
+                                    description="Escolhe fornecedores, modelos, permissões e chaves cifradas localmente."
+                                />
 
                                 <div className="space-y-4">
                                     <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-4">
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-3">
                                                 <Cpu className="w-4 h-4 text-purple-400" />
-                                                <span className="text-sm font-medium text-[#e2e8f0]">Provedor primário</span>
+                                                <span className="text-sm font-medium text-[#e2e8f0]">Fornecedor primário</span>
                                             </div>
                                             <select
                                                 className="bg-[#0b1120] text-xs text-white border border-white/10 rounded-lg px-2 py-1 outline-none"
@@ -764,7 +1285,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                                     value={activeProviderConfig.endpoint}
                                                     onChange={(e) => persistProviderConfig(selectedProvider, { endpoint: e.target.value, enabled: true })}
                                                     className="w-full bg-[#0b1120] text-xs text-white border border-white/10 rounded-lg px-3 py-2 outline-none focus:border-purple-500/50"
-                                                    placeholder={activeProvider.defaultEndpoint || 'usar endpoint padrão do provedor'}
+                                                    placeholder={activeProvider.defaultEndpoint || 'usar endpoint padrão do fornecedor'}
                                                 />
                                             </label>
                                             <label className="space-y-1">
@@ -773,7 +1294,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                                     value={activeProviderConfig.model}
                                                     onChange={(e) => persistProviderConfig(selectedProvider, { model: e.target.value, enabled: true })}
                                                     className="w-full bg-[#0b1120] text-xs text-white border border-white/10 rounded-lg px-3 py-2 outline-none focus:border-purple-500/50"
-                                                    placeholder="nome exato do modelo no provedor"
+                                                    placeholder="nome exato do modelo no fornecedor"
                                                 />
                                             </label>
                                         </div>
@@ -840,52 +1361,193 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                             </select>
                                         </div>
                                         <p className="text-[10px] leading-relaxed text-[#94a3b8]">
-                                            Providers cloud só devem receber memórias quando esta permissão permitir. A política de falha define se erros de IA permitem guardar a memória sem enriquecimento.
+                                            Fornecedores cloud só devem receber memórias quando esta permissão permitir. A política de falha define se erros de IA permitem guardar a memória sem enriquecimento.
                                         </p>
                                     </div>
                                 </div>
                             </section>
+                                    )}
 
-                            {/* INTEGRAÇÕES */}
+                                    {activeSection === 'integrations' && (
                             <section className="space-y-6">
-                                <div>
-                                    <h3 className="text-sm font-bold text-[#e2e8f0] tracking-widest uppercase mb-1">Integrações Desktop</h3>
-                                    <p className="text-xs text-[#94a3b8]">Expande o Mnemosyne para o teu SO.</p>
-                                </div>
+                                <SectionHeader
+                                    icon={Download}
+                                    title="Integrações"
+                                    description="Expande o Mnemosyne para o sistema operativo e acompanha o estado do plano."
+                                />
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
                                         <div className="flex items-center gap-3">
                                             <span className="text-sm font-medium text-[#e2e8f0]">Windows Explorer Context Menu</span>
                                         </div>
-                                        <button className="px-3 py-1 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-medium transition-colors text-white">
-                                            Instalar "Enviar para Mnemosyne"
+                                        <button
+                                            onClick={() => openExternalDownload(DESKTOP_APP_DOWNLOAD_URL)}
+                                            className="px-3 py-1 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-medium transition-colors text-white"
+                                        >
+                                            Descarregar app desktop
                                         </button>
                                     </div>
                                     <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
                                         <div className="flex items-center gap-3">
-                                            <span className="text-sm font-medium text-[#e2e8f0]">Plano Atual</span>
+                                            <span className="text-sm font-medium text-[#e2e8f0]">Plano atual</span>
                                         </div>
                                         <button 
                                             onClick={() => setPlanosOpen(true)}
                                             className="px-3 py-1 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 rounded-lg text-xs font-medium transition-colors">
-                                            Ver Planos (Sovereign)
+                                            Gratuito ativo
                                         </button>
+                                    </div>
+
+                                    <div className="flex flex-col gap-4 p-5 bg-white/5 rounded-2xl border border-white/5 backdrop-blur-md relative overflow-hidden">
+                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                                            <div className="flex items-start gap-4 min-w-0">
+                                                <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center border border-purple-500/20 shrink-0">
+                                                    <Folder className="w-4 h-4 text-purple-300 animate-pulse" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-bold text-[#e2e8f0]">
+                                                        {t('localFolderAssimilation')}
+                                                    </p>
+                                                    <p className="text-xs text-[#94a3b8] mt-1">
+                                                        {t('localFolderAssimilationDesc')}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <div className="shrink-0">
+                                                <input
+                                                    type="file"
+                                                    ref={settingsFolderInputRef}
+                                                    className="hidden"
+                                                    onChange={handleFolderChange}
+                                                    {...{ webkitdirectory: "", directory: "", multiple: true }}
+                                                />
+                                                <button
+                                                    onClick={triggerFolderImport}
+                                                    disabled={isImportingFolder}
+                                                    className="w-full sm:w-auto flex items-center justify-center gap-2 py-2 px-4 rounded-xl border border-purple-500/20 bg-purple-500/10 hover:bg-purple-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-xs font-bold uppercase tracking-widest text-purple-100 hover:scale-[1.02]"
+                                                >
+                                                    <UploadCloud className="w-4 h-4" />
+                                                    {t('selectFolder')}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {isImportingFolder && (
+                                            <div className="mt-3 flex items-center gap-3 p-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 backdrop-blur-sm animate-pulse">
+                                                <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                                                <span className="text-xs text-cyan-200 font-medium">
+                                                    {t('folderImporting')}
+                                                </span>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </section>
+                                    )}
 
-                            {/* PRIVACIDADE */}
+                                    {activeSection === 'privacy' && (
                             <section className="space-y-6">
-                                <div>
-                                    <h3 className="text-sm font-bold text-[#e2e8f0] tracking-widest uppercase mb-1">Privacidade</h3>
-                                    <p className="text-xs text-[#94a3b8]">O teu conhecimento pertence apenas a ti.</p>
-                                </div>
+                                <SectionHeader
+                                    icon={Shield}
+                                    title="Privacidade"
+                                    description="Controla o que sai da tua sessão e mantém o conhecimento sob a tua chave."
+                                />
 
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
                                         <div className="flex items-center gap-3">
                                             <Shield className="w-4 h-4 text-green-400" />
                                             <span className="text-sm font-medium text-green-400">Zero-Knowledge ativo</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/[0.06] p-4 space-y-3">
+                                        <div className="flex items-start gap-3">
+                                            <div className="rounded-xl border border-cyan-400/25 bg-cyan-500/15 p-2">
+                                                <Lock className="h-4 w-4 text-cyan-200" />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm font-semibold text-white">PIN local opcional</p>
+                                                <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                                                    Após idle lock, reabre a sessão com um PIN em vez das 12 palavras.
+                                                    O PIN fica só neste dispositivo; a mnemónica é cifrada com AES-GCM.
+                                                </p>
+                                                <p className="mt-2 text-[11px] text-cyan-100/70">
+                                                    Estado: {pinEnabled ? 'ativo neste dispositivo' : 'desligado'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="grid gap-2 sm:grid-cols-2">
+                                            <input
+                                                type="password"
+                                                inputMode="numeric"
+                                                autoComplete="off"
+                                                value={pinInput}
+                                                onChange={(e) => setPinInput(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                                                placeholder={pinEnabled ? 'PIN atual' : 'Novo PIN (4–12 dígitos)'}
+                                                className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400/40"
+                                            />
+                                            {!pinEnabled && (
+                                                <input
+                                                    type="password"
+                                                    inputMode="numeric"
+                                                    autoComplete="off"
+                                                    value={pinConfirm}
+                                                    onChange={(e) => setPinConfirm(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                                                    placeholder="Confirmar PIN"
+                                                    className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400/40"
+                                                />
+                                            )}
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {!pinEnabled ? (
+                                                <button
+                                                    type="button"
+                                                    disabled={pinBusy || !mnemonic}
+                                                    onClick={async () => {
+                                                        if (!mnemonic) {
+                                                            toast.error('Desbloqueia a sessão com a mnemónica primeiro.');
+                                                            return;
+                                                        }
+                                                        setPinBusy(true);
+                                                        try {
+                                                            await enableLocalPin(pinInput, pinConfirm, mnemonic);
+                                                            setPinEnabled(true);
+                                                            setPinInput('');
+                                                            setPinConfirm('');
+                                                            toast.success('PIN local ativado.');
+                                                        } catch (error) {
+                                                            toast.error(getErrorMessage(error, 'Não foi possível ativar o PIN.'));
+                                                        } finally {
+                                                            setPinBusy(false);
+                                                        }
+                                                    }}
+                                                    className="rounded-xl border border-cyan-400/30 bg-cyan-500/15 px-4 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:opacity-40"
+                                                >
+                                                    {pinBusy ? 'A ativar…' : 'Ativar PIN'}
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    disabled={pinBusy}
+                                                    onClick={async () => {
+                                                        setPinBusy(true);
+                                                        try {
+                                                            await disableLocalPin(pinInput);
+                                                            setPinEnabled(false);
+                                                            setPinInput('');
+                                                            toast.success('PIN local desativado.');
+                                                        } catch (error) {
+                                                            toast.error(getErrorMessage(error, 'PIN incorreto.'));
+                                                        } finally {
+                                                            setPinBusy(false);
+                                                        }
+                                                    }}
+                                                    className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-100 transition hover:bg-rose-500/20 disabled:opacity-40"
+                                                >
+                                                    {pinBusy ? 'A desativar…' : 'Desativar PIN'}
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
 
@@ -904,14 +1566,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                             />
                                         </button>
                                     </div>
+
+                                    <div className="rounded-2xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
+                                        <div className="flex items-start gap-3">
+                                            <div className="rounded-xl border border-violet-400/25 bg-violet-500/15 p-2">
+                                                <Compass className="h-4 w-4 text-violet-200" />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm font-semibold text-white">Tour guiado</p>
+                                                <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                                                    Volta a ver o onboarding de ~30s (Flow, grafo, Ctrl+K, Universo, Comms).
+                                                </p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        resetOnboarding();
+                                                        onReplayOnboarding?.();
+                                                        onClose();
+                                                    }}
+                                                    className="mt-3 inline-flex items-center gap-2 rounded-xl border border-violet-400/30 bg-violet-500/15 px-4 py-2 text-xs font-semibold text-violet-100 transition hover:bg-violet-500/25"
+                                                >
+                                                    <RotateCcw className="h-3.5 w-3.5" />
+                                                    Repetir onboarding
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </section>
+                                    )}
 
-                            {/* ZONA CRÍTICA */}
-                            <section className="pt-6 border-t border-red-500/10">
-                                <h3 className="text-sm font-bold text-red-400/80 tracking-widest uppercase mb-4 flex items-center gap-2">
-                                    <AlertTriangle className="w-4 h-4" /> Zona Crítica
-                                </h3>
+                                    {activeSection === 'account' && (
+                            <section className="space-y-6">
+                                <SectionHeader
+                                    icon={AlertTriangle}
+                                    title="Conta"
+                                    description="Área reservada para ações permanentes. Confirma tudo com calma antes de avançar."
+                                />
                                 
                                 <div className="p-5 bg-red-500/[0.03] rounded-2xl border border-red-500/10">
                                     <button
@@ -922,7 +1613,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, m
                                     </button>
                                 </div>
                             </section>
+                                    )}
 
+                                </div>
+                            </div>
                         </div>
                     </motion.div>
                     

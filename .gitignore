@@ -10,6 +10,8 @@ frontend/dist/
 frontend/build/
 frontend/dev-dist/
 frontend/src-tauri/target/
+frontend/src-tauri/updater.key
+frontend/src-tauri/updater.key.pub
 *.apk
 *.aab
 
@@ -35,7 +37,13 @@ keystore.properties
 android/keystore.properties
 android/app/build/
 android/.gradle/
+frontend/android/keystore.properties
+frontend/android/keystores/
+frontend/android/certificates/
+frontend/android/app/release/
 frontend/android/app/*.keystore
+*.pem
+*.key
 frontend/android/build_log.txt
 
 # IDE

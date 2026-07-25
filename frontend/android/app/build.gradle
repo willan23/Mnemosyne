@@ -1,20 +1,37 @@
 apply plugin: 'com.android.application'
 
-def releaseStoreFile = findProperty('MNEMOSYNE_RELEASE_STORE_FILE') ?: System.getenv('MNEMOSYNE_RELEASE_STORE_FILE') ?: 'mnemosyne-release.keystore'
-def releaseStorePassword = findProperty('MNEMOSYNE_RELEASE_STORE_PASSWORD') ?: System.getenv('MNEMOSYNE_RELEASE_STORE_PASSWORD')
-def releaseKeyAlias = findProperty('MNEMOSYNE_RELEASE_KEY_ALIAS') ?: System.getenv('MNEMOSYNE_RELEASE_KEY_ALIAS')
-def releaseKeyPassword = findProperty('MNEMOSYNE_RELEASE_KEY_PASSWORD') ?: System.getenv('MNEMOSYNE_RELEASE_KEY_PASSWORD')
-def hasReleaseSigning = releaseStorePassword && releaseKeyAlias && releaseKeyPassword && file(releaseStoreFile).exists()
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+def resolveReleaseStoreFile = { path ->
+    def appRelative = file(path)
+    if (appRelative.exists()) {
+        return appRelative
+    }
+    return rootProject.file(path)
+}
+
+def releaseStoreFilePath = keystoreProperties['storeFile'] ?: findProperty('MNEMOSYNE_RELEASE_STORE_FILE') ?: System.getenv('MNEMOSYNE_RELEASE_STORE_FILE') ?: '../keystores/mnemosyne-release.keystore'
+def releaseStoreFile = resolveReleaseStoreFile(releaseStoreFilePath)
+def releaseStorePassword = keystoreProperties['storePassword'] ?: findProperty('MNEMOSYNE_RELEASE_STORE_PASSWORD') ?: System.getenv('MNEMOSYNE_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = keystoreProperties['keyAlias'] ?: findProperty('MNEMOSYNE_RELEASE_KEY_ALIAS') ?: System.getenv('MNEMOSYNE_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = keystoreProperties['keyPassword'] ?: findProperty('MNEMOSYNE_RELEASE_KEY_PASSWORD') ?: System.getenv('MNEMOSYNE_RELEASE_KEY_PASSWORD')
+def hasReleaseSigning = releaseStorePassword && releaseKeyAlias && releaseKeyPassword && releaseStoreFile.exists()
+def releaseVersionCode = (findProperty('MNEMOSYNE_VERSION_CODE') ?: System.getenv('MNEMOSYNE_VERSION_CODE') ?: keystoreProperties['versionCode'] ?: '1') as Integer
+def releaseVersionName = findProperty('MNEMOSYNE_VERSION_NAME') ?: System.getenv('MNEMOSYNE_VERSION_NAME') ?: keystoreProperties['versionName'] ?: '1.0.0'
 
 android {
-    namespace = "com.mnemosyne.app"
+    namespace = "com.mnemosyne.mobile"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.mnemosyne.app"
+        applicationId "com.mnemosyne.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode releaseVersionCode
+        versionName releaseVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -24,7 +41,7 @@ android {
     }
     signingConfigs {
         release {
-            storeFile file(releaseStoreFile)
+            storeFile releaseStoreFile
             storePassword releaseStorePassword
             keyAlias releaseKeyAlias
             keyPassword releaseKeyPassword
@@ -36,9 +53,10 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             if (hasReleaseSigning) {
+                logger.lifecycle("Release signing store: ${releaseStoreFile}")
                 signingConfig signingConfigs.release
             } else {
-                logger.warn("Release signing is disabled. Set MNEMOSYNE_RELEASE_STORE_FILE, MNEMOSYNE_RELEASE_STORE_PASSWORD, MNEMOSYNE_RELEASE_KEY_ALIAS, and MNEMOSYNE_RELEASE_KEY_PASSWORD to produce a signed release build.")
+                logger.warn("Release signing is disabled. Create frontend/android/keystore.properties or set MNEMOSYNE_RELEASE_STORE_FILE, MNEMOSYNE_RELEASE_STORE_PASSWORD, MNEMOSYNE_RELEASE_KEY_ALIAS, and MNEMOSYNE_RELEASE_KEY_PASSWORD to produce a signed release build.")
             }
         }
     }
@@ -55,6 +73,7 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "com.google.android.play:app-update:2.1.0"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

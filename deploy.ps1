@@ -55,7 +55,7 @@ Write-Host ""
 
 # Deploy Storage Rules
 Write-Host "Deploying Storage Rules..." -ForegroundColor Yellow
-firebase.cmd deploy --only storage:rules
+firebase.cmd deploy --only storage
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Warning: Error deploying Storage rules" -ForegroundColor Yellow
 }

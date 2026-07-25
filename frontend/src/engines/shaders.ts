@@ -168,12 +168,33 @@ float noise(vec2 p) {
   return mix(mix(hash(i), hash(i + vec2(1,0)), u.x),
              mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x), u.y);
 }
+float fbm(vec2 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < 4; i++) {
+    value += amplitude * noise(p);
+    p *= 2.05;
+    amplitude *= 0.5;
+  }
+  return value;
+}
 void main() {
-  vec2 uv = vUv * 4.0 + vec2(uTime * 0.03, 0.0);
-  float n = noise(uv);
-  vec3 color = mix(uColor, uColor2, n);
-  float rim = pow(1.0 - max(0.0, dot(normalize(vNormal), vec3(0,0,1))), 3.0);
-  color += vec3(0.2, 0.4, 0.8) * rim * 0.3;
-  gl_FragColor = vec4(color, 1.0);
+  vec2 uv = vUv;
+  float latitude = abs(uv.y - 0.5) * 2.0;
+  float drift = uTime * 0.018;
+  float landmass = fbm(vec2(uv.x * 3.4 + drift, uv.y * 2.2));
+  float fineWeather = fbm(vec2(uv.x * 13.0 - drift * 1.8, uv.y * 8.0 + sin(uv.x * 8.0) * 0.08));
+  float gasBand = sin((uv.y + fineWeather * 0.05) * 42.0) * 0.5 + 0.5;
+  float continents = smoothstep(0.42, 0.72, landmass + latitude * 0.12);
+  vec3 ocean = mix(uColor * 0.62, uColor2 * 0.85, landmass);
+  vec3 terrain = mix(uColor2 * 0.85, uColor * 1.35, fineWeather);
+  vec3 color = mix(ocean, terrain, continents * 0.72);
+  color = mix(color, mix(uColor, uColor2, gasBand) * 1.15, 0.18 + gasBand * 0.12);
+
+  vec3 normal = normalize(vNormal);
+  float light = 0.38 + 0.62 * max(0.0, dot(normal, normalize(vec3(-0.35, 0.25, 1.0))));
+  float rim = pow(1.0 - max(0.0, dot(normal, vec3(0, 0, 1))), 2.7);
+  vec3 atmosphere = mix(vec3(0.28, 0.48, 1.0), uColor2, 0.35) * rim * 0.42;
+  gl_FragColor = vec4(color * light + atmosphere, 1.0);
 }
 `;

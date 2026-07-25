@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link2, Sparkles, Loader2 } from 'lucide-react';
 import { embeddingService } from '../services/embeddingService';
+import type { MemoryObject } from '../types/universe';
 
 interface RelatedMemoriesProps {
-    currentMemory: any;
-    allMemories: any[];
-    onMemoryClick: (memory: any) => void;
+    currentMemory: MemoryObject;
+    allMemories: MemoryObject[];
+    onMemoryClick: (memory: MemoryObject) => void;
 }
 
 /**
@@ -18,7 +19,7 @@ export const RelatedMemories: React.FC<RelatedMemoriesProps> = ({
     allMemories,
     onMemoryClick
 }) => {
-    const [relatedMemories, setRelatedMemories] = useState<Array<{ memory: any; similarity: number }>>([]);
+    const [relatedMemories, setRelatedMemories] = useState<Array<{ memory: MemoryObject; similarity: number }>>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 

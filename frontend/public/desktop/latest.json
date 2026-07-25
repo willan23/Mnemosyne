@@ -1,0 +1,11 @@
+{
+  "version": "1.0.6",
+  "notes": "Arrastamento 3D de planetas e ficheiros mais fluido e nativo: planetas ancoram suavemente após drag, vizinhos não são perturbados, posições guardadas permanentemente no universo.",
+  "pub_date": "2026-06-16T19:49:07Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUVlVJKzdENzVkSk0zWHVpTnlFUVYxZDE5R01oQXE4bGZoVW5EeWk1MnMyQ1N5T1l5enlwc1Nob0I1VndrQVNJeXJ5NTBNbzlRcllhVGk0eGl6NVphcXM5SU02TVRpamdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxNjM5MzQ3CWZpbGU6TW5lbW9zeW5lXzEuMC42X3g2NC1zZXR1cC5leGUKUUFSK090Q2wwNld5SnRENjZ0Z0xNMlpQRkJOYmZKQk5vVklEYnFiWGI4U255bG4rTDc1MnF1cXdnTmFGcVBTTW5YSXFDWmtlWEc3aUpScUw2eUcwRGc9PQo=",
+      "url": "https://mnemosyne-one.web.app/downloads/Mnemosyne_1.0.6_x64-setup.exe"
+    }
+  }
+}

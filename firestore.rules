@@ -64,9 +64,7 @@ service cloud.firestore {
     }
 
     function hasPaidAttachmentAccess() {
-      return isAuthenticated() &&
-        (currentSubscriptionTier() in ['pro', 'sovereign', 'business']) &&
-        (currentSubscriptionStatus() in ['active', 'trialing', 'past_due']);
+      return isAuthenticated();
     }
 
     function sessionAttachmentsAllowed() {
@@ -159,19 +157,60 @@ service cloud.firestore {
       }
     }
 
-    // Public shares
+    // Rate limits: só Admin SDK (Cloud Functions) — clientes sem acesso
+    match /rateLimits/{docId} {
+      allow read, write: if false;
+    }
+
+    // Public shares — apenas cápsulas cifradas (sem plaintext de memória)
     match /shares/{shareId} {
-      // Anyone can read (for public links)
+      // Anyone can read ciphertext metadata (passphrase fica out-of-band / fragment)
       allow read: if true;
-      
-      // Only authenticated users can create
-      allow create: if isAuthenticated();
-      
-      // Only system (Cloud Functions) can update
-      allow update: if false;
-      
+
+      // Owner only; schema encriptado obrigatório (Zero-Knowledge capsules)
+      allow create: if isAuthenticated() &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.encrypted == true &&
+        request.resource.data.ciphertext is string &&
+        request.resource.data.ciphertext.size() > 16 &&
+        request.resource.data.sessionId is string &&
+        request.resource.data.views == 0 &&
+        request.resource.data.importCount == 0 &&
+        // Bloquear campos de conteúdo em claro se alguém tentar reintroduzi-los
+        !('text' in request.resource.data) &&
+        !('content' in request.resource.data) &&
+        !('plaintext' in request.resource.data);
+
+      // views +1 (público) ou importCount +1 (auth)
+      allow update: if (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views']) &&
+        request.resource.data.views == resource.data.views + 1
+      ) || (
+        isAuthenticated() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['importCount', 'lastImportedAt']) &&
+        request.resource.data.importCount == (
+          resource.data.keys().hasAll(['importCount'])
+            ? resource.data.importCount + 1
+            : 1
+        )
+      );
+
       // Owner can delete
-      allow delete: if isAuthenticated();
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+    }
+
+    // Avisos ao autor quando alguém assimila a cápsula
+    match /capsuleImportNotices/{noticeId} {
+      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isAuthenticated() &&
+        request.resource.data.importerUid == request.auth.uid &&
+        request.resource.data.ownerUid is string &&
+        request.resource.data.shareId is string &&
+        request.resource.data.read == false;
+      allow update: if isAuthenticated() &&
+        resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
     }
 
     // Notifications

@@ -13,12 +13,13 @@ import { resolveAiFailureDecision } from '../services/aiSavePolicy';
 import { markMemoryDeleted } from '../services/memoryDeletion';
 import { cognitiveEngine } from '../engines/CognitiveEngine';
 import type { MemoryObject } from '../types/universe';
+import type { SessionData } from '../hooks/useSessions';
 
 interface MemoryEditorModalProps {
-    session: any | null;
-    allMemories?: any[]; // Todas as memórias para encontrar relacionadas
+    session: SessionData | null;
+    allMemories?: SessionData[]; // Todas as memórias para encontrar relacionadas
     onClose: () => void;
-    onMemoryClick?: (memory: any) => void; // Callback para navegar para memória relacionada
+    onMemoryClick?: (memory: SessionData) => void; // Callback para navegar para memória relacionada
 }
 
 interface MemoryVersion {
@@ -164,7 +165,6 @@ export const MemoryEditorModal: React.FC<MemoryEditorModalProps> = ({
             console.error('Erro de Extração Ollama:', error);
             const message = error instanceof Error ? error.message : 'Erro desconhecido.';
             setExtractionStatus(`Falha: ${message}`);
-            alert(`Falha na IA Local: ${message}`);
         } finally {
             window.clearTimeout(slowModelTimer);
             if (extractionAbortRef.current === abortController) {
@@ -334,7 +334,6 @@ export const MemoryEditorModal: React.FC<MemoryEditorModalProps> = ({
 
         try {
             // Check if user is authenticated
-            const { auth } = await import('../firebase');
             if (!auth.currentUser) {
                 alert("Erro: Você precisa estar autenticado para eliminar memórias.");
                 return;
@@ -449,10 +448,10 @@ export const MemoryEditorModal: React.FC<MemoryEditorModalProps> = ({
                             </div>
 
                             {/* Related Memories - AI-powered semantic linking */}
-                            {allMemories.length > 0 && (
+                            {allMemories.length > 0 && session && (
                                 <RelatedMemories
-                                    currentMemory={session}
-                                    allMemories={allMemories}
+                                    currentMemory={toMemoryObject(session)}
+                                    allMemories={allMemories.map(toMemoryObject)}
                                     onMemoryClick={(memory) => {
                                         if (onMemoryClick) {
                                             onMemoryClick(memory);

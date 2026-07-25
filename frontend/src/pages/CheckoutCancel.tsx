@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { XCircle, ArrowLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { isFreeFirstMode } from '../config/monetization';
 
 export const CheckoutCancel: React.FC = () => {
     const navigate = useNavigate();
@@ -40,31 +41,33 @@ export const CheckoutCancel: React.FC = () => {
 
                     {/* Title */}
                     <h1 className="text-4xl font-bold mb-4">
-                        Checkout Cancelado
+                        {isFreeFirstMode ? 'Sem Cobrança Ativa' : 'Checkout Cancelado'}
                     </h1>
 
                     {/* Description */}
                     <p className="text-xl text-gray-400 mb-8">
-                        Nenhuma cobrança foi realizada
+                        {isFreeFirstMode ? 'O Mnemosyne está em Founder Preview gratuito' : 'Nenhuma cobrança foi realizada'}
                     </p>
 
                     <div className="glass-card p-6 mb-8 text-left">
                         <h2 className="font-bold mb-4">Mudou de ideia?</h2>
                         <p className="text-sm text-gray-400 mb-4">
-                            Não se preocupe! Você pode fazer upgrade a qualquer momento.
+                            {isFreeFirstMode
+                                ? 'O checkout está dormente enquanto o produto ganha mercado.'
+                                : 'Não se preocupe! Você pode fazer upgrade a qualquer momento.'}
                         </p>
                         <ul className="space-y-2 text-sm text-gray-400">
                             <li className="flex items-start gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-2" />
-                                <span>Continue usando o plano Free sem limitações</span>
+                                <span>{isFreeFirstMode ? 'Continue usando o core gratuito' : 'Continue usando o plano Free sem limitações'}</span>
                             </li>
                             <li className="flex items-start gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-2" />
-                                <span>Faça upgrade quando estiver pronto</span>
+                                <span>{isFreeFirstMode ? 'Planos pagos chegam só depois de tração real' : 'Faça upgrade quando estiver pronto'}</span>
                             </li>
                             <li className="flex items-start gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-2" />
-                                <span>Sem compromisso, cancele a qualquer momento</span>
+                                <span>{isFreeFirstMode ? 'Sem cobrança ativa durante esta fase' : 'Sem compromisso, cancele a qualquer momento'}</span>
                             </li>
                         </ul>
                     </div>
@@ -82,12 +85,12 @@ export const CheckoutCancel: React.FC = () => {
                             onClick={() => navigate('/pricing')}
                             className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 rounded-lg font-bold uppercase tracking-tighter transition-all"
                         >
-                            Ver Planos
+                            {isFreeFirstMode ? 'Ver Founder Preview' : 'Ver Planos'}
                         </button>
                     </div>
 
                     <p className="text-xs text-gray-600 mt-6">
-                        Redirecionando para pricing em 5 segundos...
+                        Redirecionando para {isFreeFirstMode ? 'Founder Preview' : 'planos'} em 5 segundos...
                     </p>
                 </div>
             </motion.div>

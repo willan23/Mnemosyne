@@ -1,3 +1,5 @@
+import type { Attachment } from './attachments';
+
 export type CelestialType =
   | 'star'
   | 'sun'
@@ -9,6 +11,7 @@ export type CelestialType =
 
 export type UniverseType =
   | 'stellar'
+  | 'solar'
   | 'quantum'
   | 'mythic'
   | 'oceanic'
@@ -22,6 +25,15 @@ export type DeletionType =
   | 'dissipation'
   | 'fragmentation'
   | 'explosion';
+
+export interface AuditTrailEntry {
+  timestamp: number;
+  agentId: string;
+  action: string;
+  signature: string;
+  hash: string;
+  details?: string;
+}
 
 export interface MemoryObject {
   id: string;
@@ -38,17 +50,23 @@ export interface MemoryObject {
   uid: string;
   tags?: string[];
   category?: string;
+  attachments?: Attachment[];
+  generatedImagePrompt?: string;
+  generatedImageProvider?: string;
+  generatedImageModel?: string;
   color?: string;
   scale?: number;
   orbitRadius?: number;
   orbitSpeed?: number;
   parentId?: string;
+  auditTrail?: AuditTrailEntry[];
   entities?: {
     people?: string[];
     places?: string[];
     events?: string[];
     concepts?: string[];
   };
+  processingMethod?: string | null;
 }
 
 export interface UniverseState {
@@ -65,6 +83,11 @@ export interface UniverseState {
   filteredIds: string[] | null;
   deletingMemoryId: string | null;
   deletionType: DeletionType | null;
+  isGalaxyView: boolean;
+  language: 'pt-pt' | 'pt-br' | 'en' | 'fr';
+  /** ID da última memória spawnada (flash visual ~2.5s) */
+  spawnedMemoryId: string | null;
+  spawnedAt: number;
 }
 
 export interface GraphNode {
@@ -170,6 +193,7 @@ export const CELESTIAL_CONFIGS: Record<CelestialType, CelestialConfig> = {
 
 export const UNIVERSE_COLORS: Record<UniverseType, { bg: string; ambient: string; fog: string }> = {
   stellar: { bg: '#000510', ambient: '#0a1a3a', fog: '#000510' },
+  solar: { bg: '#090604', ambient: '#2a1505', fog: '#050302' },
   quantum: { bg: '#000820', ambient: '#0a0a40', fog: '#050010' },
   mythic: { bg: '#0a0010', ambient: '#200030', fog: '#0a0010' },
   oceanic: { bg: '#000a15', ambient: '#001530', fog: '#000a15' },

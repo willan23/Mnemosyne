@@ -1,45 +1,52 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, Image, Mic, X, Play, Pause, StopCircle, Trash2, Check } from 'lucide-react';
+import { Upload, Image, Mic, X, Play, Pause, StopCircle, Trash2, Check, FileText, Film } from 'lucide-react';
 import { uploadFile, validateFile, formatFileSize, compressImage } from '../utils/storage';
 import { useAudioRecorder, formatDuration } from '../hooks/useAudioRecorder';
 import { auth } from '../firebase';
 import { useSubscription } from '../hooks/useSubscription';
-import { getPlanLimits } from '../config/planLimits';
+import { getEffectivePlanLimits } from '../config/planLimits';
+import { isFreeFirstMode } from '../config/monetization';
+import { FAIR_USE } from '../config/fairUse';
 import { useNavigate } from 'react-router-dom';
+import type { Attachment } from '../types/attachments';
 
-export interface Attachment {
-    type: 'image' | 'audio';
-    url: string;
-    name: string;
-    size?: number;
-    duration?: number;
-}
+export type { Attachment };
 
 interface AttachmentUploaderProps {
     attachments: Attachment[];
     onChange: (attachments: Attachment[]) => void;
     maxImages?: number;
     maxAudios?: number;
+    maxDocuments?: number;
+    maxVideos?: number;
 }
 
 export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     attachments,
     onChange,
     maxImages = 5,
-    maxAudios = 3
+    maxAudios = 3,
+    maxDocuments = 12,
+    maxVideos = 3
 }) => {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [showAudioRecorder, setShowAudioRecorder] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const documentInputRef = useRef<HTMLInputElement>(null);
+    const videoInputRef = useRef<HTMLInputElement>(null);
     const navigate = useNavigate();
     const { tier } = useSubscription();
-    const planLimits = getPlanLimits(tier);
+    const planLimits = getEffectivePlanLimits(tier);
     const canUploadImages = planLimits.attachments.images.enabled;
     const canUploadAudio = planLimits.attachments.audio.enabled;
+    const canUploadDocuments = planLimits.attachments.pdfs.enabled;
+    const canUploadVideos = planLimits.attachments.images.enabled;
     const effectiveMaxImages = canUploadImages ? maxImages : 0;
     const effectiveMaxAudios = canUploadAudio ? maxAudios : 0;
+    const effectiveMaxDocuments = canUploadDocuments ? maxDocuments : 0;
+    const effectiveMaxVideos = canUploadVideos ? maxVideos : 0;
 
     const {
         isRecording,
@@ -56,19 +63,23 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
     const images = attachments.filter(a => a.type === 'image');
     const audios = attachments.filter(a => a.type === 'audio');
+    const documents = attachments.filter(a => a.type === 'document');
+    const videos = attachments.filter(a => a.type === 'video');
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(e.target.files || []);
         if (files.length === 0) return;
         if (!canUploadImages) {
-            alert('Anexos de imagem exigem plano Pro ou Sovereign.');
-            navigate('/pricing');
+            alert(isFreeFirstMode
+                ? 'Upload de imagem temporariamente indisponível por limite técnico.'
+                : 'Anexos de imagem exigem plano Pro ou Sovereign.');
+            if (!isFreeFirstMode) navigate('/pricing');
             return;
         }
 
         for (const file of files) {
             // Validate file
-            const validation = validateFile(file, ['image/*'], 10);
+            const validation = validateFile(file, ['image/*'], FAIR_USE.maxAttachmentMB);
             if (!validation.valid) {
                 alert(validation.error);
                 continue;
@@ -117,12 +128,132 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
         }
     };
 
+    const handleDocumentSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0) return;
+        if (!canUploadDocuments) {
+            alert(isFreeFirstMode
+                ? 'Upload de documentos temporariamente indisponível por limite técnico.'
+                : 'Documentos exigem plano Sovereign.');
+            if (!isFreeFirstMode) navigate('/pricing');
+            return;
+        }
+
+        let nextAttachments = [...attachments];
+        let currentDocuments = documents.length;
+        const allowedExtensions = /\.(pdf|txt|md|markdown|csv|json|doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp|rtf|pages|key|numbers)$/i;
+
+        for (const file of files.slice(0, maxDocuments)) {
+            if (currentDocuments >= effectiveMaxDocuments) {
+                alert(`Máximo de ${effectiveMaxDocuments} documentos permitidos`);
+                break;
+            }
+
+            if (!allowedExtensions.test(file.name) && !file.type.startsWith('text/') && file.type !== 'application/pdf') {
+                alert(`Tipo de documento não suportado: ${file.name}`);
+                continue;
+            }
+            if (file.size > FAIR_USE.maxAttachmentMB * 1024 * 1024) {
+                alert(`"${file.name}" é demasiado grande. Tamanho máximo: ${FAIR_USE.maxAttachmentMB}MB (fair-use).`);
+                continue;
+            }
+
+            try {
+                setIsUploading(true);
+                const url = await uploadFile(
+                    file,
+                    auth.currentUser?.uid || 'anonymous',
+                    (progress) => setUploadProgress(progress.progress)
+                );
+                nextAttachments = [...nextAttachments, {
+                    type: 'document',
+                    url,
+                    name: file.name,
+                    size: file.size,
+                    mimeType: file.type || undefined,
+                    source: 'upload',
+                }];
+                currentDocuments += 1;
+                onChange(nextAttachments);
+            } catch (error) {
+                console.error('Document upload error:', error);
+                alert(`Erro ao fazer upload de "${file.name}"`);
+            } finally {
+                setIsUploading(false);
+                setUploadProgress(0);
+            }
+        }
+
+        if (documentInputRef.current) {
+            documentInputRef.current.value = '';
+        }
+    };
+
+    const handleVideoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0) return;
+        if (!canUploadVideos) {
+            alert(isFreeFirstMode
+                ? 'Upload de vídeo temporariamente indisponível por limite técnico.'
+                : 'Vídeo exige anexos ativos no plano.');
+            if (!isFreeFirstMode) navigate('/pricing');
+            return;
+        }
+
+        let nextAttachments = [...attachments];
+        let currentVideos = videos.length;
+
+        for (const file of files.slice(0, maxVideos)) {
+            if (currentVideos >= effectiveMaxVideos) {
+                alert(`Máximo de ${effectiveMaxVideos} vídeos permitidos`);
+                break;
+            }
+
+            const validation = validateFile(file, ['video/*'], 200);
+            if (!validation.valid) {
+                alert(validation.error);
+                continue;
+            }
+
+            try {
+                setIsUploading(true);
+                const url = await uploadFile(
+                    file,
+                    auth.currentUser?.uid || 'anonymous',
+                    (progress) => setUploadProgress(progress.progress)
+                );
+                nextAttachments = [...nextAttachments, {
+                    type: 'video',
+                    url,
+                    name: file.name,
+                    size: file.size,
+                    mimeType: file.type || undefined,
+                    source: 'upload',
+                }];
+                currentVideos += 1;
+                onChange(nextAttachments);
+            } catch (error) {
+                console.error('Video upload error:', error);
+                alert(`Erro ao fazer upload de "${file.name}"`);
+            } finally {
+                setIsUploading(false);
+                setUploadProgress(0);
+            }
+        }
+
+        if (videoInputRef.current) {
+            videoInputRef.current.value = '';
+        }
+    };
+
     const handleSaveAudio = async () => {
         const recording = getRecording();
         if (!recording) return;
         if (!canUploadAudio) {
-            alert('Gravação de áudio exige plano Pro ou Sovereign.');
-            navigate('/pricing');
+            alert(isFreeFirstMode
+                ? 'Gravação de áudio temporariamente indisponível por limite técnico.'
+                : 'Gravação de áudio exige plano Pro ou Sovereign.');
+            if (!isFreeFirstMode) navigate('/pricing');
             return;
         }
 
@@ -176,7 +307,7 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     return (
         <div className="space-y-4">
             {/* Upload Buttons */}
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
                 <button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isUploading || !canUploadImages || images.length >= effectiveMaxImages}
@@ -195,6 +326,24 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
                     Gravar Áudio ({audios.length}/{effectiveMaxAudios})
                 </button>
 
+                <button
+                    onClick={() => documentInputRef.current?.click()}
+                    disabled={isUploading || !canUploadDocuments || documents.length >= effectiveMaxDocuments}
+                    className="flex items-center gap-2 px-4 py-2 glass-button text-sm disabled:opacity-50"
+                >
+                    <FileText className="w-4 h-4" />
+                    Documento ({documents.length}/{effectiveMaxDocuments})
+                </button>
+
+                <button
+                    onClick={() => videoInputRef.current?.click()}
+                    disabled={isUploading || !canUploadVideos || videos.length >= effectiveMaxVideos}
+                    className="flex items-center gap-2 px-4 py-2 glass-button text-sm disabled:opacity-50"
+                >
+                    <Film className="w-4 h-4" />
+                    Vídeo ({videos.length}/{effectiveMaxVideos})
+                </button>
+
                 <input
                     ref={fileInputRef}
                     type="file"
@@ -203,10 +352,28 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
                     onChange={handleFileSelect}
                     className="hidden"
                 />
+                <input
+                    ref={documentInputRef}
+                    type="file"
+                    accept=".pdf,.txt,.md,.markdown,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,text/*,application/pdf"
+                    multiple
+                    onChange={handleDocumentSelect}
+                    className="hidden"
+                />
+                <input
+                    ref={videoInputRef}
+                    type="file"
+                    accept="video/*"
+                    multiple
+                    onChange={handleVideoSelect}
+                    className="hidden"
+                />
             </div>
-            {(!canUploadImages || !canUploadAudio) && (
+            {(!canUploadImages || !canUploadAudio || !canUploadDocuments) && (
                 <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-xs text-indigo-200">
-                    Anexos estão bloqueados no plano Free. Faz upgrade para ativar imagens e áudio.
+                    {isFreeFirstMode
+                        ? 'Alguns anexos podem ser limitados por fair-use enquanto a infraestrutura estabiliza.'
+                        : 'Anexos estão bloqueados no plano Free. Faz upgrade para ativar imagens e áudio.'}
                 </div>
             )}
 
@@ -347,11 +514,27 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
                                         alt={attachment.name}
                                         className="w-full h-32 object-cover rounded-lg mb-2"
                                     />
-                                ) : (
+                                ) : attachment.type === 'audio' ? (
                                     <div className="w-full h-32 flex flex-col items-center justify-center bg-white/5 rounded-lg mb-2">
                                         <Mic className="w-8 h-8 text-indigo-400 mb-2" />
                                         <audio src={attachment.url} controls className="w-full px-2" />
                                     </div>
+                                ) : attachment.type === 'video' ? (
+                                    <div className="w-full h-32 overflow-hidden rounded-lg bg-white/5 mb-2">
+                                        <video src={attachment.url} controls className="h-full w-full object-cover" />
+                                    </div>
+                                ) : (
+                                    <a
+                                        href={attachment.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="w-full h-32 flex flex-col items-center justify-center bg-white/5 rounded-lg mb-2 hover:bg-white/10 transition"
+                                    >
+                                        <FileText className="w-8 h-8 text-cyan-300 mb-2" />
+                                        <span className="px-3 text-center text-xs text-gray-300 line-clamp-2">
+                                            Abrir documento
+                                        </span>
+                                    </a>
                                 )}
 
                                 <div className="flex items-center justify-between text-xs">
