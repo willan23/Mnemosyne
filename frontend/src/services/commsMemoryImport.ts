@@ -5,7 +5,8 @@ import {withPersonalMemoryMutation,type PersonalMemoryMutationDeps} from './pers
 import {withClipCaptureLock} from './clipCaptureService';
 import {buildEncryptedMemoryFields,encryptMemoryFields,decryptMemoryEnvelope,isEncryptedMemoryEnvelope} from './memoryCrypto';
 import {cognitiveEngine} from '../engines/CognitiveEngine';
-import {captureSemanticCandidates,semanticCandidateEligibility} from './semanticCandidateCapture';
+import {semanticCandidateEligibility} from './semanticCandidateCapture';
+import {withSemanticCandidates} from './semanticCandidateOperations';
 import {getLocalAiConfig,type MemoryPermission} from './localAiConfig';
 import {preparePersonalAttachment,validatePreparedPersonalAttachment,resumeEncryptedAttachmentUpload,forgetPreparedPersonalAttachment,cancelPreparedPersonalAttachment,type PreparedPersonalAttachment} from './attachmentUploadClient';
 import {maxUploadBytesForFile} from '../utils/fileTypes';
@@ -77,7 +78,7 @@ async function prepare(uid:string,input:CommsMemoryInput,existing:SessionData[],
   if(!attachmentIdValid(sessionId)||attachmentId!==null&&!attachmentIdValid(attachmentId)||!Number.isSafeInteger(now)||now<1)throw fail();
   const file=input.attachment?fileFromAttachment(input.attachment):null;guard();
   let semantic:Awaited<ReturnType<typeof cognitiveEngine.processMemory>>|null=null;
-  try{const candidates=await captureSemanticCandidates(existing,{assertCurrent:guard,eligible:semanticCandidateEligibility(uid)});semantic=await deps.process(input.text,candidates,{assertCurrent:guard});}catch{guard();console.warn('Não foi possível enriquecer a memória recebida localmente.');}guard();
+  try{semantic=await withSemanticCandidates(existing,{assertCurrent:guard,eligible:semanticCandidateEligibility(uid)},(candidates,current)=>deps.process(input.text,candidates,{assertCurrent:current}));}catch{guard();console.warn('Não foi possível enriquecer a memória recebida localmente.');}guard();
   const enc=(await deps.encryptContent(input.text,input.title||null)).enc;guard();let upload:PreparedPersonalAttachment|null=null;
   if(file){upload=await deps.prepareUpload({uid,file,id:attachmentId!},guard);guard();}
   return parseJournal({v:1,uid,upload,request:{sessionId,teamId:null,keyEpoch:null,keyId:null,enc,attachmentIds:upload?[upload.id]:[],metadata:{

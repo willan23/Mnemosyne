@@ -1,5 +1,11 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Escrita e importações — coortes reutilizadas, 6 de novembro de 2026
+
+As [operações semânticas](COORTES_SEMANTICAS_OPERACOES_2026-11-06.md) reutilizam o índice publicado nos percursos de aprendizagem/revisão, Comms e pesquisa web quando a origem está associada. Documentos/cápsulas conservam uma captura independente por lote e um Worker para todos os itens, com adições unitárias. Passaram **2198 testes frontend/234 ficheiros**, 131 focados/11 ficheiros, TypeScript/build, identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Chromium confirmou 10.000 vetores de 384 dimensões, 20 consultas sem nova projeção e 20 adições com 20 registos transmitidos; sem Auth/modelo/nativo completos.
+
+Universo, publicação de arrays, pré-requisitos de rollout e distribuição final continuam pendentes. A fase 5 e o objetivo completo permanecem abertos. Os 49 switches continuam fechados; sem deploy ou chamadas pagas. Functions/Rules anteriores são reutilizadas por hashes. Prova `semantic-cohorts-local-validation-20261106.json`. Os blocos seguintes são cronologia.
+
 ## Escrita semântica — índice persistente, 6 de novembro de 2026
 
 A [captura manual com índice persistente](ESCRITA_SEMANTICA_INDICE_PERSISTENTE_2026-11-06.md) reutiliza o Worker do âmbito e transmite os deltas de `useSessions`. Passaram 105 testes focados, **2.183 testes frontend/233 ficheiros**, TypeScript/build, lint zero erros/21 avisos e 23 contratos da CI. Chromium confirmou 10.000 vetores de 384 dimensões, zero projeções na consulta seguinte, uma após edição e lotes de 128, com zero enumerações da coleção no seletor, paridade de ranking e retirada por âmbito. Não houve inferência cloud, dados reais ou deploy.

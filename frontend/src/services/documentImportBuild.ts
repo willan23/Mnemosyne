@@ -1,6 +1,7 @@
 import type {SessionData} from '../hooks/useSessions';
 import {cognitiveEngine} from '../engines/CognitiveEngine';
-import {captureSemanticCandidates,semanticCandidateEligibility} from './semanticCandidateCapture';
+import {semanticCandidateEligibility} from './semanticCandidateCapture';
+import {withSemanticCandidateOperation} from './semanticCandidateOperations';
 import {buildEncryptedMemoryFields} from './memoryCrypto';
 import {getLocalAiConfig,type MemoryPermission} from './localAiConfig';
 import {ATTACHMENT_WRITES_ENABLED} from '../config/releaseGates';
@@ -49,7 +50,7 @@ export async function buildDocumentImportPlan(uid:string,input:File[],existing:S
   const directories=[...folders].sort((a,b)=>a.split('/').length-b.split('/').length||a.localeCompare(b));
   const hubIds=new Map(directories.map(path=>[path,deps.id()]));if(captured.some(item=>!item.directory))hubIds.set('',deps.id());
   const importId=deps.id();const uploads:PreparedPersonalAttachment[]=[];
-  const candidates=await captureSemanticCandidates(existing,{assertCurrent:guard,eligible:semanticCandidateEligibility(uid),yieldTask});guard();
+  return withSemanticCandidateOperation(existing,{assertCurrent:guard,eligible:semanticCandidateEligibility(uid),yieldTask},async(cohort,semanticGuard)=>{const guard=semanticGuard;guard();
   const processed=[];
   for(const item of captured){
     guard();const extraction=await deps.extract(item.file,guard);guard();const readableText=extraction.text.trim();
@@ -67,11 +68,10 @@ export async function buildDocumentImportPlan(uid:string,input:File[],existing:S
     ].join('\n'):summarizeDocument(item.file,category,extraction.method,digest);
     processed.push({...item,category,digest,summary,method:extraction.method,readable:!!readableText,attachmentId,type:attachmentTypeForFile(item.file)});
   }
-  const memories:DocumentImportMemory[]=[];const positions=new Map<string,Position>();const suns:Position[]=[];
-  for(let i=0;i<candidates.length;i++){const item=candidates[i];if(item.celestialType==='sun')suns.push(item.position||[0,0,0]);if((i+1)%128===0){await yieldTask();guard();}}
+  const memories:DocumentImportMemory[]=[];const positions=new Map<string,Position>();const suns:Position[]=cohort.sunPositions();
   async function seal(id:string,role:'hub'|'document',text:string,title:string,category:string,tags:string[],attachmentIds:string[],parentId:string|null,modality:'mixed'|'document'|'image'|'audio'|'video',position:Position|null){
     guard();let cognitive:Awaited<ReturnType<typeof cognitiveEngine.processMemory>>|null=null;
-    try{cognitive=await deps.process(text,candidates,{assertCurrent:guard});guard();}catch{guard();console.warn('Aprendizagem local sem enriquecimento semântico.');}
+    try{cognitive=await deps.process(text,cohort.prefix(),{assertCurrent:semanticGuard});guard();}catch{guard();console.warn('Aprendizagem local sem enriquecimento semântico.');}
     const source=role==='hub'?'document-batch':'document-upload';const sealed=await deps.encrypt(text,title);guard();
     memories.push({sessionId:id,role,enc:sealed.enc,attachmentIds,metadata:{tags:[...new Set(['auto-learned',source,modality,...tags])],category,embedding:cognitive?.embedding||null,embeddingModel:cognitive?.embeddingModel||null,
       connections:[],semanticClusterId:cognitive?.semanticClusterId||null,position:position||cognitive?.position||null,importance:cognitive?.importance||.55,celestialType:role==='hub'?'sun':'planet',parentId,
@@ -97,4 +97,5 @@ export async function buildDocumentImportPlan(uid:string,input:File[],existing:S
   const edges=memories.filter(item=>typeof item.metadata.parentId==='string').map(item=>{const [sourceId,targetId]=[item.sessionId,item.metadata.parentId as string].sort();return{sourceId,targetId};});
   const plan=parseDocumentImportPlan({importId,memories,attachments,edges});guard();
   return{plan,uploads,result:{batchId:importId,imported:files.length,hubId:memories[0].sessionId}};
+  });
 }

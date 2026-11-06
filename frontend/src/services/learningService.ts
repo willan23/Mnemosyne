@@ -6,7 +6,8 @@ import type { GeneratedImageResult } from './aiGenerationService';
 import { uploadEncryptedAttachment } from './attachmentUploadClient';
 import { createMemoryWithAttachments, createPersonalMemory,createTeamMemory,assertTeamMemoryCreationEnabled, assertPersonalMemoryCreationEnabled } from './attachedMemoryRecovery';
 import { withPersonalMemoryMutation } from './personalMemoryMutation';
-import { captureSemanticCandidates, semanticCandidateEligibility } from './semanticCandidateCapture';
+import { semanticCandidateEligibility } from './semanticCandidateCapture';
+import { withSemanticCandidates } from './semanticCandidateOperations';
 import {assertPersonalConnectionWrites,changePersonalConnection} from './personalConnections';
 import { AiGenerationContextError, type AiGenerationContext } from './aiGenerationContext';
 
@@ -87,8 +88,9 @@ export const sessionToMemoryObject = (session: SessionData): MemoryObject => ({
   teamId: session.teamId,
 });
 
-const generationCandidates = (sessions: SessionData[], uid: string, assertCurrent: () => void, context?: AiGenerationContext, excludeId?: string) =>
-  captureSemanticCandidates(sessions, { assertCurrent, eligible: semanticCandidateEligibility(uid, context?.scope.kind === 'team' ? context.scope.teamId : undefined, excludeId) });
+const generateSemantics = (text: string, sessions: SessionData[], uid: string, assertCurrent: () => void, context?: AiGenerationContext, excludeId?: string) =>
+  withSemanticCandidates(sessions, { assertCurrent, eligible: semanticCandidateEligibility(uid, context?.scope.kind === 'team' ? context.scope.teamId : undefined, excludeId) },
+    (candidates, guard) => cognitiveEngine.processMemory(text, candidates, { assertCurrent: guard }));
 async function guardGeneration(uid: string, context?: AiGenerationContext) {
   if (!context) return;
   if (context.uid !== uid) throw new AiGenerationContextError();
@@ -145,8 +147,7 @@ const persistCapturedLearnedMemory = async ({
   if (!skipSemantic) {
     try {
       const semanticGuard = () => { assertCurrent(); generationContext?.assertCurrent(); };
-      const candidates = await generationCandidates(existingMemories, uid, semanticGuard, generationContext);
-      cognitive = await cognitiveEngine.processMemory(text, candidates, { assertCurrent: semanticGuard });
+      cognitive = await generateSemantics(text, existingMemories, uid, semanticGuard, generationContext);
       await guard();
       processingMethod = `${processingMethod}+local-embedding`;
     } catch {
@@ -250,8 +251,7 @@ export const reviseLearnedMemory = async (
         let cognitive: Awaited<ReturnType<typeof cognitiveEngine.processMemory>> | null = null;
         try {
           const semanticGuard = () => { guard(); generationContext?.assertCurrent(); };
-          const candidates = await generationCandidates(existingMemories, uid, semanticGuard, generationContext, memoryId);
-          cognitive = await cognitiveEngine.processMemory(text, candidates, { assertCurrent: semanticGuard });
+          cognitive = await generateSemantics(text, existingMemories, uid, semanticGuard, generationContext, memoryId);
         } catch {
           guard(); console.warn('Learned memory revised without semantic refresh.');
         }
@@ -268,7 +268,7 @@ export const reviseLearnedMemory = async (
   if(!generationContext||scope?.kind!=='team'||!teamRevisionBaseline||teamRevisionBaseline.teamId!==scope.teamId||teamRevisionBaseline.keyEpoch!==scope.keyEpoch||teamRevisionBaseline.keyId!==scope.keyId)throw new TeamRevisionError('baseline');
   await reviseTeamLearnedMemory({uid,id:memoryId,teamId:scope.teamId,baseline:teamRevisionBaseline,assertCurrent:generationContext.assertCurrent,prepare:async guard=>{
     await guardGeneration(uid,generationContext);guard();let cognitive:Awaited<ReturnType<typeof cognitiveEngine.processMemory>>|null=null;
-    try{const semanticGuard=()=>{guard();generationContext.assertCurrent();};const candidates=await generationCandidates(existingMemories,uid,semanticGuard,generationContext,memoryId);cognitive=await cognitiveEngine.processMemory(text,candidates,{assertCurrent:semanticGuard});}catch{guard();console.warn('Learned team memory revised without semantic refresh.');}
+    try{const semanticGuard=()=>{guard();generationContext.assertCurrent();};cognitive=await generateSemantics(text,existingMemories,uid,semanticGuard,generationContext,memoryId);}catch{guard();console.warn('Learned team memory revised without semantic refresh.');}
     await guardGeneration(uid,generationContext);guard();return{text,title:cognitive?cognitiveEngine.generateTitle(text):null,embedding:cognitive?.embedding??null,embeddingModel:cognitive?.embeddingModel??null,semanticClusterId:cognitive?.semanticClusterId??null,position:cognitive?.position??null,importance:cognitive?.importance??0.55,processingMethod:cognitive?'learned:revision+local-embedding':'learned:revision'};
   }});
 

@@ -1,6 +1,7 @@
 import type { SessionData } from '../hooks/useSessions';
 import { cognitiveEngine } from '../engines/CognitiveEngine';
-import { captureSemanticCandidates, semanticCandidateEligibility } from './semanticCandidateCapture';
+import { semanticCandidateEligibility } from './semanticCandidateCapture';
+import { withSemanticCandidates } from './semanticCandidateOperations';
 import { personalSemanticCandidates } from './personalSemanticScope';
 import { withAiGenerationContext, type AiGenerationContextDeps } from './aiGenerationContext';
 import { assertPersonalMemoryCreationEnabled, createPersonalMemory, hasPendingAttachedMemoryCreation } from './attachedMemoryRecovery';
@@ -36,7 +37,7 @@ export async function saveWebResearchMemory(input:{uid:string;result:WebResearch
   return withAiGenerationContext({uid:input.uid},async context=>{
     const guard=()=>{input.assertCurrent?.();context.assertCurrent();};guard();
     const text=formatResearchAsMemory(result);let cognitive:Awaited<ReturnType<typeof cognitiveEngine.processMemory>>|null=null;
-    try{const candidates=await captureSemanticCandidates(input.sessions,{assertCurrent:guard,eligible:semanticCandidateEligibility(input.uid)});cognitive=await deps.semantic(text,candidates,{assertCurrent:guard});guard();}
+    try{cognitive=await withSemanticCandidates(input.sessions,{assertCurrent:guard,eligible:semanticCandidateEligibility(input.uid)},(candidates,current)=>deps.semantic(text,candidates,{assertCurrent:current}));guard();}
     catch{guard();console.warn('Web research memory saved without local semantic enrichment.');}
     guard();const savedAt=deps.now();const saved=await deps.create({uid:input.uid,text,title:`Pesquisa web: ${result.query}`.slice(0,90),metadata:{
       tags:['web-research','fonte-externa',...result.key_concepts.slice(0,6).map(concept=>Array.from(concept.slice(0,128)).filter(char=>char.charCodeAt(0)>=32&&char.charCodeAt(0)!==127).join(''))],category:'Pesquisa web',

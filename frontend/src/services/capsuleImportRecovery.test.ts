@@ -40,6 +40,10 @@ it('copies a semantic base once and reuses fixed growing prefixes without readin
   expect(calls.map(call=>[...call[1]].length)).toEqual([1,2,3]);const first=[...calls[0][1]][0];expect(first).toBe([...calls[2][1]][0]);expect(first.embedding).not.toBe(source.embedding);
   expect(calls.every(call=>typeof call[2]?.assertCurrent==='function')).toBe(true);expect(Object.hasOwn(first,'text')).toBe(false);
 });
+it('a key retirement inside inference rejects the batch before encryption even when the caller guard stays valid',async()=>{
+  const deps=buildDeps();vi.mocked(deps.process).mockImplementationOnce(async()=>{setMemoryCryptoKeyForTests(null);throw Error('Synthetic model unavailable');});
+  await expect(buildCapsuleImportPlan('alice',{text:pack(2)},[],()=>{},deps)).rejects.toThrow('semantic_write_unavailable');expect(deps.encrypt).not.toHaveBeenCalled();
+});
 it.each(['inference','seal'])('context loss during %s rejects the whole captured plan before any server call',async stage=>{
   const deps=buildDeps();let current=true;const guard=()=>{if(!current)throw Error('Synthetic changed');};
   if(stage==='inference')vi.mocked(deps.process).mockImplementationOnce(async()=>{current=false;return{} as never;});

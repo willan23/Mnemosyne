@@ -3,6 +3,10 @@ import { learnGeneratedImage, learnGeneratedText, reviseLearnedMemory } from './
 import type { AiGenerationContext } from './aiGenerationContext';
 import type { SessionData } from '../hooks/useSessions';
 import { CURRENT_EMBEDDING_SPACE } from './embeddingModel';
+import { IndexedSemanticWriteCorpus } from './indexedSemanticWriteCorpus';
+import { IndexedSemanticWriteIndex } from './indexedSemanticWriteIndex';
+import { selectSemanticWriteNeighbors } from './semanticWriteClient';
+import type { IndexedSemanticWriteMessage } from './indexedSemanticWriteProtocol';
 
 const state = vi.hoisted(() => ({ add: vi.fn(), update: vi.fn(), attached: vi.fn(), upload: vi.fn(), personal: vi.fn(),
   createTeam:vi.fn(),teamFields: vi.fn(), unlock: vi.fn(), semantic: vi.fn(), read: vi.fn(), revisePersonal: vi.fn(),baseline:vi.fn(),teamBaseline:vi.fn(),reviseTeam:vi.fn() }));
@@ -74,6 +78,17 @@ it('captures only the eligible semantic fields, preserves their vectors and supp
     allowed.embedding![0] = 99; expect(candidates[0].embedding).toEqual([1, 0]); captured.assertCurrent(); options.assertCurrent(); return { embedding: [1], embeddingModel: 'synthetic-local' };
   });
   await learnGeneratedText('alice', 'Synthetic prompt', 'Synthetic answer', [denied, allowed], captured); expect(state.createTeam).toHaveBeenCalledOnce();
+});
+it.each([false,true])('generated text uses its published index without enumerating source metadata (personal=%s)', async personal => {
+  const values=[{id:'personal',uid:'alice',timestamp:0,embedding:[1,0],embeddingModel:CURRENT_EMBEDDING_SPACE},
+    {id:'team',uid:'bob',teamId:scope.teamId,timestamp:0,embedding:[1,0],embeddingModel:CURRENT_EMBEDDING_SPACE}];
+  class TestWorker extends EventTarget{index=new IndexedSemanticWriteIndex();terminate(){this.index.clear();}postMessage(message:IndexedSemanticWriteMessage){const data={v:1,seq:message.seq,ok:true,...this.index.handle(structuredClone(message))};queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data})));}}
+  const owner=new IndexedSemanticWriteCorpus({uid:'alice',teamIds:new Set([scope.teamId])},id=>values.find(value=>value.id===id),()=>new TestWorker() as unknown as Worker);
+  owner.apply('source',{changed:values.map(value=>({id:value.id,value})),removed:[],order:{reset:values.map(value=>value.id),changes:[]}});
+  const source=new Proxy(values,{get(target,key,receiver){if(key===Symbol.iterator)throw Error('Enumerated original');return Reflect.get(target,key,receiver);}});owner.associate(source);
+  let selected:{count:number;id:string}|undefined;
+  state.semantic.mockImplementationOnce(async(_text,candidates,options)=>{const result=await selectSemanticWriteNeighbors([1,0],candidates,options);selected={count:result.count,id:result.neighbors[0].candidate.id};return{embedding:[1,0],embeddingModel:CURRENT_EMBEDDING_SPACE};});
+  try{await learnGeneratedText('alice','Synthetic prompt','Synthetic answer',source as unknown as SessionData[],context(personal));expect(selected).toEqual({count:1,id:personal?'personal':'team'});expect(state.semantic).toHaveBeenCalledOnce();expect(personal?state.add:state.createTeam).toHaveBeenCalledOnce();}finally{owner.clear();}
 });
 it('refuses actor mismatch and revocation during enrichment without any persistence', async () => {
   await expect(learnGeneratedText('bob', 'Synthetic prompt', 'Synthetic answer', [], context())).rejects.toThrow(/context changed/);

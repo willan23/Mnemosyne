@@ -45,6 +45,9 @@ jobs:
       - name: Persistent semantic write Worker with 10000 synthetic records and scoped deltas
         run: node scripts/indexed-semantic-write-browser.cjs
         working-directory: .
+      - name: Fixed semantic import cohorts with one Worker and bounded capsule additions in Chromium
+        run: node scripts/semantic-candidate-operations-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

@@ -29,8 +29,8 @@ it('reuses one semantic metadata capture for the whole document plan without rea
 it('yields during hub placement and preserves the previous distance formula, then refuses a retired placement',async()=>{
   vi.spyOn(Math,'random').mockReturnValue(.5);const existing=Array.from({length:128},(_,i)=>({id:'sun'+i,uid:'alice',celestialType:'sun',position:[0,0,0]} as SessionData));
   const f=fixture();f.deps.yieldTask=vi.fn(async()=>{});const result=await buildDocumentImportPlan('alice',[file('a.txt')],existing,f.guard,f.deps);
-  expect(vi.mocked(f.deps.yieldTask)).toHaveBeenCalledTimes(3);const radius=50+30+128*12;expect(result.plan.memories[0].metadata.position).toEqual([-radius,0,radius*Math.sin(Math.PI)]);
-  const denied=fixture();let yields=0;denied.deps.yieldTask=vi.fn(async()=>{if(++yields===3)denied.state.valid=false;});
+  expect(vi.mocked(f.deps.yieldTask)).toHaveBeenCalledTimes(2);const radius=50+30+128*12;expect(result.plan.memories[0].metadata.position).toEqual([-radius,0,radius*Math.sin(Math.PI)]);
+  const denied=fixture();let yields=0;denied.deps.yieldTask=vi.fn(async()=>{if(++yields===2)denied.state.valid=false;});
   await expect(buildDocumentImportPlan('alice',[file('a.txt')],existing,denied.guard,denied.deps)).rejects.toThrow('scope changed');expect(denied.deps.process).not.toHaveBeenCalled();expect(denied.deps.encrypt).not.toHaveBeenCalled();
   vi.restoreAllMocks();
 });
@@ -49,7 +49,7 @@ it('mixed loose files and nested paths keep distinct root hubs and complete reci
 it('captures only unlocked personal semantic context, without linking suggested vector neighbors into the import',async()=>{
   const f=fixture();const existing=[{id:'own',uid:'alice',teamId:null,text:'Synthetic personal',timestamp:1},{id:'foreign',uid:'bob',teamId:null,text:'Synthetic foreign'},
     {id:'team',uid:'alice',teamId:'crew',text:'Synthetic team'},{id:'locked',uid:'alice',teamId:null,encLocked:true,text:'Synthetic locked'}] as unknown as SessionData[];
-  await buildDocumentImportPlan('alice',[file('a.txt')],existing,f.guard,f.deps);for(const [,candidates]of vi.mocked(f.deps.process).mock.calls)expect(candidates.map(item=>item.id)).toEqual(['own']);
+  await buildDocumentImportPlan('alice',[file('a.txt')],existing,f.guard,f.deps);for(const [,candidates]of vi.mocked(f.deps.process).mock.calls)expect([...candidates].map(item=>item.id)).toEqual(['own']);
 });
 it('preserves locally encrypted originals in a manifest shared by their direct hub and document; local prep failures are never silently dropped',async()=>{
   const f=fixture();f.state.policy='allow-cloud';f.state.attachments=true;const key=attachmentKeyWrapper(await crypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']));
@@ -67,6 +67,10 @@ it('rejects traversal, duplicates, deep paths, empty files and file-count overfl
   for(const input of [[file('../a.txt')],[file('a.txt'),file('a.txt')],[file(Array(17).fill('dir').join('/')+'/a.txt')],[file('a.txt','')],Array.from({length:21},(_,i)=>file(i+'.txt'))]){
     const f=fixture();await expect(buildDocumentImportPlan('alice',input,[],f.guard,f.deps)).rejects.toThrow();expect(f.deps.extract).not.toHaveBeenCalled();expect(f.deps.encrypt).not.toHaveBeenCalled();expect(f.deps.prepareAttachment).not.toHaveBeenCalled();
   }
+});
+it('a key retirement during extraction refuses subsequent semantic inference and encryption',async()=>{
+  const f=fixture();f.deps.extract=vi.fn(async()=>{setMemoryCryptoMnemonic(null);return{text:'Synthetic',method:'local'};});
+  await expect(buildDocumentImportPlan('alice',[file('a.txt')],[],()=>{},f.deps)).rejects.toThrow('semantic_write_unavailable');expect(f.deps.process).not.toHaveBeenCalled();expect(f.deps.encrypt).not.toHaveBeenCalled();
 });
 it.each(['extract','semantic','encrypt','policy'] as const)('a transition during %s aborts local preparation before publishing a plan',async stage=>{
   const f=fixture();if(stage==='extract'||stage==='policy')f.deps.extract=vi.fn(async()=>{if(stage==='policy')f.state.policy='allow-cloud';else f.state.valid=false;return{text:'Synthetic',method:'local'};});

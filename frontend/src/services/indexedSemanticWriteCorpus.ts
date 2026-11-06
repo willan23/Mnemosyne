@@ -9,7 +9,7 @@ import { INDEXED_SEMANTIC_WRITE_LIMITS as capacity, type IndexedSemanticDocument
 
 type Candidate = SemanticWriteCandidate & { timestamp: number };
 type Pending<T> = { type: 'patch'; source: string; patch: MemoryPublicationPatch<T> } | { type: 'remove'; source: string };
-interface Binding { owner: IndexedSemanticWriteCorpus<Candidate>; revision: number; size: number }
+interface Binding { owner: IndexedSemanticWriteCorpus<Candidate>; revision: number; size: number; defaultScope?: SemanticWriteScope }
 const bindings = new WeakMap<object, Binding>();
 const fail = () => new Error('semantic_write_unavailable');
 type Message = IndexedSemanticWriteMessage extends infer M ? M extends { seq: number } ? Omit<M, 'seq'> : never : never;
@@ -53,6 +53,9 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
     if (this.worker) this.scheduleFlush();
   }
   associate(values: T[]): void { bindings.set(values, { owner: this, revision: this.revision, size: values.length }); }
+  associateCaptured(source: Iterable<SemanticWriteCandidate>, size: number, scope: SemanticWriteScope): void {
+    bindings.set(source, { owner: this, revision: this.revision, size, defaultScope: scope });
+  }
   clear(): void {
     if (this.closed) return;
     this.closed = true; this.revision++; this.worker?.terminate(); this.worker = null;
@@ -99,7 +102,7 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
           else {
             const scope = this.cohort(value), vector = scope !== null && sameEmbeddingSpace(CURRENT_EMBEDDING_SPACE, value.embeddingModel) ? value.embedding : undefined;
             changed.push({ id, value: { id: value.id, timestamp: value.timestamp, scope,
-              embedding: Array.isArray(vector) && vector.length <= limits.dimensions ? vector.slice() : null, embeddingModel: scope !== null && sameEmbeddingSpace(CURRENT_EMBEDDING_SPACE, value.embeddingModel) ? CURRENT_EMBEDDING_SPACE : undefined } });
+              embedding: Array.isArray(vector) && vector.length <= limits.dimensions ? vector : null, embeddingModel: scope !== null && sameEmbeddingSpace(CURRENT_EMBEDDING_SPACE, value.embeddingModel) ? CURRENT_EMBEDDING_SPACE : undefined } });
           }
           if (changed.length === limits.batchSize || at + 1 === next.patch.changed.length) {
             const ack = await this.exchange({ v: 1, type: 'patch-chunk', changed }); if (ack.changed !== changed.length) { this.clear(); throw fail(); }
@@ -140,6 +143,14 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
 }
 
 export function selectIndexedSemanticWriteNeighbors(query: number[], source: Iterable<SemanticWriteCandidate>, options: SemanticWriteOptions): Promise<SemanticWriteSelection> | undefined {
-  const binding = bindings.get(source), scope = readSemanticWriteScope(options.eligible);
+  const binding = bindings.get(source), scope = options.eligible ? readSemanticWriteScope(options.eligible) : binding?.defaultScope;
   return binding && scope ? binding.owner.select(query, scope, binding.revision, binding.size, options) : undefined;
+}
+
+/** Bind a single scoped operation without projecting, copying or changing the shared source binding. */
+export function scopedIndexedSemanticSource(source: Iterable<SemanticWriteCandidate>, eligible: (row: SemanticWriteCandidate) => boolean): Iterable<SemanticWriteCandidate> | undefined {
+  const binding = bindings.get(source), scope = readSemanticWriteScope(eligible);
+  if (!binding || !scope) return undefined;
+  const alias: Iterable<SemanticWriteCandidate> = { [Symbol.iterator](): Iterator<SemanticWriteCandidate> { throw fail(); } };
+  bindings.set(alias, { ...binding, defaultScope: scope }); return alias;
 }
