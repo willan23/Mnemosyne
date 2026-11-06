@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Estado consolidado — 6 de novembro de 2026
+
+A [baseline, dependências e CI](BASELINE_E_CI_2026-11-06.md) consolida a revisão atual e uma tabela das fases 0–6. Passaram 2.161 testes frontend, 607 Functions, 328 +25 Rules e 23 contratos da CI/publicação; builds e identidade passaram, lint zero erros/21 avisos e auditorias de produção zero após corrigir a cadeia transitiva rimraf/glob/minimatch. A primeira auditoria com falha ficou preservada. A CI é obrigatória em `main`, mas os cinco jobs remotos foram recusados antes de executar passos por bloqueio de faturação do GitHub; não se contam como testes aprovados.
+
+O [PR #1](https://github.com/willan23/Mnemosyne/pull/1) permanece em rascunho. Metadata de produção confirma que os dois secrets Stripe ainda faltam, o preflight local deteta entradas antigas no dotenv e Monitoring ainda não tem canais, métricas ou políticas. Não foram lidos payloads de secrets nem alterados recursos Firebase/GCP. Permanecem os percursos lineares de UI da fase 5, a preparação do corte/migrações e a distribuição final Windows/Android vinculada às fontes. A disponibilidade paga OpenRouter espera a indicação do operador; não houve novas chamadas generativas. Os 49 switches continuam fechados, sem deploy e sem declaração de todas as fases concluídas. Os itens antigos abaixo são relatos datados e não substituem esta consolidação.
+
 ## Retenção de sincronização e decisão de IA
 
 A [limpeza de sync com recibos](RETENCAO_SYNC_COM_RECIBOS_2026-10-29.md) retira a purga de memórias baseada em ACKs incompletos e passa a eliminar só envelopes terminais com prova ligada à cifra atual, numa transação. Cursor privado CAS e páginas de 50 preservam progresso. O risco anterior foi reproduzido com registos sintéticos, inclusive apenas um ativo omitido. Passaram 16 testes focados e 599 Functions gerais, com a omissão prevista de Rules; a repetição integral passou **325 Functions/Rules +25 frontend/Rules**, sem falhas/omissões, saída zero e emuladores encerrados. A primeira tentativa expirou no wrapper após aprovar testes; a correção e repetição ficaram preservadas. Expiração/retoma/purga dependente e pilotos continuam exigidos; 49 gates fechados e sem deploy.

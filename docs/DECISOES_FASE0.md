@@ -1,5 +1,9 @@
 # Fase 0 — baseline, ambiente e CI
 
+## Validação de 6 de novembro de 2026
+
+A [baseline e CI atuais](BASELINE_E_CI_2026-11-06.md) registam 2.161 testes frontend, 607 Functions, 328 +25 Rules, build e lint sem erros/21 avisos. A auditoria inicial recusou seis alertas moderados transitivos; a correção de rimraf/lockfile passou instalação limpa, nova suite Functions/Rules e zero alertas de produção nos dois packages. Os cinco checks agora são obrigatórios em `main`, incluindo administradores. O PR #1 está em rascunho e a CI remota não iniciou passos devido ao bloqueio de faturação da conta GitHub. Não há aprovação remota nem deploy. Os blocos seguintes conservam a cronologia anterior.
+
 ## Continuação de 25 de outubro
 
 Na [integração OpenRouter gratuita](OPENROUTER_GRATUITO_2026-10-25.md), a suite geral frontend passou 1.790 testes/212 ficheiros, sem omissões, com build/TypeScript e lint geral sem erros/23 avisos anteriores. Uma nova consulta npm encontrou dois pacotes vulneráveis nas Functions; a [correção HTTP](DEPENDENCIAS_HTTP_NODE22_2026-10-25.md) fixa body-parser 2.4.0 e undici 7.30.1, com qs 6.16.1 transitivo e fetch explícito da biblioteca corrigida. O audit posterior reporta zero vulnerabilidades de produção nos dois packages. Passaram 26 testes de transporte/adaptadores, incluindo três ensaios de sobrevivência em processos isolados. A suite geral Functions posterior passou 580 testes, com uma omissão prevista de Rules fora do emulador.

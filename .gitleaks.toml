@@ -15,7 +15,6 @@ regexes = [
   '''^quarantine/bob/other$''',
   '''^123e4567-e89b-42d3-a456-426614174000$''',
   '''^123e4567-e89b-42d3-a456-426614174001$''',
-  '''^sk_test_placeholder$''',
   '''^AIzaSyDVA1XN6YOJ0VYDgzV2i3TdgfjwqPMWIhY$''',
   '''^AIzaSyC1234567890abcdefghijklmnopqrstuv$'''
 ]
