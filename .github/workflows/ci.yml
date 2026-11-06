@@ -42,6 +42,9 @@ jobs:
       - name: Incremental hybrid search Worker with 10000 synthetic records in Chromium
         run: node scripts/hybrid-search-worker-browser.cjs
         working-directory: .
+      - name: Persistent semantic write Worker with 10000 synthetic records and scoped deltas
+        run: node scripts/indexed-semantic-write-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

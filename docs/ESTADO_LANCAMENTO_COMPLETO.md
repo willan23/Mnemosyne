@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Escrita semântica — índice persistente, 6 de novembro de 2026
+
+A [captura manual com índice persistente](ESCRITA_SEMANTICA_INDICE_PERSISTENTE_2026-11-06.md) reutiliza o Worker do âmbito e transmite os deltas de `useSessions`. Passaram 105 testes focados, **2.183 testes frontend/233 ficheiros**, TypeScript/build, lint zero erros/21 avisos e 23 contratos da CI. Chromium confirmou 10.000 vetores de 384 dimensões, zero projeções na consulta seguinte, uma após edição e lotes de 128, com zero enumerações da coleção no seletor, paridade de ranking e retirada por âmbito. Não houve inferência cloud, dados reais ou deploy.
+
+A publicação de arrays e os demais escritores/importações continuam a exigir trabalho; esta alteração não encerra a fase 5. Functions/Rules anteriores foram conservadas por hashes sem nova execução. A CI remota mantém a limitação externa já registada. Os instaladores não foram reconstruídos e os 49 switches permanecem fechados. Prova `semantic-write-index-local-validation-20261106.json`. Os blocos seguintes conservam a cronologia.
+
 ## Estado consolidado — 6 de novembro de 2026
 
 A [baseline, dependências e CI](BASELINE_E_CI_2026-11-06.md) consolida a revisão atual e uma tabela das fases 0–6. Passaram 2.161 testes frontend, 607 Functions, 328 +25 Rules e 23 contratos da CI/publicação; builds e identidade passaram, lint zero erros/21 avisos e auditorias de produção zero após corrigir a cadeia transitiva rimraf/glob/minimatch. A primeira auditoria com falha ficou preservada. A CI é obrigatória em `main`, mas os cinco jobs remotos foram recusados antes de executar passos por bloqueio de faturação do GitHub; não se contam como testes aprovados.

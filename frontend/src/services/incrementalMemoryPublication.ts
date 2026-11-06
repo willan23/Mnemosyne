@@ -86,6 +86,15 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
         options.batchSize !== undefined && (!Number.isInteger(options.batchSize) || options.batchSize < 1 || options.batchSize > 4096)) throw unavailable();
   }
   get count(): number { return this.resolved.size; }
+  get(id: string): T | undefined { return this.resolved.get(id)?.value; }
+  /** Ordered iteration for controlled consumers such as the semantic Worker. */
+  *orderedValues(): IterableIterator<T> {
+    const stack: SortedNode[] = []; let node = this.root;
+    while (node || stack.length) {
+      while (node) { stack.push(node); node = node.left; }
+      node = stack.pop()!; yield this.resolved.get(node.id)!.value; node = node.right;
+    }
+  }
   private random = () => {
     let x = this.seed; x ^= x << 13; x ^= x >>> 17; x ^= x << 5; this.seed = x >>> 0;
     return this.seed;

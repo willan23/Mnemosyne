@@ -9,6 +9,7 @@ import type { HybridSearchHit } from '../services/hybridSearchProtocol';
 import { appendLocalMemoryActivity, type LocalMemoryActivity } from '../services/localMemoryActivity';
 import { IncrementalSessionSnapshot } from '../services/incrementalSessionSnapshot';
 import { IncrementalMemoryPublication, type MemoryPublicationDelta } from '../services/incrementalMemoryPublication';
+import { IndexedSemanticWriteCorpus } from '../services/indexedSemanticWriteCorpus';
 import { onEmbeddingSelectionChanged, readEmbeddingSelection } from '../services/embeddingSelection';
 import { searchSelectedEmbeddingProfile } from '../services/selectedEmbeddingSearch';
 import { PreparedEmbeddingSearchCache } from '../services/preparedEmbeddingSearchCache';
@@ -141,6 +142,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
     const [allSessions, setAllSessions] = useState<SessionData[]>([]);
     const activeCorpus = useRef<HybridSearchCorpus | null>(null);
     const activePublication = useRef<IncrementalMemoryPublication<SessionData> | null>(null);
+    const activeSemanticCorpus = useRef<IndexedSemanticWriteCorpus<SessionData> | null>(null);
     const [searchCorpus, setSearchCorpus] = useState<{
         uid: string; cryptoEpoch: number; teamIds: string[]; snapshot: HybridCorpusSnapshot | 'unavailable';
     } | null>(null);
@@ -189,7 +191,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
     const needsSearch = Boolean(searchQuery.trim() || filters.dateRange !== 'all' || filters.tags.length || filters.category);
 
     useEffect(() => {
-        const invalidate = () => { activeCorpus.current?.clear(); activePublication.current?.clear(); searchIndex.dispose(); hybridIndex.dispose(); preparedSearchCache.dispose(); setRankedResult(null); setCryptoEpoch((epoch) => epoch + 1); };
+        const invalidate = () => { activeCorpus.current?.clear(); activeSemanticCorpus.current?.clear(); activePublication.current?.clear(); searchIndex.dispose(); hybridIndex.dispose(); preparedSearchCache.dispose(); setRankedResult(null); setCryptoEpoch((epoch) => epoch + 1); };
         const stopMemory = onMemoryCryptoChanged(invalidate);
         const stopTeam = onTeamKeyChanged(invalidate);
         return () => {
@@ -213,6 +215,8 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         activeCorpus.current = corpus;
         let corpusUnavailable = false;
         const readScope = { uid: user.uid, teamIds: new Set(teamIds) };
+        const semanticCorpus = new IndexedSemanticWriteCorpus<SessionData>(readScope, id => publication.get(id));
+        activeSemanticCorpus.current = semanticCorpus;
         let active = true;
         let publicationRevision = 0;
 
@@ -225,13 +229,14 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
             }
             const revision = ++publicationRevision;
             void publication.publish(() => active && revision === publicationRevision, nextAllSessions => {
+                semanticCorpus.associate(nextAllSessions);
                 setSearchCorpus({ uid: user.uid, cryptoEpoch, teamIds, snapshot });
                 setAllSessions(nextAllSessions);
                 setLoadedScope({ uid: user.uid, cryptoEpoch, teamIds });
                 setIsLoading(false);
             }).catch(() => {
                 if (!active || revision !== publicationRevision) return;
-                publication.clear(); corpus.clear(); corpusUnavailable = true;
+                publication.clear(); corpus.clear(); semanticCorpus.clear(); corpusUnavailable = true;
                 setAllSessions([]); setSearchCorpus({ uid: user.uid, cryptoEpoch, teamIds, snapshot: 'unavailable' });
                 setIsLoading(false);
                 console.warn('Session publication unavailable.');
@@ -247,7 +252,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
                 // Permission errors must retire the visible view before a large
                 // replacement array yields to the next task.
                 setAllSessions([]); setSearchCorpus(null); setRankedResult(null);
-                publish(publication.removeSource(bucketKey));
+                const delta = publication.removeSource(bucketKey); semanticCorpus.removeSource(bucketKey); publish(delta);
             };
             const unsubscribe = onSnapshot(firestoreQuery, (snapshot) => {
                 if (!active) return;
@@ -260,8 +265,8 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
                         return mapSessionDoc({ id: docSnap.id, data: () => data });
                     });
                     if (!active || currentRevision !== revision || !lease.isCurrent() || !lease.commit()) return;
-                    publish(publication.apply(bucketKey, { ...lease,
-                        changed: lease.changed.map(({ id, value }) => ({ id, value: value && canReadCachedMemory(value, readScope) ? value : null })) }));
+                    const patch = { ...lease, changed: lease.changed.map(({ id, value }) => ({ id, value: value && canReadCachedMemory(value, readScope) ? value : null })) };
+                    const delta = publication.apply(bucketKey, patch); semanticCorpus.apply(bucketKey, patch); publish(delta);
                 })().catch(() => {
                     if (!active || currentRevision !== revision) return;
                     clear();
@@ -290,9 +295,11 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         return () => {
             active = false;
             corpus.clear();
+            semanticCorpus.clear();
             publication.clear();
             if (activePublication.current === publication) activePublication.current = null;
             if (activeCorpus.current === corpus) activeCorpus.current = null;
+            if (activeSemanticCorpus.current === semanticCorpus) activeSemanticCorpus.current = null;
             unsubs.forEach((unsubscribe) => unsubscribe());
         };
     }, [user, cryptoEpoch, teamIds]);

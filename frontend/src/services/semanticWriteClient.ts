@@ -2,6 +2,7 @@ import { CURRENT_EMBEDDING_SPACE, sameEmbeddingSpace } from './embeddingModel';
 import { onMemoryCryptoChanged } from './memoryCrypto';
 import { onTeamKeyChanged } from './teamVault';
 import { SEMANTIC_WRITE_LIMITS as limits, semanticWriteId, type SemanticWriteCandidate, type SemanticWriteMessage } from './semanticWriteProtocol';
+import { selectIndexedSemanticWriteNeighbors } from './indexedSemanticWriteCorpus';
 
 export interface SemanticWriteOptions {
   assertCurrent?: () => void;
@@ -26,6 +27,8 @@ export async function withSemanticWriteScope<T>(options: SemanticWriteOptions, w
 
 /** Bounded projection/ACK batches; only the seven retained candidates survive between batches. */
 export async function selectSemanticWriteNeighbors(query: number[], source: Iterable<SemanticWriteCandidate>, options: SemanticWriteOptions): Promise<SemanticWriteSelection> {
+  const indexed = selectIndexedSemanticWriteNeighbors(query, source, options);
+  if (indexed) return indexed;
   let worker: Worker | null = null, cancel: (() => void) | null = null, seq = 0, count = 0;
   const seen = new Set<string>(); let neighbors: SemanticWriteNeighbor[] = [];
   const guard = () => { if (options.signal?.aborted) throw fail(); options.assertCurrent?.(); };

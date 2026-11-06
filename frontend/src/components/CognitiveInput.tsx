@@ -28,7 +28,7 @@ import { createMemoryWithAttachments, createPersonalMemory,createTeamMemory,asse
 import type { Attachment } from '../types/attachments';
 import { DOCUMENT_FILE_ACCEPT } from '../utils/fileTypes';
 import { useTranslation } from '../utils/translations';
-import { isPersonalSemanticCandidate } from '../services/personalSemanticScope';
+import { semanticCandidateEligibility } from '../services/semanticWriteScope';
 import { useCapturePreview } from '../hooks/useCapturePreview';
 import toast from 'react-hot-toast';
 import { OPEN_CAPTURE_EVENT, notifyCaptureActive } from '../utils/desktopCapture';
@@ -523,9 +523,7 @@ export const CognitiveInput: React.FC<CognitiveInputProps> = ({
       try {
         cognitive = await cognitiveEngine.processMemory(memoryText, existingMemories, {
           assertCurrent: context.assertCurrent,
-          eligible: memory => scope.kind === 'team'
-            ? memory.teamId === scope.teamId && !memory.teamScopeAmbiguous && !memory.deletedAt && !memory.encLocked
-            : isPersonalSemanticCandidate(memory, actor),
+          eligible: semanticCandidateEligibility(actor, scope.kind === 'team' ? scope.teamId : undefined),
         });
         context.assertCurrent();
         processingMethod = 'local-embedding';

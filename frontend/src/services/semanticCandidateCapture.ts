@@ -1,5 +1,4 @@
 import { CURRENT_EMBEDDING_SPACE, sameEmbeddingSpace } from './embeddingModel';
-import { isPersonalSemanticCandidate } from './personalSemanticScope';
 import { withSemanticWriteScope, type SemanticWriteOptions } from './semanticWriteClient';
 import { SEMANTIC_WRITE_LIMITS as limits, semanticWriteId, type SemanticWriteCandidate } from './semanticWriteProtocol';
 
@@ -33,8 +32,4 @@ export async function captureSemanticCandidates(
     scope.assertCurrent(); return captured;
   });
 }
-export function semanticCandidateEligibility(uid: string, teamId?: string, excludeId?: string) {
-  return (row: CapturedSemanticCandidate): boolean => row.id !== excludeId && (teamId
-    ? row.teamId === teamId && !row.teamScopeAmbiguous && !row.encLocked && !row.deletedAt
-    : isPersonalSemanticCandidate(row, uid));
-}
+export { semanticCandidateEligibility } from './semanticWriteScope';

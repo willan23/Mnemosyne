@@ -1,6 +1,11 @@
 import { act, renderHook, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { User } from 'firebase/auth';
+import { IndexedSemanticWriteIndex } from '../services/indexedSemanticWriteIndex';
+import type { IndexedSemanticWriteMessage } from '../services/indexedSemanticWriteProtocol';
+import { selectSemanticWriteNeighbors } from '../services/semanticWriteClient';
+import { semanticCandidateEligibility } from '../services/semanticWriteScope';
+import { CURRENT_EMBEDDING_SPACE } from '../services/embeddingModel';
 
 type SnapshotDoc = { id: string; data: () => Record<string, unknown> };
 type SnapshotChange = { type: 'added' | 'modified' | 'removed'; doc: SnapshotDoc; oldIndex: number; newIndex: number };
@@ -139,6 +144,33 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('session cache authorization', () => {
+  it('feeds the semantic Worker from actual hook deltas and retires it synchronously on a key event', async () => {
+    class SemanticWorker extends EventTarget {
+      index = new IndexedSemanticWriteIndex();
+      terminate = vi.fn(() => this.index.clear());
+      postMessage = vi.fn((message: IndexedSemanticWriteMessage) => {
+        const data = { v: 1, seq: message.seq, ok: true, ...this.index.handle(structuredClone(message)) };
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data })));
+      });
+    }
+    const worker = new SemanticWorker();
+    vi.stubGlobal('Worker', class {
+      constructor(url: URL) { return String(url).includes('indexedSemanticWriteWorker') ? worker : new SearchWorker(); }
+    });
+    const { result, unmount } = renderHook(() => useSessions(alice, '', filters));
+    await act(async () => state.listeners[0]({ docs: [doc('a', { embedding: [1, 0], embeddingModel: CURRENT_EMBEDDING_SPACE }), doc('b', { embedding: [0, 1], embeddingModel: CURRENT_EMBEDDING_SPACE })] }));
+    await waitFor(() => expect(result.current.allSessions).toHaveLength(2));
+    const old = result.current.allSessions, eligible = semanticCandidateEligibility('alice');
+    expect((await selectSemanticWriteNeighbors([1, 0], old, { eligible })).neighbors.map(value => value.candidate.id)).toEqual(['a']);
+    const before = worker.postMessage.mock.calls.length;
+    await act(async () => state.listeners[0](deltaOnly([{ type: 'modified', doc: doc('a', { embedding: [0, 1], embeddingModel: CURRENT_EMBEDDING_SPACE }), oldIndex: 0, newIndex: 0 }])));
+    await waitFor(() => expect(result.current.allSessions).not.toBe(old));
+    await expect(selectSemanticWriteNeighbors([1, 0], old, { eligible })).rejects.toThrow();
+    expect((await selectSemanticWriteNeighbors([1, 0], result.current.allSessions, { eligible })).neighbors).toEqual([]);
+    expect(worker.postMessage.mock.calls.slice(before).flatMap(([message]) => message.type === 'patch-chunk' ? message.changed.map(row => row.id) : [])).toEqual(['a']);
+    act(() => state.cryptoChanged?.()); expect(worker.terminate).toHaveBeenCalledOnce();
+    await expect(selectSemanticWriteNeighbors([1, 0], old, { eligible })).rejects.toThrow(); unmount();
+  });
   it('uses only SDK changes after initialization, preserving unchanged objects and tie order', async () => {
     const { result } = renderHook(() => useSessions(alice, '', filters));
     await act(async () => state.listeners[0]({ docs: [doc('a'), doc('b'), doc('c')] }));
