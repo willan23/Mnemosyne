@@ -48,6 +48,9 @@ jobs:
       - name: Fixed semantic import cohorts with one Worker and bounded capsule additions in Chromium
         run: node scripts/semantic-candidate-operations-browser.cjs
         working-directory: .
+      - name: Universe semantic view and listener ordering, tombstones and membership changes in Chromium
+        run: node scripts/universe-semantic-index-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

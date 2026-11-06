@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Universo — captura e edição indexadas, 6 de novembro de 2026
+
+A [escrita indexada no Universo](UNIVERSO_ESCRITA_INDICE_2026-11-06.md) conserva a ordem crescente da vista e a ordem de cada listener no Worker, incluindo variantes por origem, supressão de legados e membership. Passaram **2214 testes frontend/235 ficheiros**, 176 focados/9, TypeScript/build, identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Chromium com 10.000 vetores/384 dimensões confirmou paridade nas duas ordens, zero projeções adicionais na consulta do editor e deltas unitários, sem pedidos externos ou inferência. O painel/motor/store reais foram testados separadamente com SDK/modelo simulados.
+
+A publicação de arrays, bindings após alterações otimistas e os restantes consumidores continuam abertos; não se declara concluída a fase 5 ou o lançamento. Instaladores finais e pré-requisitos de rollout/CI continuam pendentes. Os 49 switches ficam fechados; sem deploy ou chamadas pagas. Prova `universe-semantic-index-local-validation-20261106.json`. Os blocos seguintes conservam a cronologia.
+
 ## Escrita e importações — coortes reutilizadas, 6 de novembro de 2026
 
 As [operações semânticas](COORTES_SEMANTICAS_OPERACOES_2026-11-06.md) reutilizam o índice publicado nos percursos de aprendizagem/revisão, Comms e pesquisa web quando a origem está associada. Documentos/cápsulas conservam uma captura independente por lote e um Worker para todos os itens, com adições unitárias. Passaram **2198 testes frontend/234 ficheiros**, 131 focados/11 ficheiros, TypeScript/build, identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Chromium confirmou 10.000 vetores de 384 dimensões, 20 consultas sem nova projeção e 20 adições com 20 registos transmitidos; sem Auth/modelo/nativo completos.

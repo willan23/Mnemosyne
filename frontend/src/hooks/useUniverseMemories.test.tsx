@@ -87,6 +87,15 @@ vi.mock('../utils/sessionMnemonic', () => ({ readSessionMnemonic: () => state.mn
 
 import { useUniverseMemories } from './useUniverseMemories';
 import { IncrementalSessionSnapshot } from '../services/incrementalSessionSnapshot';
+import { IndexedSemanticWriteIndex } from '../services/indexedSemanticWriteIndex';
+import { selectSemanticWriteNeighbors } from '../services/semanticWriteClient';
+import type { IndexedSemanticWriteMessage } from '../services/indexedSemanticWriteProtocol';
+import { CURRENT_EMBEDDING_SPACE } from '../services/embeddingModel';
+class HookIndexWorker extends EventTarget {
+  index = new IndexedSemanticWriteIndex();
+  terminate = vi.fn(() => this.index.clear());
+  postMessage = vi.fn((message: IndexedSemanticWriteMessage) => { const data = { v: 1, seq: message.seq, ok: true, ...this.index.handle(structuredClone(message)) }; queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data }))); });
+}
 const snapshot = (id: string, teamId: string | null = null): Snapshot => ({
   docs: [{ id, data: () => ({ uid: 'alice', text: id, timestamp: 1, teamId }) }],
 });
@@ -117,7 +126,7 @@ beforeEach(() => {
   state.resolve.mockReset().mockImplementation(async data => ({ text: data.text, locked: false }));
   state.apply.mockReset().mockImplementation(async input=>{input.assertCurrent();if(input.prepare)await input.prepare(input.assertCurrent);input.assertCurrent();return{status:'committed'};});state.capture.mockReset().mockImplementation(async input=>{input.assertCurrent();return base(input.id,input.teamId,input.expected.authorUid);});state.create.mockReset().mockResolvedValue({id:'actual-created-id'});state.semantic.mockReset().mockResolvedValue({embedding:[1],embeddingModel:'synthetic-local',semanticClusterId:'synthetic-cluster',position:[0,0,0],importance:.5,celestialType:'planet'});
 });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const base=(id:string,teamId:string|null,authorUid='bob')=>({kind:teamId?'team' as const:'personal' as const,sessionId:id,teamId,authorUid,ownerUid:teamId?'owner':authorUid,stateHash:'a'.repeat(64),stateDigest:'b'.repeat(64),revision:10,teamStateHash:teamId?'c'.repeat(64):null,epochStateHash:teamId?'d'.repeat(64):null,keyEpoch:teamId?1:null,keyId:teamId?'11111111-1111-4111-8111-111111111111':null,priorKeyEpoch:teamId?1:null,priorKeyId:teamId?'11111111-1111-4111-8111-111111111111':null});
 it('routes team saves through the captured recoverable operation without direct SDK persistence or a new baseline', async () => {
   const view = renderHook(() => useUniverseMemories()); act(() => state.auth?.({ uid: 'alice' }));
@@ -142,7 +151,34 @@ it('routes deletion through the reviewed source and recoverable tombstone instea
   expect(state.capture).toHaveBeenCalledWith(expect.objectContaining({uid:'alice',id:source.id,viewDigest:source.persistedStateDigest,expected:{text:'Synthetic',title:null,authorUid:'alice'}}));expect(state.apply).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ uid: 'alice', id: 'team-memory', teamId: 'crew',operation:'delete' }));
 });
 it('an absent or incompatible baseline refuses inference and admission for an existing memory',async()=>{const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));const memory={id:'team-memory',uid:'alice',teamId:'crew',text:'Synthetic',connections:[],persistedStateDigest:'b'.repeat(64)};await expect(view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0])).rejects.toThrow();expect(state.apply).not.toHaveBeenCalled();expect(state.semantic).not.toHaveBeenCalled();});
-it('local semantic refresh excludes other scopes and does not automatically write inferred reciprocal edges',async()=>{const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));await act(async()=>state.listeners[0].next(snapshot('allowed')));const memory={id:'edited',uid:'alice',text:'New text',connections:[],persistedStateDigest:'b'.repeat(64)};await view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'edit',baseline:base('edited',null,'alice'),title:null,metadata:{},refreshSemantic:true,assertCurrent:()=>{}});expect([...state.semantic.mock.calls[0][1]].filter(state.semantic.mock.calls[0][2].eligible).map((item:{id:string})=>item.id)).toEqual(['allowed']);const content=await state.apply.mock.calls[0][0].prepare(()=>{});expect(content.metadata).toMatchObject({embedding:[1],processingMethod:'universe:manual-edit+local-embedding'});expect(content.metadata.connections).toBeUndefined();});
+it('local semantic refresh uses the indexed source, excludes other scopes and does not write inferred reciprocal edges',async()=>{
+  const worker=new HookIndexWorker();vi.stubGlobal('Worker',vi.fn(function(){return worker;}));
+  const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));
+  await act(async()=>state.listeners[0].next({docs:[document('allowed',{embedding:[1,0],embeddingModel:CURRENT_EMBEDDING_SPACE}),document('foreign',{uid:'bob',embedding:[1,0],embeddingModel:CURRENT_EMBEDDING_SPACE})]}));
+  let ids:string[]|undefined;state.semantic.mockImplementation(async(_text,source,options)=>{const result=await selectSemanticWriteNeighbors([1,0],source,options);ids=result.neighbors.map(row=>row.candidate.id);return{embedding:[1],embeddingModel:'synthetic-local'};});
+  const memory={id:'edited',uid:'alice',text:'New text',connections:[],persistedStateDigest:'b'.repeat(64)};
+  await view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'edit',baseline:base('edited',null,'alice'),title:null,metadata:{},refreshSemantic:true,assertCurrent:()=>{}});
+  expect(ids).toEqual(['allowed']);const content=await state.apply.mock.calls[0][0].prepare(()=>{});expect(content.metadata).toMatchObject({embedding:[1],processingMethod:'universe:manual-edit+local-embedding'});expect(content.metadata.connections).toBeUndefined();
+  expect(worker.postMessage.mock.calls.filter(([message])=>message.type==='init')).toHaveLength(1);view.unmount();expect(worker.terminate).toHaveBeenCalledOnce();
+});
+it('published capture uses the ascending winning view, while personal and team edits keep their own listener variants',async()=>{
+  const worker=new HookIndexWorker();vi.stubGlobal('Worker',vi.fn(function(){return worker;}));
+  const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));
+  const vector={embedding:[1,0],embeddingModel:CURRENT_EMBEDDING_SPACE};
+  await act(async()=>state.listeners[0].next({docs:[document('same',{...vector,text:'Personal variant',timestamp:3}),document('personal',{...vector,timestamp:2})]}));
+  await act(async()=>state.listeners[1].next({docs:[document('same',{...vector,text:'Legacy variant',timestamp:3}),document('legacy',{...vector,timestamp:1})]}));
+  act(()=>state.teams[0]([{id:'crew'}]));await act(async()=>state.listeners[2].next({docs:[document('same',{...vector,uid:'bob',teamId:'crew',text:'Team variant',timestamp:3})]}));
+  const source=state.load.mock.lastCall![0];const capture=await selectSemanticWriteNeighbors([1,0],source,{eligible:(await import('../services/semanticWriteScope')).semanticCandidateEligibility('alice')});
+  expect(capture.neighbors.map(row=>row.candidate.id)).toEqual(['legacy','personal']);
+  const observed:Array<{ids:string[];text:unknown}>=[];state.semantic.mockImplementation(async(_text,candidates,options)=>{const result=await selectSemanticWriteNeighbors([1,0],candidates,options);observed.push({ids:result.neighbors.map(row=>row.candidate.id),text:(result.neighbors[0]?.candidate as {text?:string})?.text});return{embedding:[1,0],embeddingModel:CURRENT_EMBEDDING_SPACE};});
+  for(const teamId of [undefined,'crew']){const memory={id:'edited',uid:teamId?'bob':'alice',teamId,text:'Synthetic edit',connections:[],persistedStateDigest:'b'.repeat(64)};
+    await view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'edit',baseline:base(memory.id,teamId??null,memory.uid),title:null,metadata:{},refreshSemantic:true,assertCurrent:()=>{}});}
+  expect(observed).toEqual([{ids:['same','personal'],text:'Personal variant'},{ids:['same'],text:'Team variant'}]);expect(worker.postMessage.mock.calls.filter(([message])=>message.type==='init')).toHaveLength(1);
+  const before=worker.postMessage.mock.calls.length;await act(async()=>state.listeners[0].next(delta({type:'modified',doc:document('personal',{...vector,timestamp:2,text:'Changed'}),oldIndex:1,newIndex:1})));
+  await selectSemanticWriteNeighbors([1,0],state.load.mock.lastCall![0],{eligible:(await import('../services/semanticWriteScope')).semanticCandidateEligibility('alice')});
+  expect(worker.postMessage.mock.calls.slice(before).flatMap(([message])=>message.type==='patch-chunk'?message.changed.map(row=>row.id):[])).toEqual(['personal']);
+  act(()=>state.crypto?.());expect(worker.terminate).toHaveBeenCalledOnce();view.unmount();
+});
 it('refuses a semantic edit when a newer snapshot changes its candidate cohort during inference',async()=>{
   const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));
   await act(async()=>state.listeners[0].next(snapshot('allowed')));

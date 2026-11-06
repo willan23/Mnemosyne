@@ -106,6 +106,11 @@ it.each(['asc', 'desc'] as const)('matches full Map merge and stable sort throug
     const expected = reference.rows(), actual = await published(publisher);
     expect(actual, 'step ' + step).toEqual(expected); expect(publisher.count).toBe(expected.length);
     actual.forEach((row, index) => expect(row).toBe(expected[index])); assertDelta(delta, before, expected);
+    for (const sourceKey of keys) {
+      const source = reference.sources.get(sourceKey);
+      const expectedSource = (source?.ids ?? []).filter(id => source?.values.get(id) && !reference.excluded.get(sourceKey)?.has(id)).map(id => source!.values.get(id));
+      expect([...publisher.orderedSourceValues(sourceKey)], 'source order at ' + step).toEqual(expectedSource);
+    }
   }
 });
 

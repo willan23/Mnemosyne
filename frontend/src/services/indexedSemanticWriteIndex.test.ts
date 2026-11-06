@@ -4,6 +4,18 @@ import type { IndexedSemanticWriteMessage, IndexedSemanticDocument } from './ind
 import { CURRENT_EMBEDDING_SPACE } from './embeddingModel';
 
 const document = (id: string): IndexedSemanticDocument => ({ id, timestamp: 1, scope: 'scope', embedding: [1, 0], embeddingModel: CURRENT_EMBEDDING_SPACE });
+it.each([
+  { type: 'init', direction: 'invalid' }, { type: 'init', sourceBase: Infinity },
+  { type: 'exclude', source: 's', changes: [['a', 'true']] }, { type: 'exclude', source: 's', changes: [['a', true], ['a', false]] },
+  { type: 'exclude', source: 's', changes: Array.from({ length: 129 }, (_, i) => ['m' + i, true]) },
+  { type: 'query', source: '', query: [1, 0], space: CURRENT_EMBEDDING_SPACE, scope: 'scope' },
+  { type: 'patch-start', source: 's', changed: 0, removed: [], order: { changes: [] }, priority: NaN },
+  { type: 'exclude', source: 's', changes: [['a', false, { ...document('a'), text: 'Synthetic private field' }]] },
+])('refuses malformed source ordering or exclusion messages %#', input => {
+  const index = new IndexedSemanticWriteIndex(), init = input.type === 'init'; if (!init) index.handle({ v: 1, seq: 1, type: 'init' });
+  expect(() => index.handle({ ...input, v: 1, seq: init ? 1 : 2 } as IndexedSemanticWriteMessage)).toThrow('semantic_write_unavailable');
+  expect(index.handle({ v: 1, seq: 1, type: 'init' })).toEqual({ indexed: 0 });
+});
 function fixture() {
   const index = new IndexedSemanticWriteIndex(); let seq = 0;
   const send = (message: Omit<IndexedSemanticWriteMessage, 'v' | 'seq'>) => index.handle({ v: 1, seq: ++seq, ...message } as IndexedSemanticWriteMessage);

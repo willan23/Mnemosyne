@@ -38,6 +38,62 @@ function fixture(teamIds = ['team-a']) {
 }
 
 describe('persistent semantic write corpus', () => {
+  it('keeps an ascending merged view and the separate listener order and variant in one Worker', async () => {
+    const publication = new IncrementalMemoryPublication<Row>('asc', { sourceBase: 2 }), worker = new IndexWorker();
+    const corpus = new IndexedSemanticWriteCorpus<Row>({ uid: 'alice', teamIds: new Set(['team-a']) }, id => publication.get(id), () => worker as unknown as Worker, { direction: 'asc', sourceBase: 2 }); live.push(corpus);
+    const apply = (key: string, values: Row[], priority?: number) => { publication.apply(key, reset(values), priority); corpus.apply(key, reset(values), priority); };
+    const original = row('same', { timestamp: 3 }), teamWinner = row('same', { teamId: 'team-a', uid: 'bob', timestamp: 3 });
+    apply('personal', [original, row('personal', { timestamp: 2 })], 1); apply('legacy', [row('legacy', { timestamp: 1 }), row('same', { timestamp: 3, embedding: [0, 1] })], 0); apply('team', [teamWinner]);
+    const values: Row[] = []; await publication.publish(() => true, rows => values.push(...rows)); corpus.associate(values);
+    const global = await selectSemanticWriteNeighbors([1, 0], values, { eligible: semanticCandidateEligibility('alice') }); expect(global.neighbors.map(row => row.candidate.id)).toEqual(['legacy', 'personal']);
+    const source = corpus.sourceSelection('personal', publication.count, semanticCandidateEligibility('alice'));
+    const local = await selectSemanticWriteNeighbors([1, 0], source, {}); expect(local.neighbors.map(row => row.candidate.id)).toEqual(['same', 'personal']); expect(local.neighbors[0].candidate).toBe(original);
+    expect(worker.postMessage.mock.calls.filter(([message]) => message.type === 'init')).toHaveLength(1);
+    await expect(selectSemanticWriteNeighbors([1, 0], source, { eligible: semanticCandidateEligibility('alice', 'team-a') })).rejects.toThrow();
+  });
+  it('coalesces 10000 tombstones, sends bounded exclusion batches and preserves suppression across source retry', async () => {
+    const f = fixture(), values = Array.from({ length: 10000 }, (_, i) => row('hidden' + i));
+    for (const value of values.slice(1)) Object.defineProperty(value, 'embedding', { get() { throw Error('Read a tombstoned vector'); } });
+    for (const value of values) { f.publication.exclude('legacy', value.id, true); f.corpus.exclude('legacy', value.id, true); }
+    f.apply('legacy', reset(values));
+    const selected = await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') }); expect(selected.count).toBe(0);
+    const messages = f.worker.postMessage.mock.calls.flatMap(([message]) => message.type === 'exclude' ? [message.changes.length] : []); expect(Math.max(...messages)).toBe(128); expect(messages.reduce((a, b) => a + b, 0)).toBe(10000);
+    f.publication.removeSource('legacy'); f.corpus.removeSource('legacy'); f.apply('legacy', reset([values[0]]));
+    expect((await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') })).count).toBe(0);
+    f.publication.exclude('legacy', values[0].id, false); f.corpus.exclude('legacy', values[0].id, false);
+    expect((await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') })).neighbors[0].candidate.id).toBe('hidden0');
+  });
+  it('reprojects existing affected team records on membership change, checking access before their vector', async () => {
+    const f = fixture([]); let reads = 0;
+    f.apply('team', reset([Object.defineProperty(row('t', { teamId: 'team-a' }), 'embedding', { get() { reads++; return [1, 0]; } })]));
+    await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') }); expect(reads).toBe(0);
+    f.corpus.setTeams(new Set(['team-a'])); const active = await f.snapshot();
+    expect((await selectSemanticWriteNeighbors([1, 0], active, { eligible: semanticCandidateEligibility('alice', 'team-a') })).count).toBe(1); expect(reads).toBe(1);
+    const marker = f.worker.postMessage.mock.calls.length; f.corpus.setTeams(new Set());
+    await expect(selectSemanticWriteNeighbors([1, 0], active, { eligible: semanticCandidateEligibility('alice', 'team-a') })).rejects.toThrow();
+    await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') }); expect(reads).toBe(1);
+    expect(f.worker.postMessage.mock.calls.slice(marker).flatMap(([message]) => message.type === 'patch-chunk' ? message.changed.map(row => row.value?.scope) : [])).toEqual([null]);
+  });
+  it('retains source values on an order-only reset and keeps edit self-exclusion in listener order', async () => {
+    const f = fixture(); f.apply('personal', reset([row('a'), row('b'), row('self')]));
+    await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') });
+    f.apply('personal', { changed: [], removed: [], order: { reset: ['self', 'b', 'a'], changes: [] } });
+    const result = await selectSemanticWriteNeighbors([1, 0], f.corpus.sourceSelection('personal', f.publication.count, semanticCandidateEligibility('alice', undefined, 'self')), {});
+    expect(result.count).toBe(2); expect(result.neighbors.map(row => row.candidate.id)).toEqual(['b', 'a']);
+  });
+  it('does not lose a new exclusion value while an earlier exclusion is awaiting acknowledgement', async () => {
+    const f = fixture(); f.apply('legacy', reset([row('a')])); await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') });
+    let held: unknown, hold = true;
+    f.worker.postMessage.mockImplementation(message => {
+      const data = { v: 1, seq: message.seq, ok: true, ...f.worker.index.handle(structuredClone(message)) };
+      if (message.type === 'exclude' && hold) held = data; else queueMicrotask(() => f.worker.dispatchEvent(new MessageEvent('message', { data })));
+    });
+    f.publication.exclude('legacy', 'a', true); f.corpus.exclude('legacy', 'a', true); await vi.waitFor(() => expect(held).toBeDefined());
+    f.publication.exclude('legacy', 'a', false); f.corpus.exclude('legacy', 'a', false); const source = await f.snapshot(); hold = false;
+    f.worker.dispatchEvent(new MessageEvent('message', { data: held }));
+    const result = await selectSemanticWriteNeighbors([1, 0], source, { eligible: semanticCandidateEligibility('alice') }); expect(result.count).toBe(1);
+    expect(f.worker.postMessage.mock.calls.flatMap(([message]) => message.type === 'exclude' ? message.changes.map(row => row.slice(0, 2)) : [])).toEqual([['a', true], ['a', false]]);
+  });
   it('matches full cosine sorting for 10000 records, bounds transfers and projects zero records on a repeated query', async () => {
     const f = fixture(); let reads = 0, seed = 173;
     const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 0x100000000 * 2 - 1; };
@@ -117,4 +173,18 @@ describe('persistent semantic write corpus', () => {
     await vi.advanceTimersByTimeAsync(30_000); await pending; expect(f.worker.terminate).toHaveBeenCalledOnce();
     await expect(selectSemanticWriteNeighbors([1, 0], source, { eligible })).rejects.toThrow();
   });
+});
+
+it('ignores thousands of unchanged exclusion flags before and after indexing without retiring the source or reading its vector', async () => {
+  const f = fixture(); let reads = 0;
+  f.apply('legacy', reset([Object.defineProperty(row('a'), 'embedding', { get() { reads++; return [1, 0]; } })]));
+  for (let i = 0; i < 5000; i++) f.corpus.exclude('legacy', 'a', false);
+  const source = await f.snapshot(); await selectSemanticWriteNeighbors([1, 0], source, { eligible: semanticCandidateEligibility('alice') }); expect(reads).toBe(1);
+  const marker = f.worker.postMessage.mock.calls.length;
+  for (let i = 0; i < 5000; i++) f.corpus.exclude('legacy', 'a', false);
+  expect((await selectSemanticWriteNeighbors([1, 0], source, { eligible: semanticCandidateEligibility('alice') })).count).toBe(1); expect(reads).toBe(1);
+  expect(f.worker.postMessage.mock.calls.slice(marker).map(([message]) => message.type)).toEqual(['query']);
+  f.publication.exclude('legacy', 'a', true); for (let i = 0; i < 5000; i++) f.corpus.exclude('legacy', 'a', true);
+  expect((await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') })).count).toBe(0); expect(reads).toBe(1);
+  expect(f.worker.postMessage.mock.calls.filter(([message]) => message.type === 'exclude')).toHaveLength(1);
 });

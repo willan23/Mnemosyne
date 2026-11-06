@@ -7,7 +7,7 @@ import type { MemoryObject } from '../../types/universe';
 import { v4 as uuidv4 } from 'uuid';
 import { auth } from '../../firebase';
 import toast from 'react-hot-toast';
-import { isPersonalSemanticCandidate } from '../../services/personalSemanticScope';
+import { semanticCandidateEligibility } from '../../services/semanticWriteScope';
 import {withPersonalMemoryMutation} from '../../services/personalMemoryMutation';
 import {assertPersonalMemoryCreationEnabled,hasPendingAttachedMemoryCreation} from '../../services/attachedMemoryRecovery';
 import {useSyncFeedback} from '../../hooks/useSyncFeedback';
@@ -53,7 +53,7 @@ export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) =>
       const result = await cognitiveEngine.processMemory(
         content,
         memories,
-        { assertCurrent: guard, eligible: memory => isPersonalSemanticCandidate(memory, uid) },
+        { assertCurrent: guard, eligible: semanticCandidateEligibility(uid) },
       );
       const title = cognitiveEngine.generateTitle(content);
       guard();
