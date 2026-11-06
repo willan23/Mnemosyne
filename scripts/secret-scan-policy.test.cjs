@@ -1,5 +1,5 @@
 'use strict';
-const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),{spawnSync}=require('node:child_process');
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),{spawnSync}=require('node:child_process');
 const root=process.env.MNEMOSYNE_POLICY_TEST_ROOT||path.resolve(__dirname,'..');
 const config=process.env.MNEMOSYNE_GITLEAKS_CONFIG||path.join(root,'.gitleaks.toml');
 const executable=process.env.MNEMOSYNE_GITLEAKS_BIN||'gitleaks';
@@ -19,8 +19,11 @@ test('only reviewed public Firebase identifiers and deterministic non-secret val
  const result=scan([...publicIds,...harmless].map(value=>`api_key = "${value}"`).join('\n'));assert.equal(result.status,0);assert.deepEqual(result.findings,[]);
 });
 test('other Google, generic and Stripe shaped credentials still fail with redacted findings',()=>{
- // These strings are generated locally for this process and were never issued by a provider.
- const google='AIza'+crypto.randomBytes(30).toString('base64url').slice(0,35),generic=crypto.randomBytes(32).toString('base64url'),stripe='sk_'+'test_'+crypto.randomBytes(48).toString('hex');
+ // Deterministic synthetic fixtures were never issued by a provider. Assemble them so this
+ // test source contains no full credential-shaped literal; detector coverage must not vary
+ // with the first character or entropy of a randomly generated string.
+ const generic=['7qW','2eR','9tY','4uI','6oP','8aS','3dF','5gH','1jK','0lZ','xCv','BnM'].join('');
+ const google='AIza'+generic.slice(0,35),stripe='sk_'+'test_'+generic.repeat(3).slice(0,96);
  const result=scan(`apiKey = "${google}"\napi_key = "${generic}"\nSTRIPE_SECRET_KEY=${stripe}\n`);
  assert.equal(result.status,1);for(const rule of ['gcp-api-key','generic-api-key','stripe-access-token'])assert(result.findings.some(row=>row.rule===rule),`The default ${rule} detector must remain active`);assert(result.findings.every(row=>row.redacted));
 });

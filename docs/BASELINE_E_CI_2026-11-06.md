@@ -32,6 +32,8 @@ Gitleaks 8.29.1 detetou oito ocorrências na árvore atual. A revisão identific
 
 `.gitleaks.toml` conserva todas as regras padrão. As exceções correspondem exclusivamente aos valores exatos revistos; não excluem caminhos, commits ou famílias de credenciais. A CI executa `scripts/secret-scan-policy.test.cjs`: três testes confirmam a versão, os valores aceites e a deteção/redaction de outros formatos Google, genérico e Stripe. O scan da árvore e do diff proposto passou.
 
+As fixtures dos detetores são determinísticas: a cobertura não depende do primeiro carácter ou da entropia de uma string aleatória. Uma repetição do fixture anterior falhou e ficou conservada; os 23 testes dos contratos passaram após essa correção. A CI executa `npm audit --omit=dev` nos dois packages sem elevar o limiar de severidade para aprovar avisos moderados.
+
 O scan histórico inicial continua a assinalar possíveis credenciais antigas, incluindo NVIDIA, uma chave de teste Stripe e um segredo de webhook Stripe em ficheiros antigos. A confirmação anterior do operador sobre a revogação NVIDIA não é uma verificação independente no fornecedor. O histórico não foi reescrito nem os achados reais foram adicionados a exceções. Credenciais de fornecedor e webhook devem ser substituídas pelo procedimento de secrets/rollout; não se deve restaurar um valor antigo a partir do Git.
 
 ## CI obrigatória
