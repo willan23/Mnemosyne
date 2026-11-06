@@ -17,6 +17,7 @@ import {
   type CognitivePulseHighlight,
 } from '../services/cognitivePulse';
 import type { InsightKind } from '../services/insightEngine';
+import { useTranslation } from '../utils/translations';
 
 interface CognitivePulsePanelProps {
   isOpen: boolean;
@@ -27,37 +28,38 @@ interface CognitivePulsePanelProps {
   onOpenInsights: () => void;
 }
 
-const kindMeta: Record<
-  InsightKind,
-  { label: string; icon: React.ReactNode; tone: string }
-> = {
+const KIND_TONE: Record<InsightKind, { icon: React.ReactNode; tone: string }> = {
   contradiction: {
-    label: 'Tensão',
     icon: <AlertTriangle className="h-3.5 w-3.5" />,
     tone: 'border-amber-400/25 bg-amber-500/10 text-amber-100',
   },
   resurface: {
-    label: 'Eco',
     icon: <Sparkles className="h-3.5 w-3.5" />,
     tone: 'border-violet-400/25 bg-violet-500/10 text-violet-100',
   },
   pattern: {
-    label: 'Padrão',
     icon: <GitBranch className="h-3.5 w-3.5" />,
     tone: 'border-cyan-400/25 bg-cyan-500/10 text-cyan-100',
   },
   orphan: {
-    label: 'Órfã',
     icon: <Link2 className="h-3.5 w-3.5" />,
     tone: 'border-rose-400/25 bg-rose-500/10 text-rose-100',
   },
+};
+
+const KIND_LABEL_KEY: Record<InsightKind, 'pulseKindTension' | 'pulseKindEcho' | 'pulseKindPattern' | 'pulseKindOrphan'> = {
+  contradiction: 'pulseKindTension',
+  resurface: 'pulseKindEcho',
+  pattern: 'pulseKindPattern',
+  orphan: 'pulseKindOrphan',
 };
 
 const HighlightCard: React.FC<{
   item: CognitivePulseHighlight;
   onOpen: (memoryId: string) => void;
 }> = ({ item, onOpen }) => {
-  const meta = kindMeta[item.kind];
+  const { t } = useTranslation();
+  const meta = KIND_TONE[item.kind];
   const primaryId = item.memoryIds[0];
 
   return (
@@ -71,10 +73,10 @@ const HighlightCard: React.FC<{
           className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${meta.tone}`}
         >
           {meta.icon}
-          {meta.label}
+          {t(KIND_LABEL_KEY[item.kind])}
         </span>
         <span className="text-[10px] text-slate-500">
-          {Math.round(item.score * 100)}% sinal
+          {t('pulseSignal', { pct: Math.round(item.score * 100) })}
         </span>
       </div>
       <p className="text-sm font-semibold text-white group-hover:text-violet-50">{item.title}</p>
@@ -96,6 +98,7 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
   onOpenMemory,
   onOpenInsights,
 }) => {
+  const { t } = useTranslation();
   const pulse = useMemo(() => buildCognitivePulse(sessions), [sessions]);
 
   const dismiss = () => {
@@ -131,7 +134,7 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
                   </div>
                   <div>
                     <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-200/80">
-                      Cognitive Pulse
+                      {t('pulseEyebrow')}
                     </p>
                     <h2
                       id="cognitive-pulse-title"
@@ -146,7 +149,7 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
                   type="button"
                   onClick={dismiss}
                   className="rounded-xl border border-white/10 bg-white/5 p-2 text-slate-400 transition hover:bg-white/10 hover:text-white"
-                  aria-label="Fechar pulso"
+                  aria-label={t('pulseClose')}
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -154,10 +157,10 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
 
               <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {[
-                  { label: 'Memórias', value: pulse.stats.memories, icon: Star },
-                  { label: 'Ligações', value: pulse.stats.connections, icon: Link2 },
-                  { label: 'Ecos', value: pulse.stats.resurfacing, icon: Sparkles },
-                  { label: 'Tensões', value: pulse.stats.contradictions, icon: AlertTriangle },
+                  { label: t('pulseMemories'), value: pulse.stats.memories, icon: Star },
+                  { label: t('pulseLinks'), value: pulse.stats.connections, icon: Link2 },
+                  { label: t('pulseEchos'), value: pulse.stats.resurfacing, icon: Sparkles },
+                  { label: t('pulseTensions'), value: pulse.stats.contradictions, icon: AlertTriangle },
                 ].map(({ label, value, icon: Icon }) => (
                   <div
                     key={label}
@@ -177,9 +180,9 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
               {pulse.highlights.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center">
                   <Compass className="mx-auto h-8 w-8 text-slate-600" />
-                  <p className="mt-3 text-sm font-medium text-slate-300">Sem alertas hoje</p>
+                  <p className="mt-3 text-sm font-medium text-slate-300">{t('pulseEmptyTitle')}</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    O teu universo está calmo. Continua a capturar pensamentos no Flow.
+                    {t('pulseEmptyBody')}
                   </p>
                 </div>
               ) : (
@@ -208,14 +211,14 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-violet-400/30 bg-violet-500/15 py-2.5 text-sm font-semibold text-violet-100 transition hover:bg-violet-500/25"
               >
                 <Activity className="h-4 w-4" />
-                Abrir Insights
+                {t('pulseOpenInsights')}
               </button>
               <button
                 type="button"
                 onClick={dismiss}
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
               >
-                Entrar no universo
+                {t('onbEnterUniverse')}
               </button>
             </div>
           </motion.div>

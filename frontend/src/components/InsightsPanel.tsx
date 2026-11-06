@@ -17,7 +17,7 @@ const ICONS: Record<InsightKind, React.ComponentType<{ className?: string }>> = 
 };
 
 const KIND_LABELS: Record<InsightKind, string> = {
-  contradiction: 'Contradição',
+  contradiction: 'Tensão provável',
   orphan: 'Órfã',
   resurface: 'Regresso',
   pattern: 'Padrão',
@@ -181,7 +181,7 @@ export const InsightsPanel: React.FC<Props> = ({ sessions, onMemoryClick, onClos
               Ainda não há massa crítica para gerar insights.
             </p>
             <p className="mt-2 max-w-72 text-xs leading-relaxed text-white/40">
-              Cria memórias no Flow — o motor deteta contradições, órfãs, regressos e padrões.
+              Cria memórias na captura do Universo — o motor sugere tensões prováveis, memórias isoladas, regressos e padrões.
             </p>
           </div>
         )}

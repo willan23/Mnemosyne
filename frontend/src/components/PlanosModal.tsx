@@ -2,6 +2,7 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Check, Shield, Cpu, Globe, Users } from 'lucide-react';
 import { isFreeFirstMode } from '../config/monetization';
+import { monthlyPriceAmount } from '../config/billingPrices';
 
 interface PlansModalProps {
     isOpen: boolean;
@@ -21,7 +22,7 @@ const plans = [
     },
     {
         name: 'Pro',
-        price: '12',
+        price: monthlyPriceAmount('pro'),
         icon: <Cpu className="w-5 h-5 text-cyan-400" />,
         color: 'border-cyan-500/50 bg-cyan-500/10 shadow-[0_0_20px_rgba(34,211,238,0.15)]',
         textColor: 'text-cyan-400',
@@ -30,11 +31,11 @@ const plans = [
     },
     {
         name: 'Sovereign',
-        price: '29',
+        price: monthlyPriceAmount('sovereign'),
         icon: <Shield className="w-5 h-5 text-purple-400" />,
         color: 'border-purple-500/50 bg-purple-500/10 shadow-[0_0_20px_rgba(168,85,247,0.15)]',
         textColor: 'text-purple-400',
-        features: ['Local-first completo', 'Sync E2E cifrado', 'Agentes privados locais', 'Integrações avançadas (OS)', 'Prioridade em IA local']
+        features: ['Local-first completo', 'Sync E2E cifrado', 'API REST + MCP com keys', 'Equipas — em breve', 'Prioridade em IA local']
     },
     {
         name: 'Team',
@@ -42,7 +43,7 @@ const plans = [
         icon: <Users className="w-5 h-5 text-rose-400" />,
         color: 'border-rose-500/30 bg-rose-500/5',
         textColor: 'text-rose-400',
-        features: ['Chat privado corporativo', 'Partilha de clusters', 'Controlo administrativo', 'Políticas de privacidade estritas', 'Deploy privado futuro']
+        features: ['Equipas — em breve', 'Chat privado corporativo', 'Partilha de clusters', 'Controlo administrativo', 'Deploy privado futuro']
     }
 ];
 
@@ -81,6 +82,7 @@ export const PlansModal: React.FC<PlansModalProps> = ({ isOpen, onClose }) => {
                             </button>
                         </div>
 
+                        <p className="px-8 pt-4 text-sm text-gray-400">Preços pagos com IVA incluído quando aplicável.</p>
                         <div className="p-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                             {plans.map((plan) => (
                                 <div key={plan.name} className={`relative flex flex-col p-6 rounded-2xl border ${plan.color} transition-all duration-300 hover:scale-[1.02]`}>

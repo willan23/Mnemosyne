@@ -7,6 +7,12 @@ import {
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
+import {
+    initializeAppCheck,
+    ReCaptchaEnterpriseProvider,
+    ReCaptchaV3Provider,
+} from 'firebase/app-check';
+import { Capacitor } from '@capacitor/core';
 
 // Firebase web config is public; env vars still override these local defaults.
 const firebaseConfig = {
@@ -20,6 +26,30 @@ const firebaseConfig = {
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+
+/** App Check starts before Auth, Firestore, and Storage are accessed. */
+export function initAppCheckIfConfigured(): boolean {
+  const siteKey = (import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY as string | undefined)?.trim();
+  if (!siteKey || typeof window === 'undefined') return false;
+  // Native WebViews need their own attestation integration before enforcement.
+  if ('__TAURI_INTERNALS__' in window || Capacitor.isNativePlatform()) return false;
+  const providerKind = (import.meta.env.VITE_FIREBASE_APPCHECK_PROVIDER || 'v3')
+    .toString()
+    .trim()
+    .toLowerCase();
+  try {
+    const provider = providerKind === 'enterprise'
+      ? new ReCaptchaEnterpriseProvider(siteKey)
+      : new ReCaptchaV3Provider(siteKey);
+    initializeAppCheck(app, { provider, isTokenAutoRefreshEnabled: true });
+    return true;
+  } catch (error) {
+    console.warn('App Check não inicializado:', error);
+    return false;
+  }
+}
+
+initAppCheckIfConfigured();
 
 const createPersistentAuth = () => {
     try {
@@ -37,26 +67,5 @@ const createPersistentAuth = () => {
 export const auth = createPersistentAuth();
 export const db = getFirestore(app);
 export const storage = getStorage(app);
-
-/**
- * App Check opcional — ativa só com site key configurada.
- * Protege Functions/Firestore de abuso automatizado sem bloquear dev local.
- * Docs: https://firebase.google.com/docs/app-check
- */
-export async function initAppCheckIfConfigured(): Promise<boolean> {
-  const siteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY as string | undefined;
-  if (!siteKey || typeof window === 'undefined') return false;
-  try {
-    const { initializeAppCheck, ReCaptchaV3Provider } = await import('firebase/app-check');
-    initializeAppCheck(app, {
-      provider: new ReCaptchaV3Provider(siteKey),
-      isTokenAutoRefreshEnabled: true,
-    });
-    return true;
-  } catch (error) {
-    console.warn('App Check não inicializado:', error);
-    return false;
-  }
-}
 
 export default app;

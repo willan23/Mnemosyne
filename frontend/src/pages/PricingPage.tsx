@@ -8,6 +8,9 @@ import { useSubscription } from '../hooks/useSubscription';
 import type { SubscriptionTier } from '../hooks/useSubscription';
 import { showToast } from '../utils/toast';
 import { checkoutEnabled, isFreeFirstMode } from '../config/monetization';
+import { PublicSiteFooter } from '../components/PublicSiteFooter';
+import { useTranslation } from '../utils/translations';
+import { monthlyPriceLabel, yearlyBillingAvailable } from '../config/billingPrices';
 
 type BillingInterval = 'monthly' | 'yearly';
 type PaidPlanId = 'pro' | 'sovereign';
@@ -50,9 +53,8 @@ const tiers: PricingTier[] = [
         id: 'pro',
         planId: 'pro',
         name: 'Pro',
-        price: '€9.99',
+        price: monthlyPriceLabel('pro'),
         period: '/mês',
-        yearlyPrice: '€99/ano',
         icon: Crown,
         color: 'indigo',
         recommended: true,
@@ -60,7 +62,7 @@ const tiers: PricingTier[] = [
             { text: 'Memórias ilimitadas', included: true },
             { text: 'Armazenamento ampliado', included: true },
             { text: 'Knowledge Graph avançado', included: true },
-            { text: 'Anexos (áudio + imagens)', included: true },
+            { text: 'Novos anexos suspensos no lançamento pessoal', included: false },
             { text: 'Compartilhamento privado', included: true },
             { text: 'Notificações em tempo real', included: true },
             { text: 'Analytics avançado', included: true },
@@ -72,18 +74,17 @@ const tiers: PricingTier[] = [
         id: 'sovereign',
         planId: 'sovereign',
         name: 'Sovereign',
-        price: '€29.99',
+        price: monthlyPriceLabel('sovereign'),
         period: '/mês',
-        yearlyPrice: '€299/ano',
         icon: Building2,
         color: 'cyan',
         features: [
             { text: 'Tudo do Pro, mais:', included: true },
             { text: 'Armazenamento soberano', included: true },
-            { text: 'Anexos completos (+ PDFs)', included: true },
-            { text: 'Compartilhamento colaborativo', included: true },
-            { text: 'API Access', included: true },
-            { text: 'Até 10 membros na equipe', included: true },
+            { text: 'Novos anexos suspensos no lançamento pessoal', included: false },
+            { text: 'Colaboração em equipas (suspensa durante o lançamento pessoal)', included: false },
+            { text: 'API + MCP com keys (leitura e pesquisa)', included: true },
+            { text: 'Equipas E2EE (temporariamente em modo de leitura)', included: false },
             { text: 'Exportação completa + Backup', included: true },
             { text: 'Suporte prioritário', included: true },
         ],
@@ -109,16 +110,6 @@ const iconClasses: Record<PricingTier['color'], { shell: string; icon: string; p
     },
 };
 
-const founderPreviewFeatures: PricingTier['features'] = [
-    { text: 'Memórias ilimitadas no Founder Preview', included: true },
-    { text: 'Universe 3D, Insights e autolink semântico', included: true },
-    { text: 'IA local (Ollama) e embeddings no browser', included: true },
-    { text: 'Comms E2E e cápsulas cifradas (sem link em claro)', included: true },
-    { text: 'Anexos com limites técnicos de fair-use', included: true },
-    { text: 'Desktop (Tauri) e mobile pairing', included: true },
-    { text: 'Planos pagos futuros: equipas, cloud alto, suporte', included: true },
-];
-
 const statusLabel: Record<string, string> = {
     active: 'Ativa',
     trialing: 'Trial',
@@ -132,6 +123,7 @@ const statusLabel: Record<string, string> = {
 
 export const PricingPage: React.FC = () => {
     const navigate = useNavigate();
+    const { t } = useTranslation();
     const { subscription, tier } = useSubscription();
     const [isYearly, setIsYearly] = useState(false);
     const [loading, setLoading] = useState<string | null>(null);
@@ -142,7 +134,7 @@ export const PricingPage: React.FC = () => {
         if (!planId) return;
 
         if (!checkoutEnabled) {
-            showToast.info('O Mnemosyne está gratuito nesta fase. Planos pagos ficam preparados para uma fase futura.');
+            showToast.info(t('pricingFreeNow'));
             return;
         }
 
@@ -209,21 +201,20 @@ export const PricingPage: React.FC = () => {
                     <button
                         onClick={() => navigate('/')}
                         className="p-2 glass-card hover:bg-white/10 transition-all inline-flex items-center gap-2"
-                        title="Voltar"
+                        title={t('back')}
                     >
                         <ArrowLeft className="w-5 h-5" />
-                        <span className="text-sm">Voltar</span>
+                        <span className="text-sm">{t('back')}</span>
                     </button>
                 </div>
 
                 <div className="text-center mb-12">
                     <h1 className="text-5xl font-bold mb-4 glow-text">
-                        {isFreeFirstMode ? 'Founder Preview' : 'Escolha Seu Plano'}
+                            {isFreeFirstMode ? t('cmdFounderPreview') : t('plans')}
                     </h1>
                     {isFreeFirstMode ? (
                         <p className="mx-auto mb-8 max-w-2xl text-lg text-slate-400">
-                            O núcleo cognitivo está gratuito enquanto construímos mercado.
-                            Planos pagos ficam latentes para equipas, cloud intensivo e suporte.
+                            {t('pricingFounderLead')}
                         </p>
                     ) : (
                         <p className="mb-8 text-xl text-gray-400">
@@ -231,7 +222,8 @@ export const PricingPage: React.FC = () => {
                         </p>
                     )}
 
-                    {!isFreeFirstMode && (
+                    <p className="mb-4 text-sm text-gray-400">Preços pagos com IVA incluído quando aplicável.</p>
+                    {!isFreeFirstMode && yearlyBillingAvailable && (
                     <div className="inline-flex items-center gap-4 glass-card p-2">
                         <button
                             onClick={() => setIsYearly(false)}
@@ -262,7 +254,7 @@ export const PricingPage: React.FC = () => {
                             )}
                             <div>
                                 <p className="font-bold">
-                                    Plano atual: {isFreeFirstMode ? 'Gratuito' : tiers.find((pricingTier) => pricingTier.id === tier)?.name || 'Free'}
+                                    Plano atual: {isFreeFirstMode ? t('pricingFreeName') : tiers.find((pricingTier) => pricingTier.id === tier)?.name || 'Free'}
                                 </p>
                                 <p className="text-sm text-gray-400">
                                     Estado: {statusLabel[subscription.status] || subscription.status}
@@ -290,14 +282,36 @@ export const PricingPage: React.FC = () => {
                     {tiers.map((pricingTier, index) => {
                         const palette = iconClasses[pricingTier.color];
                         const isCurrentTier = pricingTier.id === tier;
-                        const ctaLabel = isFreeFirstMode
-                            ? (pricingTier.id === 'free' ? 'Ativo agora' : 'Futuro')
-                            : isCurrentTier ? 'Plano Atual' : pricingTier.cta;
+                        const ctaLabel = (() => {
+                            if (pricingTier.id === 'free') {
+                                return isCurrentTier || isFreeFirstMode ? t('pricingActiveNow') : pricingTier.cta;
+                            }
+                            if (isCurrentTier) return 'Plano Atual';
+                            if (checkoutEnabled) return pricingTier.cta;
+                            return isFreeFirstMode ? t('pricingFuture') : pricingTier.cta;
+                        })();
                         const TierIcon = pricingTier.icon;
-                        const displayPrice = isFreeFirstMode && pricingTier.id !== 'free' ? 'Futuro' : pricingTier.price;
-                        const displayPeriod = isFreeFirstMode && pricingTier.id !== 'free' ? '' : pricingTier.period;
-                        const displayName = isFreeFirstMode && pricingTier.id === 'free' ? 'Gratuito' : pricingTier.name;
-                        const displayFeatures = isFreeFirstMode && pricingTier.id === 'free' ? founderPreviewFeatures : pricingTier.features;
+                        const displayPrice =
+                            isFreeFirstMode && pricingTier.id !== 'free' && !checkoutEnabled
+                                ? t('pricingFuture')
+                                : pricingTier.price;
+                        const displayPeriod =
+                            isFreeFirstMode && pricingTier.id !== 'free' && !checkoutEnabled
+                                ? ''
+                                : (pricingTier.id === 'free' ? t('pricingPerMonth') : pricingTier.period);
+                        const displayName = isFreeFirstMode && pricingTier.id === 'free' ? t('pricingFreeName') : pricingTier.name;
+                        const displayFeatures = isFreeFirstMode && pricingTier.id === 'free'
+                            ? [
+                                { text: t('fp1'), included: true },
+                                { text: t('fp2'), included: true },
+                                { text: t('fp3'), included: true },
+                                { text: t('fp4'), included: true },
+                                { text: t('fp5'), included: false },
+                                { text: t('fp6'), included: true },
+                                { text: t('fp7'), included: true },
+                                { text: t('fp8'), included: true },
+                              ]
+                            : pricingTier.features;
 
                         return (
                             <motion.div
@@ -309,7 +323,7 @@ export const PricingPage: React.FC = () => {
                             >
                                 {pricingTier.recommended && (
                                     <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-4 py-1 rounded-full text-sm font-bold">
-                                        Recomendado
+                                        {t('pricingRecommended')}
                                     </div>
                                 )}
 
@@ -345,10 +359,17 @@ export const PricingPage: React.FC = () => {
 
                                 <button
                                     onClick={() => handleUpgrade(pricingTier.planId, pricingTier.name)}
-                                    disabled={!pricingTier.planId || isCurrentTier || loading === pricingTier.name || (isFreeFirstMode && pricingTier.id !== 'free')}
+                                    disabled={
+                                      pricingTier.id === 'free'
+                                        ? isCurrentTier
+                                        : !checkoutEnabled ||
+                                          !pricingTier.planId ||
+                                          isCurrentTier ||
+                                          loading === pricingTier.name
+                                    }
                                     className={`w-full py-3 rounded-lg font-bold uppercase tracking-tighter transition-all ${pricingTier.recommended || pricingTier.id === 'sovereign' ? palette.primaryButton : 'glass-button'} disabled:opacity-50 disabled:cursor-not-allowed`}
                                 >
-                                    {loading === pricingTier.name ? 'Processando...' : ctaLabel}
+                                    {loading === pricingTier.name ? t('pricingProcessing') : ctaLabel}
                                 </button>
                             </motion.div>
                         );
@@ -356,40 +377,38 @@ export const PricingPage: React.FC = () => {
                 </div>
 
                 <div className="mt-24 text-center">
-                    <h2 className="text-3xl font-bold mb-8">Perguntas Frequentes</h2>
+                    <h2 className="text-3xl font-bold mb-8">{t('pricingFaq')}</h2>
                     <div className="grid md:grid-cols-2 gap-6 text-left">
                         <div className="glass-card p-6">
-                            <h3 className="font-bold mb-2">Posso cancelar a qualquer momento?</h3>
+                            <h3 className="font-bold mb-2">{t('pricingCancelQ')}</h3>
                             <p className="text-sm text-gray-400">
-                                {isFreeFirstMode
-                                    ? 'Nesta fase não há cobrança ativa. Quando planos pagos forem introduzidos, a gestão será feita pelo portal Stripe.'
-                                    : 'Sim. O portal de faturação da Stripe gere cancelamentos, métodos de pagamento e alterações de plano.'}
+                                {isFreeFirstMode ? t('pricingCancelAFree') : t('pricingCancelAPaid')}
                             </p>
                         </div>
                         <div className="glass-card p-6">
-                            <h3 className="font-bold mb-2">{isFreeFirstMode ? 'O que será pago no futuro?' : 'Como funciona o plano anual?'}</h3>
+                            <h3 className="font-bold mb-2">{isFreeFirstMode ? t('pricingFutureQ') : t('pricingYearlyQ')}</h3>
                             <p className="text-sm text-gray-400">
-                                {isFreeFirstMode
-                                    ? 'Valor empresarial e custo real: equipas, cloud gerida, retenção ampliada, suporte e compliance.'
-                                    : 'O checkout usa Price IDs anuais configurados no backend, sem placeholders no frontend.'}
+                                {isFreeFirstMode ? t('pricingFutureA') : t('pricingYearlyA')}
                             </p>
                         </div>
                         <div className="glass-card p-6">
-                            <h3 className="font-bold mb-2">{isFreeFirstMode ? 'Quando aparece cobrança?' : 'O que acontece se o pagamento falhar?'}</h3>
+                            <h3 className="font-bold mb-2">{isFreeFirstMode ? t('pricingWhenChargeQ') : t('pricingPayFailQ')}</h3>
                             <p className="text-sm text-gray-400">
-                                {isFreeFirstMode
-                                    ? 'Não aparece cobrança nesta fase. Antes de qualquer plano pago, o produto deve anunciar a mudança e ativar billing de forma explícita.'
-                                    : 'A assinatura aparece como pagamento pendente e a gestão abre diretamente no portal da Stripe.'}
+                                {isFreeFirstMode ? t('pricingWhenChargeA') : t('pricingPayFailA')}
                             </p>
                         </div>
                         <div className="glass-card p-6">
-                            <h3 className="font-bold mb-2">Meus dados estão seguros?</h3>
+                            <h3 className="font-bold mb-2">{t('pricingSafeQ')}</h3>
                             <p className="text-sm text-gray-400">
-                                As memórias continuam E2EE; a Stripe só trata faturação, plano e estado da assinatura.
+                                {t('pricingSafeA')}
                             </p>
                         </div>
                     </div>
                 </div>
+                <p className="mt-10 text-center text-sm text-slate-400">
+                    {t('pricingEnterpriseNote')}
+                </p>
+                <PublicSiteFooter className="mt-16" />
             </div>
         </div>
     );

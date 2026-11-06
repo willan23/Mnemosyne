@@ -1,43 +1,17 @@
+[CmdletBinding()]
 param(
-    [ValidateSet("Debug", "ReleaseBundle")]
-    [string]$Target = "Debug",
-    [switch]$SkipWebBuild
+    [ValidateSet('Debug', 'ReleaseBundle', 'ReleaseApk')]
+    [string]$Target = 'Debug',
+    [int]$VersionCode = 0,
+    [string]$VersionName = '',
+    [string]$ReportDirectory = ''
 )
 
-$ErrorActionPreference = "Stop"
-
-$javaHomeCandidates = @(@(
-    $env:JAVA_HOME,
-    "C:\Program Files\Android\Android Studio\jbr",
-    "C:\Program Files\Android\Android Studio\jre"
-) | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin\java.exe")) })
-
-if (-not $javaHomeCandidates -or $javaHomeCandidates.Count -eq 0) {
-    throw "Java/JDK not found. Install a JDK or Android Studio, then set JAVA_HOME."
-}
-
-$env:JAVA_HOME = $javaHomeCandidates[0]
-$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-
-if (-not $SkipWebBuild) {
-    Push-Location frontend
-    try {
-        npm run build
-        npm run cap:sync -- android
-    }
-    finally {
-        Pop-Location
-    }
-}
-
-Push-Location frontend/android
+$ErrorActionPreference = 'Stop'
 try {
-    if ($Target -eq "Debug") {
-        ./gradlew.bat assembleDebug
-    } else {
-        ./gradlew.bat bundleRelease
-    }
-}
-finally {
-    Pop-Location
+    . (Join-Path $PSScriptRoot 'scripts/android/build-pipeline.ps1')
+    Invoke-MnemosyneAndroidBuild -Root $PSScriptRoot -Target $Target -VersionCode $VersionCode -VersionName $VersionName -ReportDirectory $ReportDirectory
+} catch {
+    Write-Error 'Android build failed. Inspect the failed step and its local report; no artifact was published.'
+    exit 1
 }

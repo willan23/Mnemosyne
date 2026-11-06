@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "keyEpoch": 2,
+  "firstVersion": "1.0.9",
+  "feedPath": "/desktop/v2/latest.json",
+  "manifestPath": "/desktop/v2/release-manifest.json",
+  "legacyFeedPath": "/desktop/latest.json",
+  "legacyFeedSha256": "4d3b5dc07ba1c0b630ac9a488e31a9044e6be10a06d2df2723d501c1cc941f4e",
+  "publicKeySha256": "b50435713d62cfb340c15df5f563181219b8dc08fc8fd6a088d736df793ddf49"
+}

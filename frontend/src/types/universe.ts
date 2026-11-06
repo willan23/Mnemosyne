@@ -1,4 +1,8 @@
 import type { Attachment } from './attachments';
+import type {MemoryEditBaseline} from '../../../functions/src/memoryEditContract';
+export type MemorySaveSubmission={kind:'create';assertCurrent:()=>void}|{kind:'edit';baseline:MemoryEditBaseline;title:string|null;metadata:Record<string,unknown>;refreshSemantic:boolean;assertCurrent:()=>void};
+export type MemorySaveCallback=(memory:MemoryObject,submission?:MemorySaveSubmission)=>Promise<{id:string}|void>|{id:string}|void;
+export type MemoryDeleteCallback=(id:string,source?:MemoryObject,assertCurrent?:()=>void)=>Promise<void>|void;
 
 export type CelestialType =
   | 'star'
@@ -42,12 +46,21 @@ export interface MemoryObject {
   celestialType: CelestialType;
   position: [number, number, number];
   embedding: number[];
+  embeddingModel?: string;
   connections: string[];
   semanticClusterId?: string;
   importance: number;
   timestamp: number;
   updatedAt: number;
+  /** Revision read from the server, retained while editing to reject stale team writes. */
+  persistedUpdatedAt?: number;
+  /** Full raw state digest from the authoritative reader; capture must match it before opening an edit. */
+  persistedStateDigest?: string;
+  /** Exact stored title, before any presentation fallback. */
+  persistedTitle?: string|null;
   uid: string;
+  /** Campo de partilha lido do Firestore para isolar cálculos pessoais. */
+  sharedWithIds?: unknown;
   tags?: string[];
   category?: string;
   attachments?: Attachment[];
@@ -67,6 +80,16 @@ export interface MemoryObject {
     concepts?: string[];
   };
   processingMethod?: string | null;
+  /** Presente nas memórias E2EE de equipa (`sessions.teamId`). */
+  teamId?: string;
+  /** `teamId` presente mas inválido; não usar em cálculos pessoais. */
+  teamScopeAmbiguous?: boolean;
+  /** true quando o conteúdo está cifrado mas a chave da sessão não decifra. */
+  encLocked?: boolean;
+  /** Lane A–E (metadado em claro). */
+  taxonomyLane?: import('../utils/taxonomy').TaxonomyLane | null;
+  /** Estado de projecto (metadado em claro). */
+  projectStatus?: import('../utils/taxonomy').ProjectStatus | null;
 }
 
 export interface UniverseState {
@@ -88,6 +111,10 @@ export interface UniverseState {
   /** ID da última memória spawnada (flash visual ~2.5s) */
   spawnedMemoryId: string | null;
   spawnedAt: number;
+  /** Filtro HUD A–E (null = todas). */
+  taxonomyFilter: import('../utils/taxonomy').TaxonomyLane | null;
+  /** Painel estudo aberto para este memory id. */
+  studyMemoryId: string | null;
 }
 
 export interface GraphNode {
@@ -192,12 +219,12 @@ export const CELESTIAL_CONFIGS: Record<CelestialType, CelestialConfig> = {
 };
 
 export const UNIVERSE_COLORS: Record<UniverseType, { bg: string; ambient: string; fog: string }> = {
-  stellar: { bg: '#000510', ambient: '#0a1a3a', fog: '#000510' },
-  solar: { bg: '#090604', ambient: '#2a1505', fog: '#050302' },
-  quantum: { bg: '#000820', ambient: '#0a0a40', fog: '#050010' },
-  mythic: { bg: '#0a0010', ambient: '#200030', fog: '#0a0010' },
-  oceanic: { bg: '#000a15', ambient: '#001530', fog: '#000a15' },
-  crystalline: { bg: '#080808', ambient: '#202020', fog: '#050505' },
-  void: { bg: '#000000', ambient: '#050505', fog: '#000000' },
-  garden: { bg: '#000a00', ambient: '#0a1a0a', fog: '#000500' },
+  stellar: { bg: '#02040c', ambient: '#0b1630', fog: '#02040c' },
+  solar: { bg: '#070402', ambient: '#2a1408', fog: '#050301' },
+  quantum: { bg: '#01051a', ambient: '#0a0f40', fog: '#02031a' },
+  mythic: { bg: '#090014', ambient: '#2a1038', fog: '#080012' },
+  oceanic: { bg: '#000910', ambient: '#032033', fog: '#00080f' },
+  crystalline: { bg: '#050508', ambient: '#1a1a22', fog: '#040406' },
+  void: { bg: '#000000', ambient: '#0a0612', fog: '#000000' },
+  garden: { bg: '#020a04', ambient: '#0a1f0e', fog: '#010700' },
 };

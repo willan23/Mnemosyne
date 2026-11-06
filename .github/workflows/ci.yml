@@ -1,0 +1,245 @@
+name: CI
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  frontend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --include=optional
+      - name: Enforce server-only logical memory writes
+        run: node --test scripts/sdk-mutation-boundary.test.js && node scripts/sdk-mutation-boundary.js
+        working-directory: .
+      - name: Lint
+        run: npm run lint
+      - name: Version manifest replacement and failure propagation
+        run: node --experimental-strip-types --test scripts/version-files.test.mjs
+      - name: Build identity consistency regression tests
+        run: node --test scripts/check-build-version-identity.test.cjs
+        working-directory: .
+      - name: Production build
+        run: npm run build
+      - name: Unit tests
+        run: npx vitest run
+      - name: Verify manifest and bundled identity after unit tests
+        run: node scripts/check-build-version-identity.cjs
+        working-directory: .
+      - name: Install Chromium for public smoke
+        run: npx playwright install --with-deps chromium
+      - name: Incremental hybrid search Worker with 10000 synthetic records in Chromium
+        run: node scripts/hybrid-search-worker-browser.cjs
+        working-directory: .
+      - name: Private local memory activity, concurrency and export in Chromium
+        run: node scripts/local-memory-activity-browser.cjs
+        working-directory: .
+      - name: Prepared embedding cache, real ciphertext and cross-tab invalidation in Chromium
+        run: node scripts/prepared-embedding-cache-browser.cjs
+        working-directory: .
+      - name: Generation HTTP routing, cancellation and response beyond 60 seconds in Chromium
+        run: node scripts/generation-http-browser.cjs
+        working-directory: .
+      - name: Public page smoke against this build
+        run: npx playwright test
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+  functions-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - run: npm ci --include=optional
+      - name: Build + unit tests
+        run: npm test
+      - name: Retired runtime and explicit publication entrypoints
+        run: node scripts/runtime-entrypoints.cjs
+        working-directory: .
+      - name: Runtime entrypoint regression tests
+        run: node --test scripts/runtime-entrypoints.test.cjs
+        working-directory: .
+      - name: Validate synthetic retrieval labels and quality metrics
+        run: node --test scripts/retrieval-eval.test.cjs
+        working-directory: .
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+  windows-deployment-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - name: Install deployment preflight dependencies
+        run: npm ci --include=optional
+        working-directory: functions
+      - name: Install desktop workflow test dependencies
+        run: npm ci --include=optional
+        working-directory: frontend
+      - name: Deployment gates, PowerShell sequences and restore destination protection
+        run: node --test scripts/release-gates-preflight.test.js scripts/runtime-entrypoints.test.cjs scripts/comms-p2p-legacy-rules.test.js scripts/firestore-restore-rehearsal.test.cjs
+      - name: Desktop release input binding and publication boundary
+        run: node --test scripts/desktop-release-entrypoints.test.cjs scripts/check-tauri-version-alignment.test.cjs
+      - name: Desktop updater key custody and channel migration
+        run: node --test scripts/desktop-updater-key.test.cjs scripts/recover-desktop-updater-key.test.cjs scripts/check-desktop-release-contract.test.cjs
+      - name: Install JDK for Android signing tool validation
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Android build commands, version and failure boundaries
+        run: node --test scripts/android-build-entrypoints.test.cjs scripts/android-runtime-pilot.test.cjs scripts/android-release-artifact.test.cjs
+      - name: Windows version manifest replacement and failure propagation
+        run: node --experimental-strip-types --test frontend/scripts/version-files.test.mjs
+      - name: Validate native JavaScript and Rust version alignment
+        run: node scripts/check-tauri-version-alignment.cjs
+      - name: Install Rust for Windows native validation
+        uses: dtolnay/rust-toolchain@stable
+      - name: Desktop artifact signatures, version selection and interrupted staging
+        run: node --test scripts/stage-desktop-artifacts.test.cjs
+      - name: Test the release signature verifier
+        run: cargo test --locked --manifest-path scripts/desktop-artifact-verifier/Cargo.toml
+      - name: Compile the locked Windows native dependency graph
+        run: cargo check --locked
+        working-directory: frontend/src-tauri
+      - name: Updater signature version binding
+        run: cargo test --locked -p tauri-plugin-updater --lib version
+        working-directory: frontend/src-tauri
+      - name: Updater cached bytes reject tampering
+        run: cargo test --locked -p tauri-plugin-updater --lib verifies_cached_bytes_and_rejects_tampering
+        working-directory: frontend/src-tauri
+      - name: Install the native dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit native dependencies
+        run: cargo audit
+        working-directory: frontend/src-tauri
+      - name: Audit the release signature verifier
+        run: cargo audit --file scripts/desktop-artifact-verifier/Cargo.lock
+
+  rules-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - name: Install functions
+        run: npm ci --include=optional
+        working-directory: functions
+      - name: Install frontend rules dependencies
+        run: npm ci --include=optional
+        working-directory: frontend
+      - name: Firestore + Storage rules emulator suite
+        run: node scripts/run-rules-tests.js
+        env:
+          FIREBASE_EMULATORS_SKIP_UPDATE_CHECK: '1'
+      - name: Install Chromium for clip recovery
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Desktop CSP allows Wasm while refusing dynamic JavaScript
+        run: node scripts/desktop-csp-browser.cjs
+      - name: Clip recovery with real browser storage and Web Locks
+        run: node scripts/clip-recovery-browser.cjs
+      - name: Clip ingress privacy with real browser HTTP requests
+        run: node scripts/clip-ingress-browser.cjs
+      - name: Mobile sync import with real browser crypto and recovery
+        run: node scripts/mobile-sync-import-browser.cjs
+      - name: Mobile sync publication and receiver acknowledgement in Chromium
+        run: node scripts/mobile-sync-outbox-browser.cjs
+      - name: Personal reciprocal connections and encrypted recovery in Chromium
+        run: node scripts/personal-connections-browser.cjs
+      - name: Whole Obsidian import with parsing, cipher and cross-tab recovery in Chromium
+        run: node scripts/obsidian-import-browser.cjs
+      - name: Document batch recovery with real encrypted files and IndexedDB
+        run: node scripts/document-import-browser.cjs
+      - name: Scoped cluster maintenance with real IndexedDB and recovery in Chromium
+        run: node scripts/semantic-clusters-browser.cjs
+      - name: Inferred relation generation and review with encrypted recovery in Chromium
+        run: node scripts/semantic-relations-browser.cjs
+      - name: Sync conflict decisions with encrypted recovery in Chromium
+        run: node scripts/sync-conflict-browser.cjs
+      - name: Personal legacy migration with verified encrypted archives in Chromium
+        run: node scripts/personal-migration-browser.cjs
+      - name: Team history reciphering with durable cursor recovery in Chromium
+        run: node scripts/team-history-browser.cjs
+      - name: Review Inbox actor binding and concurrent recovery in Chromium
+        run: node scripts/review-inbox-browser.cjs
+      - name: Review Inbox encrypted backup and independent storage restore in Chromium
+        run: node scripts/review-inbox-backup-browser.cjs
+      - name: Comms identity publication and lost-reply recovery in Chromium
+        run: node scripts/comms-identity-publication-browser.cjs
+      - name: Recoverable mobile pairing with actual browser crypto and storage
+        run: node scripts/mobile-pairing-browser.cjs
+      - name: Public capsule callable protocol, CORS and client privacy in Chromium
+        run: node scripts/public-capsule-browser.cjs
+      - name: Account email verification with real SDK and demo Auth emulator
+        run: node scripts/run-auth-email-browser.cjs
+      - name: Build product styles for keyboard and modal checks
+        run: npm run build
+        working-directory: frontend
+      - name: Public capsule publication, owner withdrawal and native dialog in Chromium
+        run: node scripts/capsule-publication-browser.cjs
+      - name: Native modal focus and list/table keyboard navigation in Chromium
+        run: node scripts/review-accessibility-browser.cjs
+      - name: Agent reversal cipher, explicit confirmation and cross-tab recovery in Chromium
+        run: node scripts/agent-reversal-browser.cjs
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: '8.29.1'
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+      - name: Scan all new commits including merged branches
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = 'pull_request' ]; then
+            range="$PR_BASE..$PR_HEAD"
+          else
+            range="$PUSH_BEFORE..$PUSH_HEAD"
+          fi
+          if [ -z "$PR_BASE" ] && { [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = '0000000000000000000000000000000000000000' ]; }; then
+            gitleaks git . --redact=100 --log-opts='--all'
+          else
+            gitleaks git . --redact=100 --log-opts="$range"
+          fi
+

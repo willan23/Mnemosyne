@@ -1,6 +1,8 @@
 import { decryptTextAesGcm, deriveAesKeyFromMnemonic, encryptTextAesGcm } from '../utils/crypto';
+import { isGenerationProviderEnabled } from '../../../functions/src/generationProviderPolicy';
+import { generationBackendBase } from './generationEndpoints';
 
-export type AiProviderId = 'ollama' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia';
+export type AiProviderId = 'ollama' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia' | 'huggingface' | 'openrouter';
 export type MemoryPermission = 'never-cloud' | 'confirm-cloud' | 'allow-cloud';
 export type AiFailurePolicy = 'save-with-warning' | 'confirm-before-save' | 'block-save';
 
@@ -32,17 +34,57 @@ const CONFIG_KEY = 'mnemosyne_local_ai_config';
 
 export const AI_PROVIDERS: AiProviderDefinition[] = [
   { id: 'ollama', label: 'Ollama Local', kind: 'local', needsSecret: false, defaultEndpoint: import.meta.env.VITE_OLLAMA_HOST || 'http://localhost:11434' },
-  { id: 'nvidia', label: 'NVIDIA NIM Backend', kind: 'backend', needsSecret: false, defaultEndpoint: import.meta.env.VITE_API_URL || 'http://localhost:8000' },
-  { id: 'openai', label: 'OpenAI', kind: 'cloud', needsSecret: true },
+  { id: 'openrouter', label: 'OpenRouter · Gemma gratuito', kind: 'backend', needsSecret: false, defaultEndpoint: generationBackendBase() },
+  { id: 'nvidia', label: 'NVIDIA via Mnemosyne', kind: 'backend', needsSecret: false, defaultEndpoint: generationBackendBase() },
+  { id: 'huggingface', label: 'Hugging Face → Nscale via Mnemosyne', kind: 'backend', needsSecret: false, defaultEndpoint: generationBackendBase() },
+  { id: 'openai', label: 'OpenAI', kind: 'backend', needsSecret: false },
   { id: 'anthropic', label: 'Claude', kind: 'cloud', needsSecret: true },
-  { id: 'gemini', label: 'Gemini', kind: 'cloud', needsSecret: true },
+  { id: 'gemini', label: 'Google Gemini via Mnemosyne', kind: 'backend', needsSecret: false, defaultEndpoint: generationBackendBase() },
   { id: 'mistral', label: 'Mistral', kind: 'cloud', needsSecret: true },
 ];
+
+/** Known adapters preserve stored selections, independently of this release's enabled providers. */
+export const GENERATION_PROVIDER_IDS: readonly AiProviderId[] = ['ollama', 'openrouter', 'nvidia', 'huggingface', 'openai', 'gemini'];
+export function isAiProviderEnabled(provider: AiProviderId): boolean {
+  return provider === 'ollama' || isGenerationProviderEnabled(provider);
+}
+
+export interface AiModelPreset {
+  id: string;
+  label: string;
+  badge?: 'fast';
+}
+
+/**
+ * Presets the app can actually send. Text generation calls Ollama locally
+ * or its regional Firebase function with a server allowlisted model ID.
+ * Cloud presets call the server; their release availability is checked separately.
+ */
+export const AI_MODEL_PRESETS: Record<AiProviderId, AiModelPreset[]> = {
+  openrouter: [{ id: 'openrouter-gemma-4-free', label: 'Gemma 4 31B · gratuito' }],
+  ollama: [
+    { id: 'llama3.2', label: 'Llama 3.2', badge: 'fast' },
+    { id: 'qwen2.5', label: 'Qwen 2.5', badge: 'fast' },
+    { id: 'mistral', label: 'Mistral' },
+    { id: 'gemma2', label: 'Gemma 2' },
+  ],
+  nvidia: [
+    { id: 'nvidia-nemotron-ultra', label: 'Nemotron 3 Ultra 550B' },
+  ],
+  openai: [
+    { id: 'openai-mini', label: 'GPT-4o mini', badge: 'fast' },
+  ],
+  huggingface: [{ id: 'hf-default', label: 'GPT-OSS 120B via Hugging Face' }],
+  anthropic: [],
+  gemini: [{ id: 'gemini-flash', label: 'Gemini 3.5 Flash-Lite' }],
+  mistral: [],
+};
 
 const normalizeEndpoint = (endpoint: string): string =>
   endpoint.trim().replace(/\/+$/, '');
 
 const providerDefaults = (): Record<AiProviderId, AiProviderConfig> => ({
+  openrouter: { enabled: false, endpoint: generationBackendBase(), model: 'openrouter-gemma-4-free', hasSecret: false },
   ollama: {
     enabled: true,
     endpoint: normalizeEndpoint(import.meta.env.VITE_OLLAMA_HOST || 'http://localhost:11434'),
@@ -51,11 +93,12 @@ const providerDefaults = (): Record<AiProviderId, AiProviderConfig> => ({
   },
   nvidia: {
     enabled: false,
-    endpoint: normalizeEndpoint(import.meta.env.VITE_API_URL || 'http://localhost:8000'),
+    endpoint: generationBackendBase(),
     model: import.meta.env.VITE_NVIDIA_MODEL || '',
     hasSecret: false,
   },
   openai: { enabled: false, endpoint: '', model: '', hasSecret: false },
+  huggingface: { enabled: false, endpoint: generationBackendBase(), model: 'hf-default', hasSecret: false },
   anthropic: { enabled: false, endpoint: '', model: '', hasSecret: false },
   gemini: { enabled: false, endpoint: '', model: '', hasSecret: false },
   mistral: { enabled: false, endpoint: '', model: '', hasSecret: false },
@@ -85,19 +128,38 @@ function mergeConfig(parsed: Partial<LocalAiConfig>): LocalAiConfig {
     };
   }
 
+  // Old clients persisted upstream model names. Normalize those IDs before
+  // showing the picker so its label matches the provider actually called.
+  const nvidiaModel = providers.nvidia.model;
+  // Preserve an explicit historical selection; switching to Ultra requires
+  // selecting it in the picker. New/empty configurations use the tested model.
+  providers.nvidia.model = ['nvidia-nemotron', 'nvidia-llama', 'meta/llama-3.1-70b-instruct', 'openai/gpt-oss-120b:cheapest'].includes(nvidiaModel)
+    ? 'nvidia-nemotron'
+    : AI_MODEL_PRESETS.nvidia.some((preset) => preset.id === nvidiaModel) ? nvidiaModel : 'nvidia-nemotron-ultra';
+  const openaiModel = providers.openai.model;
+  providers.openai.model = openaiModel === 'gpt-4o-mini' ||
+    !AI_MODEL_PRESETS.openai.some((preset) => preset.id === openaiModel)
+    ? 'openai-mini'
+    : openaiModel;
+  if (!AI_MODEL_PRESETS.huggingface.some(preset => preset.id === providers.huggingface.model)) providers.huggingface.model = 'hf-default';
+  if (!AI_MODEL_PRESETS.gemini.some(preset => preset.id === providers.gemini.model)) providers.gemini.model = 'gemini-flash';
+  if (!AI_MODEL_PRESETS.openrouter.some(preset => preset.id === providers.openrouter.model)) providers.openrouter.model = 'openrouter-gemma-4-free';
+
   const migratedHost = normalizeEndpoint(parsed.host || providers.ollama.endpoint);
   const migratedModel = (parsed.model || providers.ollama.model).trim();
   providers.ollama.endpoint = migratedHost;
   providers.ollama.model = migratedModel;
 
-  const primaryProvider = AI_PROVIDERS.some((provider) => provider.id === parsed.primaryProvider)
+  const primaryProvider = GENERATION_PROVIDER_IDS.includes(parsed.primaryProvider as AiProviderId)
     ? parsed.primaryProvider as AiProviderId
     : 'ollama';
 
   const parsedMemoryPermission = parsed.memoryPermission as string | undefined;
-  const memoryPermission = parsedMemoryPermission === 'cluster-only'
-    ? 'allow-cloud'
-    : parsed.memoryPermission || 'never-cloud';
+  const memoryPermission: MemoryPermission = parsedMemoryPermission === 'cluster-only'
+    ? 'confirm-cloud'
+    : parsedMemoryPermission === 'confirm-cloud' || parsedMemoryPermission === 'allow-cloud'
+      ? parsedMemoryPermission
+      : 'never-cloud';
   const failurePolicy = parsed.failurePolicy === 'confirm-before-save' || parsed.failurePolicy === 'block-save'
     ? parsed.failurePolicy
     : 'save-with-warning';

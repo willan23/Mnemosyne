@@ -1,0 +1,31 @@
+# Preserve every default rule. Only the exact reviewed non-secret values below are exempt.
+# A different key, storage label or fixture value is still scanned. No path or commit is ignored.
+title = "Mnemosyne precise non-secret identifiers"
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Literal local storage names, a synthetic upload path, deterministic test IDs and public Firebase identifiers"
+regexTarget = "secret"
+regexes = [
+  '''^mnemosyne\.pin\.vault\.v1$''',
+  '''^mnemosyne\.pendingClip\.v1$''',
+  '''^quarantine/bob/other$''',
+  '''^123e4567-e89b-42d3-a456-426614174000$''',
+  '''^123e4567-e89b-42d3-a456-426614174001$''',
+  '''^sk_test_placeholder$''',
+  '''^AIzaSyDVA1XN6YOJ0VYDgzV2i3TdgfjwqPMWIhY$''',
+  '''^AIzaSyC1234567890abcdefghijklmnopqrstuv$'''
+]
+
+[[rules]]
+id = "gcp-api-key"
+[[rules.allowlists]]
+description = "Existing public Firebase web configuration identifiers; never provider credentials"
+regexTarget = "secret"
+regexes = [
+  '''^AIzaSyDVA1XN6YOJ0VYDgzV2i3TdgfjwqPMWIhY$''',
+  '''^AIzaSyC1234567890abcdefghijklmnopqrstuv$'''
+]

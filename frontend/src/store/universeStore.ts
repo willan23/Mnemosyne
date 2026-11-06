@@ -30,6 +30,8 @@ interface UniverseActions {
   setLanguage: (lang: 'pt-pt' | 'pt-br' | 'en' | 'fr') => void;
   markSpawn: (id: string) => void;
   clearSpawn: () => void;
+  setTaxonomyFilter: (lane: import('../utils/taxonomy').TaxonomyLane | null) => void;
+  setStudyMemoryId: (id: string | null) => void;
 }
 
 const initialState: UniverseState = {
@@ -47,9 +49,11 @@ const initialState: UniverseState = {
   deletingMemoryId: null,
   deletionType: null,
   isGalaxyView: false,
-  language: 'pt-pt',
+  language: 'en',
   spawnedMemoryId: null,
   spawnedAt: 0,
+  taxonomyFilter: null,
+  studyMemoryId: null,
 };
 
 export const useUniverseStore = create<UniverseState & UniverseActions>()(
@@ -62,18 +66,6 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
 
       addMemory: (memory) =>
         set((state) => {
-          if (!memory.auditTrail) {
-            memory.auditTrail = [
-              {
-                timestamp: Date.now(),
-                agentId: 'agency-identity-trust-architect',
-                action: 'MEMORY_CREATION_CRYPTOGRAPHIC_VERIFICATION',
-                signature: 'SIG_ED25519_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                hash: 'SHA256_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                details: 'Verified memory genesis and zero-trust identity signature.',
-              }
-            ];
-          }
           state.memories.push(memory);
           state.spawnedMemoryId = memory.id;
           state.spawnedAt = Date.now();
@@ -95,18 +87,7 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
         set((state) => {
           const idx = state.memories.findIndex((m) => m.id === id);
           if (idx !== -1) {
-            // Include an audit log for modifications
-            const oldAudit = state.memories[idx].auditTrail || [];
-            const newAuditEntry = {
-              timestamp: Date.now(),
-              agentId: 'agency-identity-trust-architect',
-              action: 'MEMORY_STATE_UPDATE_VERIFIED',
-              signature: 'SIG_ED25519_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-              hash: 'SHA256_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-              details: `Verified updates: ${Object.keys(updates).join(', ')}`,
-            };
             Object.assign(state.memories[idx], updates);
-            state.memories[idx].auditTrail = [...oldAudit, newAuditEntry];
           }
         }),
 
@@ -170,26 +151,10 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
 
       loadMemories: (memories) =>
         set((state) => {
-          const verifiedMemories = memories.map((m) => {
-            if (!m.auditTrail) {
-              return {
-                ...m,
-                auditTrail: [
-                  {
-                    timestamp: m.timestamp || Date.now(),
-                    agentId: 'agency-identity-trust-architect',
-                    action: 'COGNITIVE_UNIVERSE_INTEGRITY_SHIELD',
-                    signature: 'SIG_SEC256K1_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                    hash: 'SHA256_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                    details: 'Zero-trust verified on-ledger state snapshot integrity checked.',
-                  },
-                ],
-              };
-            }
-            return m;
-          });
-          state.memories = verifiedMemories;
-          state.selectedMemoryId = null;
+          state.memories = memories;
+          if (state.selectedMemoryId && !memories.some((memory) => memory.id === state.selectedMemoryId)) {
+            state.selectedMemoryId = null;
+          }
           state.hoveredMemoryId = null;
           state.filteredIds = null;
         }),
@@ -200,33 +165,9 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
           const tgt = state.memories.find((m) => m.id === targetId);
           if (src && !src.connections.includes(targetId)) {
             src.connections.push(targetId);
-            const oldAudit = src.auditTrail || [];
-            src.auditTrail = [
-              ...oldAudit,
-              {
-                timestamp: Date.now(),
-                agentId: 'agency-identity-trust-architect',
-                action: 'CONNECTION_CREATED_VERIFIED',
-                signature: 'SIG_ED25519_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                hash: 'SHA256_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                details: `Verified synaptic link with ${targetId}`,
-              },
-            ];
           }
           if (tgt && !tgt.connections.includes(sourceId)) {
             tgt.connections.push(sourceId);
-            const oldAudit = tgt.auditTrail || [];
-            tgt.auditTrail = [
-              ...oldAudit,
-              {
-                timestamp: Date.now(),
-                agentId: 'agency-identity-trust-architect',
-                action: 'CONNECTION_CREATED_VERIFIED',
-                signature: 'SIG_ED25519_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                hash: 'SHA256_' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-                details: `Verified synaptic link with ${sourceId}`,
-              },
-            ];
           }
         }),
 
@@ -242,6 +183,17 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
         set((state) => {
           state.language = lang;
         }),
+
+      setTaxonomyFilter: (lane) =>
+        set((state) => {
+          state.taxonomyFilter = lane;
+        }),
+
+      setStudyMemoryId: (id) =>
+        set((state) => {
+          state.studyMemoryId = id;
+          if (id) state.selectedMemoryId = id;
+        }),
     })),
     {
       name: 'mnemosyne-universe-preferences',
@@ -249,7 +201,7 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
       partialize: (state) => ({ universeType: state.universeType, language: state.language }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<UniverseState> | undefined;
-        let lang = (persisted?.language ?? currentState.language ?? 'pt-pt') as string;
+        let lang = (persisted?.language ?? currentState.language ?? 'en') as string;
         if (lang === 'pt') {
             lang = 'pt-pt';
         }

@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Mnemosyne",
-  "version": "1.0.7",
+  "version": "1.0.9",
   "identifier": "com.mnemosyne.cognitive",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build:desktop",
+    "beforeBuildCommand": "node ../scripts/check-desktop-release-contract.cjs && npm run build:desktop",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },
@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' https://*.googleapis.com https://*.google.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebase.com https://*.firebaseapp.com https://*.cloudfunctions.net https://*.web.app https://mnemosyne-one.web.app https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://api.stripe.com https://huggingface.co https://*.huggingface.co https://*.hf.co ipc: http://ipc.localhost https://ipc.localhost; media-src 'self' blob: https:; worker-src 'self' blob:; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com https://apis.google.com https://js.stripe.com; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {
@@ -34,9 +34,11 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI0NURCRTBGQkI4RjUwRDUKUldUVlVJKzdENzVkSktCM1c3ejJRWEo4NjZyZ0x3aE1GMGtDSExRVEZWVE9yemp2RGdjQTdObmgK",
+      "allowDowngrades": false,
+      "requireSignedVersion": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE1OTUzRDMzRjkzQTU5QjkKUldTNVdUcjVNejJWcFppUTBOUFg1Q0RwZ0x0NkVGckRnQ3J4b3oxNkZicEh1WW5uZUFkU0NGWW4K",
       "endpoints": [
-        "https://mnemosyne-one.web.app/desktop/latest.json"
+        "https://mnemosyne-one.web.app/desktop/v2/latest.json"
       ],
       "windows": {
         "installMode": "passive"

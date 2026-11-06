@@ -8,10 +8,11 @@ import { AppUpdatePrompt } from './components/AppUpdatePrompt'
 import { Toaster } from 'react-hot-toast'
 import './index.css'
 import App from './App.tsx'
-import { initAppCheckIfConfigured } from './firebase'
+import { initSentryIfConfigured } from './monitoring/sentry'
+import { clipIngressFailed, clipIngressErrorCopy, verifyClipIngressBootstrap } from './utils/clipCapture'
 
-// App Check (opcional) — só se VITE_FIREBASE_APPCHECK_SITE_KEY estiver definido
-void initAppCheckIfConfigured()
+verifyClipIngressBootstrap()
+if (!clipIngressFailed()) void initSentryIfConfigured()
 
 const cleanupLegacyServiceWorkers = () => {
   if (!('serviceWorker' in navigator)) {
@@ -34,9 +35,13 @@ const cleanupLegacyServiceWorkers = () => {
 }
 
 cleanupLegacyServiceWorkers()
+const clipErrorCopy = clipIngressErrorCopy(document.documentElement.lang === 'en' ? navigator.language : document.documentElement.lang)
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+  clipIngressFailed() ? <main role="alert" className="min-h-screen bg-slate-950 p-8 text-white">
+    <h1>{clipErrorCopy.title}</h1>
+    <p>{clipErrorCopy.body}</p>
+  </main> : <StrictMode>
     <ErrorBoundary>
       <BrowserRouter>
         <ThemeProvider>

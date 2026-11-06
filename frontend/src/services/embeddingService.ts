@@ -1,22 +1,45 @@
-import { pipeline, env } from '@huggingface/transformers';
+import { CURRENT_EMBEDDING_PROFILE, LEGACY_EMBEDDING_SPACE, sameEmbeddingSpace } from './embeddingModel';
+import type { EmbeddingWorkerCommand, EmbeddingWorkerResponse } from './embeddingWorkerProtocol';
+import { embeddingProfileSpace, type EmbeddingProfileId } from './embeddingProfile';
 
-// Configurar para usar cache local
-env.allowLocalModels = false;
-env.allowRemoteModels = true;
+interface SearchableMemory {
+    id: string;
+    text?: string;
+    embedding?: number[] | null;
+    embeddingModel?: string;
+}
 
 /**
  * Serviço de Embeddings Semânticos
  * Usa Transformers.js para gerar embeddings localmente no navegador
- * 100% privado - nenhum dado enviado para servidores
+ * O texto é processado no navegador; o download inicial do modelo exige rede.
  */
 class EmbeddingService {
     private static instance: EmbeddingService;
-    private embedder: any = null;
+    private static pinned = new Map<EmbeddingProfileId, EmbeddingService>();
+    readonly space: string;
+    private profile?: EmbeddingProfileId;
+    private worker: Worker | null = null;
+    private nextRequestId = 0;
+    private pending = new Map<number, {
+        resolve: (response: EmbeddingWorkerResponse) => void;
+        reject: (error: Error) => void;
+    }>();
+    private initialized = false;
     private embeddingCache: Map<string, number[]> = new Map();
-    private isInitializing: boolean = false;
+    private cacheEpoch = 0;
     private initPromise: Promise<void> | null = null;
 
-    private constructor() { }
+    private constructor(profile?: EmbeddingProfileId) {
+        this.profile = profile;
+        this.space = profile ? embeddingProfileSpace(profile) : LEGACY_EMBEDDING_SPACE;
+    }
+
+    static forProfile(profile: EmbeddingProfileId): EmbeddingService {
+        let service = this.pinned.get(profile);
+        if (!service) { service = new EmbeddingService(profile); this.pinned.set(profile, service); }
+        return service;
+    }
 
     static getInstance(): EmbeddingService {
         if (!EmbeddingService.instance) {
@@ -27,39 +50,84 @@ class EmbeddingService {
 
     /**
      * Inicializa o modelo de embeddings
-     * Modelo: Xenova/all-MiniLM-L6-v2 (80MB)
-     * - Rápido e eficiente
-     * - Suporta múltiplos idiomas
-     * - Ótimo para similaridade semântica
+     * O serviço padrão usa o perfil multilingue fixado, executado num Web Worker.
+     * A rota legada mantém o modelo inglês para consultas aos vetores históricos.
      */
     async initialize(): Promise<void> {
-        if (this.embedder) {
-            return; // Já inicializado
-        }
-
-        if (this.isInitializing) {
-            // Aguardar inicialização em andamento
-            return this.initPromise!;
-        }
-
-        this.isInitializing = true;
-        this.initPromise = (async () => {
-            try {
-                console.log('🧠 Carregando modelo de embeddings...');
-                this.embedder = await pipeline(
-                    'feature-extraction',
-                    'Xenova/all-MiniLM-L6-v2'
-                );
-                console.log('✅ Modelo de embeddings carregado!');
-            } catch (error) {
-                console.error('❌ Erro ao carregar modelo:', error);
-                throw error;
-            } finally {
-                this.isInitializing = false;
-            }
-        })();
-
+        if (this.initialized) return;
+        if (this.initPromise) return this.initPromise;
+        this.initPromise = this.send({ type: 'initialize' }).then(() => {
+            this.initialized = true;
+        }).catch((error) => {
+            this.initPromise = null;
+            throw error;
+        });
         return this.initPromise;
+    }
+
+    private ensureWorker(): Worker {
+        if (this.worker) return this.worker;
+        if (typeof Worker === 'undefined') {
+            throw new Error('Web Workers não estão disponíveis neste dispositivo.');
+        }
+        const worker = new Worker(new URL('./embeddingWorker.ts', import.meta.url), { type: 'module' });
+        worker.onmessage = (event: MessageEvent<EmbeddingWorkerResponse>) => {
+            const response = event.data;
+            const pending = this.pending.get(response.id);
+            if (!pending) return;
+            this.pending.delete(response.id);
+            if (response.ok) pending.resolve(response);
+            else pending.reject(new Error(response.error));
+        };
+        worker.onerror = () => {
+            if (this.worker === worker) this.stopWorker('O processamento local de embeddings falhou.');
+        };
+        worker.onmessageerror = () => {
+            if (this.worker === worker) this.stopWorker('O processamento local de embeddings falhou.');
+        };
+        this.worker = worker;
+        return worker;
+    }
+
+    private send(request: EmbeddingWorkerCommand): Promise<EmbeddingWorkerResponse> {
+        const worker = this.ensureWorker();
+        const id = ++this.nextRequestId;
+        return new Promise((resolve, reject) => {
+            this.pending.set(id, { resolve, reject });
+            try {
+                worker.postMessage({ ...request, id, ...(this.profile ? { profile: this.profile } : {}) });
+            } catch {
+                this.pending.delete(id);
+                reject(new Error('Falha ao comunicar com o processamento local de embeddings.'));
+            }
+        });
+    }
+
+    private stopWorker(message: string): void {
+        this.worker?.terminate();
+        this.worker = null;
+        this.initialized = false;
+        this.initPromise = null;
+        for (const pending of this.pending.values()) pending.reject(new Error(message));
+        this.pending.clear();
+    }
+
+    /**
+     * Gera uma chave de cache resistente a colisões baseada no conteúdo completo
+     */
+    private getCacheKey(text: string): string {
+        let h1 = 0xdeadbeef;
+        let h2 = 0x41c6ce57;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+        h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+        h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return `${text.length}_${(h1 >>> 0).toString(16)}_${(h2 >>> 0).toString(16)}`;
     }
 
     /**
@@ -72,8 +140,9 @@ class EmbeddingService {
             throw new Error('Texto vazio não pode gerar embedding');
         }
 
-        // Usar primeiros 200 caracteres como chave de cache
-        const cacheKey = text.substring(0, 200);
+        // Chave de cache resistente a colisões baseada no texto completo
+        const cacheKey = this.getCacheKey(text);
+        const cacheEpoch = this.cacheEpoch;
 
         // Verificar cache
         if (this.embeddingCache.has(cacheKey)) {
@@ -82,31 +151,24 @@ class EmbeddingService {
 
         // Garantir que modelo está inicializado
         await this.initialize();
+        if (cacheEpoch !== this.cacheEpoch) throw new Error('O cofre mudou durante o processamento de embeddings.');
 
-        try {
-            // Gerar embedding
-            const output = await this.embedder(text, {
-                pooling: 'mean',
-                normalize: true
-            });
+        const response = await this.send({ type: 'embed', text });
+        if (cacheEpoch !== this.cacheEpoch) throw new Error('O cofre mudou durante o processamento de embeddings.');
+        const embedding = response.ok && response.embedding;
+        if (!embedding) throw new Error('O modelo local não devolveu um embedding.');
 
-            const embedding = Array.from(output.data as Float32Array);
-
-            // Armazenar em cache (limitar tamanho do cache)
-            if (this.embeddingCache.size > 1000) {
-                // Remover primeira entrada (FIFO simples)
-                const firstKey = this.embeddingCache.keys().next().value;
-                if (firstKey !== undefined) {
-                    this.embeddingCache.delete(firstKey);
-                }
+        // Armazenar em cache (limitar tamanho do cache)
+        if (this.embeddingCache.size >= 1000) {
+            // Remover primeira entrada (FIFO simples)
+            const firstKey = this.embeddingCache.keys().next().value;
+            if (firstKey !== undefined) {
+                this.embeddingCache.delete(firstKey);
             }
-            this.embeddingCache.set(cacheKey, embedding);
-
-            return embedding;
-        } catch (error) {
-            console.error('❌ Erro ao gerar embedding:', error);
-            throw error;
         }
+        if (cacheEpoch === this.cacheEpoch) this.embeddingCache.set(cacheKey, embedding);
+
+        return embedding;
     }
 
     /**
@@ -139,12 +201,12 @@ class EmbeddingService {
      * @param limit Número máximo de resultados
      * @returns Array de memórias similares com score de similaridade
      */
-    async findSimilarMemories(
-        targetMemory: any,
-        allMemories: any[],
+    async findSimilarMemories<T extends SearchableMemory>(
+        targetMemory: T,
+        allMemories: T[],
         threshold: number = 0.6,
         limit: number = 5
-    ): Promise<Array<{ memory: any; similarity: number }>> {
+    ): Promise<Array<{ memory: T; similarity: number }>> {
         if (!targetMemory || !targetMemory.text) {
             return [];
         }
@@ -154,29 +216,35 @@ class EmbeddingService {
         }
 
         try {
-            // Gerar embedding da memória alvo
-            const targetEmbedding = await this.getEmbedding(targetMemory.text);
-
-            // Calcular similaridade com todas as outras memórias
-            const similarities = await Promise.all(
-                allMemories
-                    .filter(m =>
-                        m.id !== targetMemory.id &&
-                        m.text &&
-                        typeof m.text === 'string' &&
-                        m.text.trim().length > 0
-                    )
-                    .map(async (memory) => {
-                        try {
-                            const embedding = await this.getEmbedding(memory.text);
-                            const similarity = this.cosineSimilarity(targetEmbedding, embedding);
-                            return { memory, similarity };
-                        } catch (error) {
-                            console.warn('Erro ao processar memória:', memory.id, error);
-                            return { memory, similarity: 0 };
-                        }
-                    })
+            const validStoredVector = (memory: SearchableMemory): number[] | null => (
+                Array.isArray(memory.embedding) && memory.embedding.length > 0 &&
+                memory.embedding.every((value: unknown) => typeof value === 'number' && Number.isFinite(value))
+                    ? memory.embedding : null
             );
+            // A pesquisa não deve calcular um vetor do modelo atual para um
+            // documento que declara um espaço futuro ainda não carregado.
+            const targetEmbedding = sameEmbeddingSpace(targetMemory.embeddingModel, this.space)
+                ? await this.getEmbedding(targetMemory.text)
+                : validStoredVector(targetMemory);
+            if (!targetEmbedding) return [];
+
+            // Reusar vetores persistidos e enviar no máximo um texto de cada vez
+            // para não acumular conteúdo de todo o cofre na fila do Worker.
+            const similarities: Array<{ memory: T; similarity: number }> = [];
+            for (const memory of allMemories) {
+                if (memory.id === targetMemory.id || typeof memory.text !== 'string' ||
+                    !memory.text.trim() || !sameEmbeddingSpace(memory.embeddingModel, targetMemory.embeddingModel)) continue;
+                try {
+                    const stored = validStoredVector(memory);
+                    const embedding = stored || (sameEmbeddingSpace(memory.embeddingModel, this.space)
+                        ? await this.getEmbedding(memory.text) : null);
+                    if (!embedding || embedding.length !== targetEmbedding.length) continue;
+                    const similarity = this.cosineSimilarity(targetEmbedding, embedding);
+                    similarities.push({ memory, similarity });
+                } catch {
+                    // A failure for one memory must not discard other matches.
+                }
+            }
 
             // Filtrar por threshold e ordenar por similaridade
             return similarities
@@ -193,8 +261,12 @@ class EmbeddingService {
      * Limpa o cache de embeddings
      */
     clearCache(): void {
+        if (this === EmbeddingService.instance) {
+            for (const service of EmbeddingService.pinned.values()) service.clearCache();
+        }
+        this.cacheEpoch += 1;
         this.embeddingCache.clear();
-        console.log('🗑️ Cache de embeddings limpo');
+        this.stopWorker('O cofre mudou durante o processamento de embeddings.');
     }
 
     /**
@@ -204,10 +276,14 @@ class EmbeddingService {
         return {
             size: this.embeddingCache.size,
             maxSize: 1000,
-            isInitialized: !!this.embedder,
-            isInitializing: this.isInitializing
+            isInitialized: this.initialized,
+            isInitializing: !!this.initPromise && !this.initialized
         };
     }
 }
 
-export const embeddingService = EmbeddingService.getInstance();
+export const legacyEmbeddingService = EmbeddingService.getInstance();
+export const embeddingService = EmbeddingService.forProfile(CURRENT_EMBEDDING_PROFILE);
+export const embeddingServiceForProfile = (profile: EmbeddingProfileId) => EmbeddingService.forProfile(profile);
+/** Account/vault invalidation must also retire legacy queries and other pinned profiles. */
+export const resetEmbeddingServices = () => legacyEmbeddingService.clearCache();

@@ -59,10 +59,11 @@ export const useSubscriptionLimits = (userPlan: string = 'free') => {
                 const q = query(
                     sessionsRef,
                     where('uid', '==', auth.currentUser.uid),
+                    where('teamId', '==', null),
                     where('timestamp', '>=', startOfMonth)
                 );
                 const snapshot = await getDocs(q);
-                const allSessionsSnapshot = await getDocs(query(sessionsRef, where('uid', '==', auth.currentUser.uid)));
+                const allSessionsSnapshot = await getDocs(query(sessionsRef, where('uid', '==', auth.currentUser.uid), where('teamId', '==', null)));
 
                 // Contar anexos
                 let imagesCount = 0;

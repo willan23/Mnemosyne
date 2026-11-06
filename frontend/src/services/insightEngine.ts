@@ -1,4 +1,5 @@
 import type { SessionData } from '../hooks/useSessions';
+import { sameEmbeddingSpace } from './embeddingModel';
 
 export type InsightKind = 'contradiction' | 'orphan' | 'resurface' | 'pattern';
 export type InsightSeverity = 'low' | 'medium' | 'high';
@@ -84,7 +85,9 @@ const overlap = (a: string[], b: string[]) => {
 };
 
 const relationScore = (a: MemorySignal, b: MemorySignal) => {
-  const semantic = cosineSimilarity(a.memory.embedding, b.memory.embedding);
+  const semantic = sameEmbeddingSpace(a.memory.embeddingModel, b.memory.embeddingModel)
+    ? cosineSimilarity(a.memory.embedding, b.memory.embedding)
+    : 0;
   const shared = overlap(a.concepts, b.concepts);
   const lexical = shared.length / Math.max(1, Math.min(a.concepts.length, b.concepts.length));
   return Math.max(semantic, lexical);

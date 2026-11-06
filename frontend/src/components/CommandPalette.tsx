@@ -3,25 +3,30 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useUI } from '../contexts/UIContext';
 import {
   Search, Settings, BarChart3, Crown, Sun, Globe2, Orbit, Compass, Sparkles, Radio,
-  X, Clock, Hash, Activity, Shield, Cpu, Key, Loader2,
+  X, Clock, Hash, Activity, Shield, Cpu, Key, Loader2, Crosshair, Archive,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { dispatchOpenCapture } from '../utils/desktopCapture';
 import { useTheme } from '../contexts/ThemeContext';
-import type { SessionData } from '../hooks/useSessions';
+import type { SessionData, SessionSearchResults } from '../hooks/useSessions';
 import { isFreeFirstMode } from '../config/monetization';
 import { parseAiCommand } from '../services/aiCommandParser';
+import { useTranslation } from '../utils/translations';
 import {
-  clearRecentSearches,
   parseSearchQuery,
-  pushRecentSearch,
-  readRecentSearches,
   searchMemories,
+  filterSearchCandidates,
   type MemorySearchHit,
 } from '../utils/searchMemories';
+import { clearRecentSearches, pushRecentSearch, readRecentSearches } from '../services/recentSearches';
+import { onMemoryCryptoChanged } from '../services/memoryCrypto';
 
 interface CommandPaletteProps {
+  uid?: string | null;
+  vaultUnlocked?: boolean;
   memories?: SessionData[];
   searchQuery?: string;
+  searchResults?: SessionSearchResults;
   onSearchQueryChange?: (query: string) => void;
   onMemorySelect?: (memory: SessionData) => void;
   onWebResearch?: (query: string) => void;
@@ -31,6 +36,8 @@ interface CommandPaletteProps {
   onOpenPulse?: () => void;
   /** Abrir modo Insights */
   onOpenInsights?: () => void;
+  /** Export soberano (ZIP local) */
+  onOpenExport?: () => void;
   isSemanticLoading?: boolean;
 }
 
@@ -44,24 +51,33 @@ type CommandItem = {
 };
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
+  uid = null,
+  vaultUnlocked = false,
   memories = [],
   searchQuery = '',
+  searchResults,
   onSearchQueryChange,
   onMemorySelect,
   onWebResearch,
   onOpenSettings,
   onOpenPulse,
   onOpenInsights,
+  onOpenExport,
   isSemanticLoading = false,
 }) => {
+  const { t } = useTranslation();
   const { isCommandPaletteOpen, setIsCommandPaletteOpen, setIsSettingsOpen } = useUI();
   const { toggleTheme } = useTheme();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [recent, setRecent] = useState<string[]>(() => readRecentSearches());
+  const [recent, setRecent] = useState<string[]>([]);
+  const recentReadEpoch = useRef(0);
   const query = searchQuery;
+  const currentSearchResults = searchResults?.uid === uid && searchResults.query === query.trim() ? searchResults : undefined;
+  const semanticLoading = searchResults ? Boolean(currentSearchResults?.loading) : isSemanticLoading;
+  const searchUnavailable = vaultUnlocked && Boolean(currentSearchResults?.error);
   const parsed = useMemo(() => parseSearchQuery(query), [query]);
 
   useEffect(() => {
@@ -82,9 +98,24 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (isCommandPaletteOpen && inputRef.current) {
       setTimeout(() => inputRef.current?.focus(), 80);
       setActiveIndex(0);
-      setRecent(readRecentSearches());
+      setRecent([]);
+      if (uid && vaultUnlocked) {
+        let active = true;
+        const epoch = ++recentReadEpoch.current;
+        void readRecentSearches(uid).then((items) => {
+          if (active && epoch === recentReadEpoch.current) setRecent(items);
+        }).catch(() => {
+          if (active && epoch === recentReadEpoch.current) setRecent([]);
+        });
+        return () => { active = false; };
+      }
     }
-  }, [isCommandPaletteOpen]);
+  }, [isCommandPaletteOpen, uid, vaultUnlocked]);
+
+  useEffect(() => onMemoryCryptoChanged(() => {
+    recentReadEpoch.current += 1;
+    setRecent([]);
+  }), []);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -94,14 +125,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     onSearchQueryChange?.(nextQuery);
   };
 
+  const recordRecent = useCallback((value: string) => {
+    if (!uid || !vaultUnlocked || value.trim().length < 2) return;
+    // Reload on the next opening; a completed write must not repopulate UI after lock/account change.
+    void pushRecentSearch(uid, value).catch(() => undefined);
+  }, [uid, vaultUnlocked]);
+
   const runCommand = useCallback((cmd: () => void) => {
-    if (query.trim().length >= 2) {
-      pushRecentSearch(query.trim());
-      setRecent(readRecentSearches());
-    }
+    recordRecent(query);
     setIsCommandPaletteOpen(false);
     setTimeout(cmd, 100);
-  }, [query, setIsCommandPaletteOpen]);
+  }, [query, recordRecent, setIsCommandPaletteOpen]);
 
   const openSettings = useCallback((section?: string) => {
     runCommand(() => {
@@ -112,45 +146,55 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   const parsedCommand = parseAiCommand(query.trim());
   const webResearchQuery = parsedCommand.type === 'web-research' ? parsedCommand.query : '';
-  const runWebResearchCommand = () => runCommand(() => onWebResearch?.(webResearchQuery || query.trim()));
+  const runWebResearchCommand = useCallback(() => {
+    runCommand(() => onWebResearch?.(webResearchQuery || query.trim()));
+  }, [runCommand, onWebResearch, webResearchQuery, query]);
 
   const commands: CommandItem[] = useMemo(() => [
     {
       id: 'web-research',
-      name: parsedCommand.type === 'web-research' ? 'Pesquisar na web agora' : 'Pesquisar na web',
-      hint: 'pesquisa pública · /web tema',
+      name: parsedCommand.type === 'web-research' ? t('cmdWebNow') : t('cmdWeb'),
+      hint: t('cmdWebHint'),
       icon: <Globe2 className="h-4 w-4" />,
       action: runWebResearchCommand,
       keywords: ['web', 'internet', 'pesquisar', 'google'],
     },
     {
+      id: 'capture',
+      name: t('cmdCapture'),
+      hint: t('cmdCaptureHint'),
+      icon: <Crosshair className="h-4 w-4" />,
+      action: () => runCommand(() => dispatchOpenCapture()),
+      keywords: ['captura', 'escrever', 'memória', 'flow'],
+    },
+    {
       id: 'universe',
-      name: 'Abrir Universo 3D',
-      hint: 'navegação espacial',
+      name: t('cmdUniverse'),
+      hint: t('cmdUniverseHint'),
       icon: <Orbit className="h-4 w-4" />,
-      action: () => runCommand(() => navigate('/universe')),
+      action: () => runCommand(() => navigate('/')),
       keywords: ['3d', 'espaço', 'galáxia', 'cosmos'],
     },
     {
       id: 'pulse',
-      name: 'Cognitive Pulse',
-      hint: 'ritual diário do grafo',
+      name: t('cmdPulse'),
+      hint: t('cmdPulseHint'),
       icon: <Activity className="h-4 w-4" />,
       action: () => runCommand(() => onOpenPulse?.()),
       keywords: ['pulso', 'insights', 'dia'],
     },
     {
       id: 'insights',
-      name: 'Abrir Insights',
-      hint: 'tensões, ecos, órfãs',
+      name: t('cmdInsights'),
+      hint: t('cmdInsightsHint'),
       icon: <Sparkles className="h-4 w-4" />,
       action: () => runCommand(() => onOpenInsights?.()),
       keywords: ['padrão', 'contradição'],
     },
     {
       id: 'comms',
-      name: 'Comms · transmissão',
-      hint: 'enviar memórias E2E',
+      name: t('cmdComms'),
+      hint: t('cmdCommsHint'),
       icon: <Radio className="h-4 w-4" />,
       action: () => runCommand(() => {
         if (window.location.pathname !== '/') navigate('/');
@@ -158,60 +202,76 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       keywords: ['enviar', 'p2p', 'mensagem'],
     },
     {
+      id: 'export',
+      name: t('exportTitle'),
+      hint: t('cmdExportHint'),
+      icon: <Archive className="h-4 w-4" />,
+      action: () => runCommand(() => onOpenExport?.()),
+      keywords: ['export', 'backup', 'zip', 'soberano', 'download'],
+    },
+    {
       id: 'settings',
-      name: 'Definições',
-      hint: 'centro de controlo',
+      name: t('settings'),
+      hint: t('cmdSettingsHint'),
       icon: <Settings className="h-4 w-4" />,
       action: () => openSettings(),
       keywords: ['config', 'opções', 'settings'],
     },
     {
       id: 'settings-ai',
-      name: 'Definições · IA',
-      hint: 'modelos, Ollama, cloud',
+      name: t('cmdSettingsAi'),
+      hint: t('cmdSettingsAiHint'),
       icon: <Cpu className="h-4 w-4" />,
       action: () => openSettings('ai'),
       keywords: ['ollama', 'openai', 'modelo', 'llm'],
     },
     {
       id: 'settings-privacy',
-      name: 'Definições · Privacidade',
-      hint: 'PIN, Zero-Knowledge',
+      name: t('cmdSettingsPrivacy'),
+      hint: t('cmdSettingsPrivacyHint'),
       icon: <Shield className="h-4 w-4" />,
       action: () => openSettings('privacy'),
       keywords: ['pin', 'segurança', 'zk'],
     },
     {
       id: 'settings-identity',
-      name: 'Definições · Identidade',
-      hint: 'mnemónica e chave',
+      name: t('cmdSettingsIdentity'),
+      hint: t('cmdSettingsIdentityHint'),
       icon: <Key className="h-4 w-4" />,
       action: () => openSettings('identity'),
       keywords: ['chave', 'seed', 'mnemónica'],
     },
     {
+      id: 'settings-capture',
+      name: t('cmdSettingsCapture'),
+      hint: t('cmdSettingsCaptureHint'),
+      icon: <Crosshair className="h-4 w-4" />,
+      action: () => openSettings('capture'),
+      keywords: ['clipper', 'atalho', 'hotkey', 'extensão', 'chrome'],
+    },
+    {
       id: 'analytics',
-      name: 'Analytics',
-      hint: 'padrões de uso',
+      name: t('cmdAnalytics'),
+      hint: t('cmdAnalyticsHint'),
       icon: <BarChart3 className="h-4 w-4" />,
       action: () => runCommand(() => navigate('/analytics')),
     },
     {
       id: 'upgrade',
-      name: isFreeFirstMode ? 'Founder Preview' : 'Planos',
-      hint: isFreeFirstMode ? 'fase gratuita' : 'upgrade',
+      name: isFreeFirstMode ? t('cmdFounderPreview') : t('plans'),
+      hint: isFreeFirstMode ? t('cmdFounderHint') : t('cmdUpgradeHint'),
       icon: <Crown className="h-4 w-4" />,
       action: () => runCommand(() => navigate('/pricing')),
     },
     {
       id: 'theme',
-      name: 'Alternar tema',
-      hint: 'claro / escuro',
+      name: t('cmdTheme'),
+      hint: t('cmdThemeHint'),
       icon: <Sun className="h-4 w-4" />,
       action: () => runCommand(() => toggleTheme()),
       keywords: ['dark', 'light', 'tema'],
     },
-  ], [parsedCommand.type, navigate, openSettings, onOpenPulse, onOpenInsights, runCommand, toggleTheme]);
+  ], [parsedCommand.type, navigate, openSettings, onOpenPulse, onOpenInsights, onOpenExport, runCommand, toggleTheme, runWebResearchCommand, t]);
 
   const filteredCommands = useMemo(() => {
     const q = query.toLowerCase().trim();
@@ -224,21 +284,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     });
   }, [commands, query, parsedCommand.type]);
 
-  // Prefer parent-filtered list (already semantic); fallback to local engine
+  // An explicit empty/current result must not reopen the general memory list.
   const memoryHits: MemorySearchHit[] = useMemo(() => {
-    if (!query.trim()) return [];
-    const hasParentScores = memories.some((m) => typeof m.semanticScore === 'number' && m.semanticScore > 0);
-    if (hasParentScores) {
-      return memories.slice(0, 10).map((memory) => ({
-        memory,
-        score: memory.semanticScore || 0.5,
-        matchKind: (memory.semanticScore || 0) >= 0.5 ? 'mixed' as const : 'text' as const,
-        snippet: (memory.text || '').replace(/\s+/g, ' ').slice(0, 110),
-        matchedTags: memory.tags || [],
-      }));
+    if (!query.trim() || !uid || !vaultUnlocked) return [];
+    if (searchResults) {
+      if (!currentSearchResults) return [];
+      const readable = new Set(filterSearchCandidates(currentSearchResults.hits.map(hit => hit.memory), query).map(memory => memory.id));
+      return currentSearchResults.hits.filter(hit => readable.has(hit.memory.id)).slice(0, 10);
     }
-    return searchMemories(memories, query, { limit: 10, semanticFloor: 0.38 });
-  }, [memories, query]);
+    return searchMemories(memories, query, { limit: 10, semanticFloor: 0.38, semanticScores: new Map() });
+  }, [memories, query, uid, vaultUnlocked, searchResults, currentSearchResults]);
 
   type ListItem =
     | { kind: 'memory'; hit: MemorySearchHit }
@@ -266,10 +321,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   }, [activeIndex]);
 
   const selectMemory = (memory: SessionData) => {
-    if (query.trim().length >= 2) {
-      pushRecentSearch(query.trim());
-      setRecent(readRecentSearches());
-    }
+    recordRecent(query);
     setIsCommandPaletteOpen(false);
     onMemorySelect?.(memory);
   };
@@ -304,12 +356,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   };
 
   const kindLabel: Record<MemorySearchHit['matchKind'], string> = {
-    exact: 'título',
-    title: 'título',
-    text: 'texto',
-    tag: 'tag',
-    semantic: 'semântica',
-    mixed: 'misto',
+    exact: t('cmdKindTitle'),
+    title: t('cmdKindTitle'),
+    text: t('cmdKindText'),
+    tag: t('cmdKindTag'),
+    semantic: t('cmdKindSemantic'),
+    mixed: t('cmdKindMixed'),
   };
 
   const popularTags = useMemo(() => {
@@ -338,27 +390,27 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           />
 
           <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: -16 }}
+            initial={{ opacity: 0, scale: 0.95, y: -20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: -12 }}
-            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            exit={{ opacity: 0, scale: 0.95, y: -16 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 380 }}
             role="dialog"
             aria-modal="true"
-            aria-label="Pesquisa Mnemosyne"
-            className="fixed left-1/2 top-[12%] z-[100] w-full max-w-xl -translate-x-1/2 overflow-hidden rounded-2xl border border-white/12 bg-[#07101f]/96 shadow-[0_32px_100px_rgba(0,0,0,0.65)] backdrop-blur-2xl focus-within:ring-1 focus-within:ring-violet-400/40"
+            aria-label={t('cmdAria')}
+            className="fixed left-1/2 top-[12%] z-[100] w-full max-w-xl -translate-x-1/2 overflow-hidden rounded-2xl border border-violet-400/20 bg-[#07101f]/95 shadow-[0_32px_100px_rgba(0,0,0,0.7),0_0_40px_rgba(139,92,246,0.15)] backdrop-blur-2xl focus-within:border-violet-400/40 focus-within:ring-2 focus-within:ring-violet-400/15"
           >
-            <div className="flex items-center gap-3 border-b border-white/8 bg-black/30 px-4 py-3.5">
-              {isSemanticLoading ? (
-                <Loader2 className="h-5 w-5 shrink-0 animate-spin text-cyan-300/80" />
+            <div className="flex items-center gap-3 border-b border-white/[0.08] bg-black/40 px-4 py-3.5">
+              {semanticLoading ? (
+                <Loader2 className="h-5 w-5 shrink-0 animate-spin text-cyan-300" />
               ) : (
-                <Search className="h-5 w-5 shrink-0 text-violet-300/70" />
+                <Search className="h-5 w-5 shrink-0 text-violet-300" />
               )}
               <input
                 ref={inputRef}
                 value={query}
                 onChange={(e) => updateQuery(e.target.value)}
                 onKeyDown={handleInputKeyDown}
-                placeholder="Memórias, #tags, tag:trabalho, /web tema, definições…"
+                placeholder={t('cmdPlaceholder')}
                 className="w-full border-none bg-transparent font-sans text-base text-white outline-none placeholder:text-slate-500"
                 aria-autocomplete="list"
               />
@@ -367,7 +419,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                   type="button"
                   onClick={() => updateQuery('')}
                   className="rounded-lg p-1 text-slate-500 transition hover:bg-white/10 hover:text-white"
-                  aria-label="Limpar pesquisa"
+                  aria-label={t('cmdClear')}
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -379,6 +431,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
             {/* Chips de ajuda / tags */}
             <div className="flex flex-wrap items-center gap-1.5 border-b border-white/5 px-3 py-2">
+              <p className="w-full text-xs text-slate-400">{t('cmdFilterHelp')}</p>
+              {parsed.invalidFilter && <p role="status" className="w-full text-xs text-amber-200">{t('cmdInvalidFilter')}</p>}
               {parsed.tags.map((tag) => (
                 <span
                   key={tag}
@@ -400,33 +454,40 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               ))}
               {!query.trim() && (
                 <span className="ml-auto text-[10px] text-slate-600">
-                  Ctrl+Enter · web · tag:x · #y
+                  {t('cmdHintKeys')}
                 </span>
               )}
               {query.trim() && memoryHits.length > 0 && (
                 <span className="ml-auto text-[10px] text-cyan-200/60">
-                  {memoryHits.length} memória(s)
-                  {isSemanticLoading ? ' · a calcular semântica…' : ''}
+                  {t('cmdHits', { count: memoryHits.length })}
+                  {semanticLoading ? t(searchResults ? 'cmdSearching' : 'cmdSemantic') : ''}
                 </span>
               )}
             </div>
 
             <div ref={listRef} className="mnem-scroll max-h-[min(24rem,50vh)] overflow-y-auto p-2">
+              {searchUnavailable && <p role="status" className="px-4 py-3 text-sm text-amber-200">{t('cmdSearchUnavailable')}</p>}
+              {vaultUnlocked && semanticLoading && memoryHits.length === 0 && (
+                <p role="status" className="px-4 py-3 text-sm text-slate-400">{t('cmdSearching')}</p>
+              )}
               {showRecent && (
                 <div className="mb-1">
                   <div className="flex items-center justify-between px-3 py-2">
                     <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      <Clock className="h-3 w-3" /> Recentes
+                      <Clock className="h-3 w-3" /> {t('cmdRecent')}
                     </p>
                     <button
                       type="button"
                       onClick={() => {
-                        clearRecentSearches();
+                        recentReadEpoch.current += 1;
+                        if (uid) {
+                          try { clearRecentSearches(uid); } catch { /* private storage unavailable */ }
+                        }
                         setRecent([]);
                       }}
                       className="text-[10px] text-slate-600 transition hover:text-slate-300"
                     >
-                      limpar
+                      {t('cmdClearRecent')}
                     </button>
                   </div>
                   {recent.map((value, idx) => {
@@ -453,7 +514,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               {memoryHits.length > 0 && (
                 <div className="mb-1">
                   <p className="flex items-center gap-1.5 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-violet-300/50">
-                    <Sparkles className="h-3 w-3" /> Memórias
+                    <Sparkles className="h-3 w-3" /> {t('pulseMemories')}
                   </p>
                   {memoryHits.map((hit, idx) => {
                     const itemIndex = showRecent ? recent.length + idx : idx;
@@ -472,7 +533,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                       >
                         <div className="flex items-start justify-between gap-3">
                           <span className="line-clamp-1 text-sm font-medium text-slate-100">
-                            {memory.title || memory.text || 'Memória sem título'}
+                            {memory.title || memory.text || t('cmdUntitled')}
                           </span>
                           <div className="flex shrink-0 items-center gap-1.5">
                             <span className="rounded-full border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-slate-400">
@@ -505,7 +566,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               {filteredCommands.length > 0 && (
                 <>
                   <p className="flex items-center gap-1.5 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                    <Compass className="h-3 w-3" /> Comandos
+                    <Compass className="h-3 w-3" /> {t('cmdCommands')}
                   </p>
                   {filteredCommands.map((cmd, idx) => {
                     const itemIndex = showRecent
@@ -540,20 +601,35 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 </>
               )}
 
-              {listItems.length === 0 && (
+              {listItems.length === 0 && !searchUnavailable && !semanticLoading && (
                 <div className="px-4 py-10 text-center">
-                  <p className="text-sm text-slate-400">Nada encontrado.</p>
+                  <p className="text-sm text-slate-400">{t('cmdNothing')}</p>
                   <p className="mt-2 text-xs text-slate-600">
-                    Experimenta outra palavra, <code className="text-slate-500">#tag</code>,{' '}
-                    <code className="text-slate-500">tag:trabalho</code> ou Ctrl+Enter para web.
+                    {t('cmdNothingHint')}
                   </p>
                 </div>
               )}
             </div>
 
-            <div className="flex items-center justify-between border-t border-white/6 px-4 py-2 text-[10px] text-slate-500">
-              <span>↑↓ · Enter · Ctrl+Enter web · Ctrl+K</span>
-              <span className="text-violet-300/50">Mnemosyne Search</span>
+            <div className="flex items-center justify-between border-t border-white/[0.08] bg-black/20 px-4 py-2.5 text-[10px] text-slate-400">
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1">
+                  <kbd className="rounded border border-white/10 bg-white/5 px-1 py-0.5 font-mono text-[9px] text-slate-300">↑</kbd>
+                  <kbd className="rounded border border-white/10 bg-white/5 px-1 py-0.5 font-mono text-[9px] text-slate-300">↓</kbd>
+                  <span className="ml-0.5">{t('cmdNavigate')}</span>
+                </span>
+                <span className="text-slate-600">·</span>
+                <span className="flex items-center gap-1">
+                  <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-slate-300">↵</kbd>
+                  <span className="ml-0.5">{t('cmdSelect')}</span>
+                </span>
+                <span className="text-slate-600">·</span>
+                <span className="flex items-center gap-1">
+                  <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-slate-300">Ctrl + K</kbd>
+                  <span className="ml-0.5">{t('cmdToggle')}</span>
+                </span>
+              </div>
+              <span className="font-medium text-violet-300/70">Mnemosyne Spotlight</span>
             </div>
           </motion.div>
         </>

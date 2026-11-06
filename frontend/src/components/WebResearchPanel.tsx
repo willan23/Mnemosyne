@@ -1,13 +1,16 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, BookmarkPlus, Check, ExternalLink, Globe2, Link2, Lock, Search, Shield, X } from 'lucide-react';
-import { addDoc, arrayUnion, collection, doc, updateDoc } from 'firebase/firestore';
 import toast from 'react-hot-toast';
-import { auth, db } from '../firebase';
-import { cognitiveEngine } from '../engines/CognitiveEngine';
-import type { CelestialType, MemoryObject } from '../types/universe';
+import { auth } from '../firebase';
 import type { SessionData } from '../hooks/useSessions';
 import { runWebResearch, type WebResearchMode, type WebResearchResult } from '../services/webResearchService';
+import { isMemoryCryptoReady } from '../services/memoryCrypto';
+import { personalSemanticCandidates } from '../services/personalSemanticScope';
+import { withAiGenerationContext } from '../services/aiGenerationContext';
+import { buildPersonalResearchContext, saveWebResearchMemory } from '../services/webResearchMemory';
+import { useSyncFeedback } from '../hooks/useSyncFeedback';
+import { AttachedMemoryRecoveryPanel } from './AttachedMemoryRecoveryPanel';
 
 interface WebResearchPanelProps {
   isOpen: boolean;
@@ -27,39 +30,6 @@ const toTerms = (value: string): Set<string> => new Set(
   (value.toLowerCase().match(/[a-zà-ÿ0-9]{4,}/g) || [])
     .filter((token) => !STOPWORDS.has(token))
 );
-
-const toMemoryObject = (session: SessionData): MemoryObject => ({
-  id: session.id,
-  text: session.text || '',
-  title: session.title,
-  celestialType: (session.celestialType || 'planet') as CelestialType,
-  position: session.position || [0, 0, 0],
-  embedding: session.embedding || [],
-  connections: session.connections || [],
-  semanticClusterId: session.semanticClusterId,
-  importance: session.importance || 0.5,
-  timestamp: session.timestamp || 0,
-  updatedAt: session.updatedAt || session.timestamp || 0,
-  uid: session.uid,
-  tags: session.tags,
-  category: session.category,
-});
-
-const formatResearchAsMemory = (result: WebResearchResult): string => [
-  `[Pesquisa web] ${result.query}`,
-  '',
-  'Resumo',
-  result.summary,
-  '',
-  'Ideias principais',
-  ...result.main_ideas.map((idea, index) => `${index + 1}. ${idea}`),
-  '',
-  'Conceitos-chave',
-  result.key_concepts.map((concept) => `#${concept}`).join(' '),
-  '',
-  'Fontes',
-  ...result.sources.map((source, index) => `${index + 1}. ${source.title} - ${source.url}`),
-].join('\n');
 
 const buildPrivateLocalComparisons = (result: WebResearchResult, memories: SessionData[]): string[] => {
   const researchTerms = toTerms([
@@ -104,26 +74,35 @@ export const WebResearchPanel: React.FC<WebResearchPanelProps> = ({
   const [selectedMemoryIds, setSelectedMemoryIds] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [result, setResult] = useState<WebResearchResult | null>(null);
+  const [snapshot, setSnapshot] = useState<{uid:string;data:WebResearchResult;current:()=>boolean;savedId?:string} | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selectableMemories = useMemo(() => sessions.slice(0, 12), [sessions]);
+  const feedback=useSyncFeedback();const panelEpoch=useRef(0);const visible=useRef(isOpen);visible.current=isOpen;
+  const uid=auth.currentUser?.uid??null;
+  const ready=isMemoryCryptoReady();
+  const result=snapshot&&snapshot.uid===uid&&snapshot.current()?snapshot.data:null;
+  const personalMemories = useMemo(() => uid&&ready?personalSemanticCandidates(sessions,uid):[], [sessions,uid,ready]);
+  const selectableMemories = useMemo(() => personalMemories.slice(0, 12), [personalMemories]);
   const selectedMemories = useMemo(
-    () => sessions.filter((session) => selectedMemoryIds.includes(session.id)),
-    [sessions, selectedMemoryIds]
+    () => personalMemories.filter((session) => selectedMemoryIds.includes(session.id)),
+    [personalMemories, selectedMemoryIds]
   );
   const privateComparisons = useMemo(() => {
-    if (!result || mode !== 'private-local') return [];
-    const comparisonSet = selectedMemories.length > 0 ? selectedMemories : sessions.slice(0, 20);
+    if (!result || result.mode !== 'private-local') return [];
+    const comparisonSet = selectedMemories.length > 0 ? selectedMemories : personalMemories.slice(0, 20);
     return buildPrivateLocalComparisons(result, comparisonSet);
-  }, [mode, result, selectedMemories, sessions]);
+  }, [result, selectedMemories, personalMemories]);
 
   React.useEffect(() => {
+    const capturedEpoch=panelEpoch;capturedEpoch.current++;
+    setSnapshot(null);setSelectedMemoryIds([]);setIsSearching(false);setIsSaving(false);setError(null);
     if (isOpen) {
       setQuery(initialQuery);
-      setError(null);
-      setResult(null);
     }
+    return ()=>{capturedEpoch.current++;};
   }, [initialQuery, isOpen]);
+  React.useEffect(()=>{setSnapshot(null);setSelectedMemoryIds([]);setIsSearching(false);setIsSaving(false);setError(null);if(feedback.epoch)setQuery('');},[feedback.epoch]);
+  const capture=(actor:string)=>{const current=feedback.capture(actor);const generation=panelEpoch.current;return()=>visible.current&&panelEpoch.current===generation&&current();};
+  const close=()=>{panelEpoch.current++;visible.current=false;onClose();};
 
   const toggleMemory = (id: string) => {
     setSelectedMemoryIds((current) => (
@@ -134,92 +113,49 @@ export const WebResearchPanel: React.FC<WebResearchPanelProps> = ({
   };
 
   const handleSearch = async () => {
-    if (!query.trim()) return;
+    if (!query.trim() || isSearching || isSaving || !uid || !isMemoryCryptoReady()) return;
+    const actor=uid;const current=capture(actor);const assertCurrent=()=>{if(!current())throw new Error('O contexto da pesquisa mudou.');};
+    const capturedMode=mode;const capturedQuery=query.trim();const context=capturedMode==='contextual'?buildPersonalResearchContext(personalMemories,actor,selectedMemoryIds):[];
     setIsSearching(true);
     setError(null);
-    setResult(null);
+    setSnapshot(null);
 
     try {
-      let context: string[] = [];
-      if (mode === 'contextual') {
-        if (selectedMemories.length === 0) {
+      if (capturedMode === 'contextual') {
+        if (context.length === 0) {
           throw new Error('Seleciona pelo menos uma memória para a pesquisa contextual.');
         }
-        const allowed = confirm('Queres usar as tuas memórias locais para melhorar esta pesquisa? O texto selecionado será enviado ao backend configurado.');
-        if (!allowed) return;
-        context = selectedMemories.map((memory) => `${memory.title || ''}\n${memory.text || ''}`.slice(0, 1800));
       }
-
-      const nextResult = await runWebResearch({
-        query: query.trim(),
-        mode,
-        context,
-        max_sources: 8,
-      });
-      setResult(nextResult);
+      const nextResult = await withAiGenerationContext({uid:actor},captured=>runWebResearch({query:capturedQuery,mode:capturedMode,context,max_sources:8},{context:captured,assertCurrent}));
+      if(current())setSnapshot({uid:actor,data:nextResult,current});
     } catch (researchError) {
+      if(!current())return;
       const message = researchError instanceof Error ? researchError.message : 'Pesquisa web indisponível.';
       setError(message);
       toast.error(message);
     } finally {
-      setIsSearching(false);
+      if(current())setIsSearching(false);
     }
   };
 
   const handleSaveConstellation = async () => {
-    if (!result || !auth.currentUser) return;
+    if (!result || !snapshot || snapshot.savedId || !uid || isSaving || isSearching) return;
+    const actor=uid;const current=capture(actor);const capturedSnapshot=snapshot;
+    const assertCurrent=()=>{if(!current()||!capturedSnapshot.current()||capturedSnapshot.uid!==actor)throw new Error('O contexto da pesquisa mudou.');};
     setIsSaving(true);
     try {
-      const text = formatResearchAsMemory(result);
-      let cognitive: Awaited<ReturnType<typeof cognitiveEngine.processMemory>> | null = null;
-      try {
-        cognitive = await cognitiveEngine.processMemory(text, sessions.map(toMemoryObject));
-      } catch (cognitiveError) {
-        console.warn('Web research memory saved without embeddings:', cognitiveError);
-      }
-
-      const memoryRef = await addDoc(collection(db, 'sessions'), {
-        text,
-        title: `Pesquisa web: ${result.query}`.slice(0, 90),
-        timestamp: Date.now(),
-        updatedAt: Date.now(),
-        uid: auth.currentUser.uid,
-        tags: ['web-research', 'fonte-externa', ...result.key_concepts.slice(0, 6)],
-        category: 'Pesquisa web',
-        nodes: null,
-        links: null,
-        embedding: cognitive?.embedding || null,
-        connections: cognitive?.connections || [],
-        semanticClusterId: cognitive?.semanticClusterId || null,
-        position: cognitive?.position || null,
-        importance: cognitive?.importance || 0.7,
-        celestialType: cognitive?.celestialType || 'nebula',
-        processingMethod: cognitive ? 'web-research+local-embedding' : 'web-research',
-        webResearch: {
-          query: result.query,
-          mode: result.mode,
-          sources: result.sources,
-          keyConcepts: result.key_concepts,
-          savedAt: Date.now(),
-        },
-      });
-
-      if (cognitive?.connections.length) {
-        await Promise.all(cognitive.connections.map((memoryId) => (
-          updateDoc(doc(db, 'sessions', memoryId), {
-            connections: arrayUnion(memoryRef.id),
-            updatedAt: Date.now(),
-          }).catch((updateError) => console.warn('Unable to back-link web research memory', updateError))
-        )));
-      }
-
+      const memoryRef=await saveWebResearchMemory({uid:actor,result,sessions:personalMemories,assertCurrent});
+      assertCurrent();
+      // Semantic neighbors stay as owner-reviewed private proposals.
       toast.success('Constelação de pesquisa guardada.');
+      setSnapshot(previous=>previous===capturedSnapshot?{...previous,savedId:memoryRef.id}:previous);
       onMemoryCreated?.(memoryRef.id);
     } catch (saveError) {
+      if(!current())return;
       const message = saveError instanceof Error ? saveError.message : 'Não foi possível guardar a constelação.';
       toast.error(message);
     } finally {
-      setIsSaving(false);
+      if(current())setIsSaving(false);
     }
   };
 
@@ -249,7 +185,7 @@ export const WebResearchPanel: React.FC<WebResearchPanelProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={onClose}
+            onClick={close}
             className="absolute inset-0 bg-[#020617]/75 backdrop-blur-md"
           />
 
@@ -269,7 +205,7 @@ export const WebResearchPanel: React.FC<WebResearchPanelProps> = ({
                   <p className="text-xs text-white/45">Fontes públicas, citações reais e contexto privado sob consentimento.</p>
                 </div>
               </div>
-              <button onClick={onClose} className="rounded-full p-2 text-white/45 transition hover:bg-white/10 hover:text-white">
+              <button onClick={close} aria-label="Fechar pesquisa web" className="rounded-full p-2 text-white/45 transition hover:bg-white/10 hover:text-white">
                 <X className="h-5 w-5" />
               </button>
             </header>
@@ -328,7 +264,7 @@ export const WebResearchPanel: React.FC<WebResearchPanelProps> = ({
 
                 <button
                   onClick={handleSearch}
-                  disabled={isSearching || !query.trim()}
+                  disabled={isSearching || isSaving || !query.trim() || !uid || !isMemoryCryptoReady()}
                   className="flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-500 px-4 py-3 text-sm font-bold uppercase tracking-widest text-[#03111f] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   {isSearching ? (
@@ -341,6 +277,7 @@ export const WebResearchPanel: React.FC<WebResearchPanelProps> = ({
               </aside>
 
               <main className="min-h-0 overflow-y-auto p-6 custom-scrollbar">
+                <AttachedMemoryRecoveryPanel onMemoryCreated={onMemoryCreated}/>
                 {error && (
                   <div className="mb-5 rounded-lg border border-rose-400/20 bg-rose-500/10 p-4 text-sm text-rose-100">
                     <div className="mb-1 flex items-center gap-2 font-semibold">
@@ -372,11 +309,11 @@ export const WebResearchPanel: React.FC<WebResearchPanelProps> = ({
                         </div>
                         <button
                           onClick={handleSaveConstellation}
-                          disabled={isSaving}
+                          disabled={isSaving || Boolean(snapshot?.savedId)}
                           className="flex items-center gap-2 rounded-lg border border-violet-300/25 bg-violet-400/10 px-4 py-2 text-xs font-bold uppercase tracking-widest text-violet-100 transition hover:bg-violet-400/20 disabled:opacity-45"
                         >
                           <BookmarkPlus className="h-4 w-4" />
-                          {isSaving ? 'A guardar...' : 'Guardar como constelação'}
+                          {isSaving ? 'A guardar...' : snapshot?.savedId ? 'Constelação guardada' : 'Guardar como constelação'}
                         </button>
                       </div>
                       <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/72">{result.summary}</p>

@@ -1,6 +1,7 @@
-import React, { useRef, useMemo, useCallback, useEffect } from 'react';
+import React, { useRef, useMemo, useCallback, useEffect, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Sphere, Billboard, Text } from '@react-three/drei';
+import { Billboard } from '@react-three/drei';
+import { SceneLabel } from './SceneLabel';
 import * as THREE from 'three';
 import type { MemoryObject } from '../../types/universe';
 import { CELESTIAL_CONFIGS } from '../../types/universe';
@@ -9,6 +10,7 @@ import type { UniverseDetailLevel } from '../../engines/celestialLayout';
 import { getDynamicPosition } from '../../engines/celestialLayout';
 import { createRingBands, type RingBand } from '../../engines/space3dBackdrop';
 import type { Attachment } from '../../types/attachments';
+import { useUniverseRuntime } from './universeRuntime';
 import {
   starVertexShader, starFragmentShader,
   sunVertexShader, sunFragmentShader,
@@ -21,7 +23,6 @@ import {
 interface CelestialObjectProps {
   memory: MemoryObject;
   detailLevel?: UniverseDetailLevel;
-  sphereSegments?: number;
 }
 
 function getShaders(type: MemoryObject['celestialType']) {
@@ -35,42 +36,33 @@ function getShaders(type: MemoryObject['celestialType']) {
   }
 }
 
-export const CelestialObject: React.FC<CelestialObjectProps> = ({
+export const CelestialObject: React.FC<CelestialObjectProps> = memo(({
   memory,
   detailLevel = 'high',
-  sphereSegments = 32,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
-  const glowRef = useRef<THREE.Mesh>(null);
+  const glowMatRef = useRef<THREE.MeshBasicMaterial>(null);
   const timeRef = useRef(Math.random() * 100);
+  const { memoriesRef, lookupRef, sphereGeometry, glowGeometry, quality } = useUniverseRuntime();
 
-  const {
-    memories,
-    selectMemory,
-    hoverMemory,
-    selectedMemoryId,
-    hoveredMemoryId,
-    spawnedMemoryId,
-    spawnedAt,
-    clearSpawn,
-  } = useUniverseStore();
+  const isSelected = useUniverseStore((state) => state.selectedMemoryId === memory.id);
+  const isSpawning = useUniverseStore(
+    (state) => state.spawnedMemoryId === memory.id && Date.now() - state.spawnedAt < 2800,
+  );
 
   const config = CELESTIAL_CONFIGS[memory.celestialType];
   const shaders = getShaders(memory.celestialType);
-  const isSelected = selectedMemoryId === memory.id;
-  const isHovered = hoveredMemoryId === memory.id;
-  const isSpawning = spawnedMemoryId === memory.id && Date.now() - spawnedAt < 2800;
 
   useEffect(() => {
     if (!isSpawning) return;
     const t = window.setTimeout(() => {
       if (useUniverseStore.getState().spawnedMemoryId === memory.id) {
-        clearSpawn();
+        useUniverseStore.getState().clearSpawn();
       }
     }, 2800);
     return () => window.clearTimeout(t);
-  }, [isSpawning, memory.id, clearSpawn]);
+  }, [isSpawning, memory.id]);
 
   const scale = config.baseScale * (memory.scale || 1) * (memory.importance || 0.5) * 1.5;
 
@@ -103,9 +95,8 @@ export const CelestialObject: React.FC<CelestialObjectProps> = ({
     timeRef.current += delta;
     const time = state.clock.getElapsedTime();
 
-    // 1. Dynamic Coordinate updates
     if (groupRef.current) {
-      const dynPos = getDynamicPosition(memory, memories, time);
+      const dynPos = getDynamicPosition(memory, memoriesRef.current, time, lookupRef.current);
       groupRef.current.position.set(dynPos[0], dynPos[1], dynPos[2]);
     }
 
@@ -125,67 +116,79 @@ export const CelestialObject: React.FC<CelestialObjectProps> = ({
       const spawnBoost = isSpawning
         ? 1 + 0.55 * Math.sin(timeRef.current * 8) * Math.exp(-(timeRef.current % 3) * 0.4)
         : 1;
-      const pulse = isSelected || isHovered || isSpawning
-        ? 1 + 0.1 * Math.sin(timeRef.current * (isSpawning ? 5 : 3))
+      const selectPulse = isSelected || isSpawning
+        ? 1 + 0.06 * Math.sin(timeRef.current * (isSpawning ? 5 : 3))
         : 1;
-      meshRef.current.scale.setScalar(scale * pulse * decayScale * spawnBoost);
+      meshRef.current.scale.setScalar(scale * selectPulse * decayScale * spawnBoost);
     }
 
-    if (glowRef.current && isSpawning) {
-      const mat = glowRef.current.material as THREE.MeshBasicMaterial;
-      if (mat) {
-        mat.opacity = 0.08 + 0.18 * (0.5 + 0.5 * Math.sin(timeRef.current * 6));
+    const hovered = useUniverseStore.getState().hoveredMemoryId === memory.id;
+    if (glowMatRef.current) {
+      if (isSpawning) {
+        glowMatRef.current.opacity = 0.08 + 0.18 * (0.5 + 0.5 * Math.sin(timeRef.current * 6));
+      } else {
+        glowMatRef.current.opacity = isSelected ? 0.14 : hovered ? 0.1 : 0.045;
       }
     }
   });
 
   const handleClick = useCallback((e: THREE.Event) => {
     (e as any).stopPropagation?.();
-    selectMemory(isSelected ? null : memory.id);
-  }, [isSelected, memory.id, selectMemory]);
+    const selected = useUniverseStore.getState().selectedMemoryId;
+    useUniverseStore.getState().selectMemory(selected === memory.id ? null : memory.id);
+  }, [memory.id]);
 
   const handlePointerOver = useCallback((e: THREE.Event) => {
     (e as any).stopPropagation?.();
-    hoverMemory(memory.id);
+    useUniverseStore.getState().hoverMemory(memory.id);
     document.body.style.cursor = 'pointer';
-  }, [memory.id, hoverMemory]);
+  }, [memory.id]);
 
   const handlePointerOut = useCallback(() => {
-    hoverMemory(null);
+    useUniverseStore.getState().hoverMemory(null);
     document.body.style.cursor = 'auto';
-  }, [hoverMemory]);
+  }, []);
 
   const glowScale = scale * 2.2;
-  const showLabel = isHovered || isSelected;
-  const showAmbientGlow = detailLevel !== 'low' || isSelected || isHovered;
-  const showRings = memory.celestialType === 'planet' && (isSelected || isHovered || (memory.importance || 0) >= 0.72);
+  const showAmbientGlow = detailLevel !== 'low' || isSelected;
+  const showRings = memory.celestialType === 'planet' && (isSelected || (memory.importance || 0) >= 0.72);
+  const showAttachments = Boolean(memory.attachments?.length) && (detailLevel === 'high' || isSelected);
+  const statusRingColor =
+    memory.projectStatus === 'planned'
+      ? '#94a3b8'
+      : memory.projectStatus === 'active'
+        ? '#38bdf8'
+        : memory.projectStatus === 'done'
+          ? '#4ade80'
+          : null;
 
   return (
     <group ref={groupRef}>
-      <Sphere
+      <mesh
         ref={meshRef}
-        args={[1, sphereSegments, sphereSegments]}
+        geometry={sphereGeometry}
         onClick={handleClick}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
       >
         <primitive object={material} attach="material" />
-      </Sphere>
+      </mesh>
 
       {showAmbientGlow && (
-        <Sphere ref={glowRef} args={[glowScale, Math.max(12, sphereSegments / 2), Math.max(12, sphereSegments / 2)]}>
+        <mesh geometry={glowGeometry} scale={glowScale}>
           <meshBasicMaterial
+            ref={glowMatRef}
             color={emissiveColor}
             transparent
-            opacity={isSelected ? 0.12 : isHovered ? 0.09 : 0.04}
+            opacity={isSelected ? 0.14 : 0.045}
             side={THREE.BackSide}
             depthWrite={false}
           />
-        </Sphere>
+        </mesh>
       )}
 
       {(isSelected || isSpawning) && (
-        <Sphere args={[scale * (isSpawning ? 5.5 : 3.5), sphereSegments, sphereSegments]}>
+        <mesh geometry={glowGeometry} scale={scale * (isSpawning ? 5.5 : 3.5)}>
           <meshBasicMaterial
             color={isSpawning ? '#22d3ee' : color}
             transparent
@@ -193,11 +196,11 @@ export const CelestialObject: React.FC<CelestialObjectProps> = ({
             side={THREE.BackSide}
             depthWrite={false}
           />
-        </Sphere>
+        </mesh>
       )}
 
-      {isSpawning && (
-        <Sphere args={[scale * 7, Math.max(16, sphereSegments / 2), Math.max(16, sphereSegments / 2)]}>
+      {isSpawning && !quality.reduceEffects && (
+        <mesh geometry={glowGeometry} scale={scale * 7}>
           <meshBasicMaterial
             color="#a78bfa"
             transparent
@@ -205,7 +208,7 @@ export const CelestialObject: React.FC<CelestialObjectProps> = ({
             side={THREE.BackSide}
             depthWrite={false}
           />
-        </Sphere>
+        </mesh>
       )}
 
       {showRings && detailLevel !== 'low' && (
@@ -213,15 +216,21 @@ export const CelestialObject: React.FC<CelestialObjectProps> = ({
           memoryId={memory.id}
           baseScale={scale}
           baseColor={color}
-          isActive={isSelected || isHovered}
+          isActive={isSelected}
           detailLevel={detailLevel}
         />
       )}
 
-      {/* Orbiting File Attachments */}
-      {memory.attachments && memory.attachments.length > 0 && (
+      {statusRingColor && detailLevel !== 'low' && (
+        <mesh rotation={[Math.PI / 2.4, 0.15, 0]} scale={scale * 1.55}>
+          <torusGeometry args={[1, 0.045, 8, 48]} />
+          <meshBasicMaterial color={statusRingColor} transparent opacity={0.85} depthWrite={false} />
+        </mesh>
+      )}
+
+      {showAttachments && (
         <group>
-          {memory.attachments.map((attach, idx) => (
+          {memory.attachments!.map((attach, idx) => (
             <AttachmentOrbitNode
               key={`${memory.id}-attach-${idx}`}
               attachment={attach}
@@ -233,23 +242,23 @@ export const CelestialObject: React.FC<CelestialObjectProps> = ({
         </group>
       )}
 
-      {showLabel && (
-        <Billboard follow={true} lockX={false} lockY={false} lockZ={false}>
-          <Text
+      {isSelected && (
+        <Billboard follow lockX={false} lockY={false} lockZ={false}>
+          <SceneLabel
             position={[0, scale * 2.5, 0]}
             fontSize={0.35}
             color="#ffffff"
-            anchorX="center"
-            anchorY="middle"
             maxWidth={6}
           >
             {memory.title || memory.text.substring(0, 40)}
-          </Text>
+          </SceneLabel>
         </Billboard>
       )}
     </group>
   );
-};
+});
+
+CelestialObject.displayName = 'CelestialObject';
 
 const Space3DRings: React.FC<{
   memoryId: string;

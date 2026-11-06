@@ -2,3 +2,19 @@
 .env
 .env.local
 .env.production
+
+# Tauri signing key (never commit)
+src-tauri/updater.key
+src-tauri/updater.key.pub
+
+# Desktop / mobile installers (hosted locally, not in git)
+*.exe
+*.msi
+*.apk
+*.aab
+public/downloads/*.exe
+public/downloads/*.msi
+public/downloads/*.apk
+
+# Archives / one-off scripts
+src.zip

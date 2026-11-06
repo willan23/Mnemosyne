@@ -69,7 +69,7 @@ Ordenados por impacto em due diligence / valorização.
 | Gap | Porquê importa | Ação recomendada | Esforço |
 |-----|----------------|------------------|---------|
 | **Demo multi-user gravada** | Comprova Comms real | Vídeo 2 contas: pedido contacto → cápsula → inbox | S |
-| **E2E browser (Playwright)** | CI de regressão | Login → Flow → grafo → Comms mock/emulator | M |
+| **E2E browser (Playwright)** | CI de regressão | Login → Universo → grafo → Comms mock/emulator | M |
 | **Sync offline-first robusto** | Desktop/mobile enterprise | CRDT ou merge mais forte; status de sync na UI | L |
 | **Positive decay real** | Diferencia “living memory” | Compressão / archive de memórias frias + restore | M |
 | **Web Research com fontes citáveis fiáveis** | Concorrência com Perplexity/Notion AI | Ranking de fontes + modo “só local” default | M |
@@ -81,7 +81,7 @@ Ordenados por impacto em due diligence / valorização.
 | Gap | Porquê importa | Quem se importa | Ação |
 |-----|----------------|-----------------|------|
 | **SDK / API pública de grafo** | Embed em outras apps | Microsoft Graph, Notion, Slack | API read-only de clusters (com consentimento) |
-| **Plugin OS (Windows/macOS)** | Capture ontem no SO | Microsoft, Apple | Global hotkey → Flow |
+| **Plugin OS (Windows/macOS)** | Capture ontem no SO | Microsoft, Apple | Global hotkey → captura no Universo |
 | **Enterprise SSO (SAML/OIDC)** | Venda B2B | Qualquer big tech IT | Entra ID / Okta |
 | **Admin console multi-tenant** | Teams soberanos | Salesforce, Google Workspace | Orgs com ZK por vault |
 | **Benchmark vs Notion/Obsidian/Reflect/Mem** | Narrativa de mercado | Investidores / M&A | Página comparativa honesta |
@@ -93,8 +93,8 @@ Ordenados por impacto em due diligence / valorização.
 | Gap | Ação |
 |-----|------|
 | Chunk size frontend (>1MB JS) | Code-split three.js / transformers |
-| A11y (teclado, ARIA, contraste) | Auditoria WCAG 2.2 AA no Flow/Universe |
-| i18n completo | PT/EN/ES já parcial — fechar 100% |
+| A11y (teclado, ARIA, contraste) | Auditoria WCAG 2.2 AA no Universo |
+| i18n completo | **Feito no produto:** pt-PT / pt-BR / EN / FR (sem ES). Residual: toasts internos, HTML estático, emails, Tauri/Android, clipper ≠ locale da app |
 | Performance 10k memórias | LOD já existe — stress test + telemetria |
 | Brand kit + design system | Tokens unificados (já começados em `index.css`) |
 

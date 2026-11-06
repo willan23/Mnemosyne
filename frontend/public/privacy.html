@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -80,12 +80,12 @@
       <header>
         <p class="eyebrow">Mnemosyne</p>
         <h1>Politica de Privacidade</h1>
-        <p class="updated">Ultima atualizacao: 13 de maio de 2026</p>
+        <p class="updated">Ultima atualizacao: 24 de setembro de 2026</p>
       </header>
 
       <h2>1. Quem somos</h2>
       <p>Esta Politica de Privacidade explica como o Mnemosyne trata dados no site, na app web e na app Android publicada com o package <strong>com.mnemosyne.mobile</strong>. O Mnemosyne e uma ferramenta de memoria, notas, pesquisa assistida por IA e visualizacao de conhecimento pessoal.</p>
-      <p>Contacto para privacidade e suporte: <a href="mailto:suporte@mnemosyne.app">suporte@mnemosyne.app</a>.</p>
+      <p>Contacto para privacidade e suporte: <a href="mailto:suporte@mnemosyne-one.com">suporte@mnemosyne-one.com</a>.</p>
 
       <h2>2. Dados que podemos recolher</h2>
       <ul>
@@ -117,17 +117,19 @@
       <h2>6. Partilha de dados</h2>
       <p>Nao vendemos dados pessoais. Podemos partilhar dados apenas com fornecedores essenciais para operar o servico, cumprir obrigacoes legais, proteger utilizadores ou executar uma acao pedida pelo proprio utilizador.</p>
       <ul>
-        <li>Firebase/Google Cloud para autenticacao, base de dados, armazenamento, funcoes e hosting.</li>
+        <li>Firebase/Google Cloud para autenticacao, base de dados, armazenamento, funcoes e hosting. Firestore esta em eur3 (Europa); o bucket atual de anexos esta em us-central1 (EUA).</li>
         <li>Stripe ou fornecedor equivalente para pagamentos, quando planos pagos estiverem ativos.</li>
         <li>Fornecedores de IA ou pesquisa apenas quando a funcionalidade for usada ou configurada pelo utilizador.</li>
       </ul>
 
       <h2>7. Seguranca</h2>
       <p>Aplicamos controlos tecnicos para reduzir risco de acesso nao autorizado, incluindo HTTPS, regras de seguranca, autenticacao, armazenamento protegido no dispositivo e separacao entre chaves privadas e dados publicos sempre que aplicavel. Nenhum sistema e totalmente imune a falhas, mas trabalhamos para proteger os dados de forma proporcional ao risco.</p>
+      <p>O texto e o titulo das novas memorias pessoais sao cifrados no cliente. Dados historicos podem permanecer em claro ate serem migrados. Anexos enviados pelo fluxo antigo foram armazenados no Firebase Storage sem essa cifra E2EE do cofre; o acesso e controlado por autenticacao, regras e URLs autorizados.</p>
+      <p>Anexos antigos podem conter URLs de download com token. Quem possuir um desses URLs pode aceder ao ficheiro enquanto o token estiver valido. Novos uploads de anexos estao suspensos no lancamento pessoal.</p>
 
       <h2>8. Retencao e eliminacao</h2>
       <p>Mantemos dados enquanto a conta existir ou enquanto forem necessarios para fornecer o servico, cumprir obrigacoes legais ou resolver problemas de seguranca. O utilizador pode eliminar memorias dentro da app e pode pedir ou iniciar eliminacao da conta nas definicoes quando essa opcao estiver disponivel.</p>
-      <p>Para pedir eliminacao de conta ou dados, contacte <a href="mailto:suporte@mnemosyne.app">suporte@mnemosyne.app</a> ou use a pagina publica de <a href="/account-deletion.html">eliminacao de conta</a>. O pedido deve incluir o email da conta para conseguirmos localizar os dados.</p>
+      <p>Para pedir eliminacao de conta ou dados, contacte <a href="mailto:suporte@mnemosyne-one.com">suporte@mnemosyne-one.com</a> ou use a pagina publica de <a href="/account-deletion.html">eliminacao de conta</a>. O pedido deve incluir o email da conta para conseguirmos localizar os dados.</p>
 
       <h2>9. Criancas</h2>
       <p>O Mnemosyne nao e dirigido a criancas com menos de 13 anos. Se descobrirmos que recolhemos dados de uma crianca sem consentimento adequado, tomaremos medidas razoaveis para eliminar esses dados.</p>
@@ -138,6 +140,11 @@
       <h2>11. Alteracoes a esta politica</h2>
       <p>Podemos atualizar esta politica para refletir alteracoes no produto, requisitos legais ou praticas de seguranca. A data no topo desta pagina indica a versao mais recente.</p>
     </article>
+    <p style="margin-top:2rem;text-align:center;color:#64748b;font-size:0.85rem;">
+      <a href="/security">Seguranca</a> ·
+      <a href="/changelog">Changelog</a> ·
+      <a href="/download">Download</a>
+    </p>
   </main>
 </body>
 </html>

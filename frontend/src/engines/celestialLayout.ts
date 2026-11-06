@@ -121,8 +121,8 @@ export function buildCognitiveConstellations(
     .slice(0, maxConstellations);
 }
 
-function getRenderPriority(
-  memory: MemoryObject,
+export function getRenderPriority(
+  memory: Pick<MemoryObject, 'id' | 'importance' | 'connections' | 'updatedAt'>,
   activeMemoryId: string | null,
   activeConnections: Set<string>,
   now: number
@@ -206,10 +206,13 @@ function hashString(str: string): number {
 export function getDynamicPosition(
   memory: MemoryObject,
   allMemories: MemoryObject[],
-  time: number
+  time: number,
+  lookup?: ReadonlyMap<string, MemoryObject>,
 ): [number, number, number] {
   const parentId = memory.parentId;
-  let parent = parentId ? allMemories.find((m) => m.id === parentId) : null;
+  let parent = parentId
+    ? (lookup?.get(parentId) ?? allMemories.find((m) => m.id === parentId)) ?? null
+    : null;
 
   if (!parent && memory.celestialType !== 'sun' && memory.celestialType !== 'nebula' && memory.celestialType !== 'black_hole') {
     if (memory.celestialType === 'moon') {
@@ -237,7 +240,7 @@ export function getDynamicPosition(
     return [basePos[0] + driftX, basePos[1] + driftY, basePos[2] + driftZ];
   }
 
-  const parentPos = getDynamicPosition(parent, allMemories, time);
+  const parentPos = getDynamicPosition(parent, allMemories, time, lookup);
   const idHash = hashString(memory.id);
 
   let orbitRadius = memory.orbitRadius;

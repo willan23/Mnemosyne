@@ -1,22 +1,34 @@
-import React, { useMemo, useState } from 'react';
-import { deleteDoc, deleteField, doc, updateDoc } from 'firebase/firestore';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, GitMerge, Trash2 } from 'lucide-react';
-import { db } from '../firebase';
+import { auth } from '../firebase';
+import toast from 'react-hot-toast';
+import { resolvePersonalSyncConflict, syncConflictWritesEnabled } from '../services/syncConflictResolution';
+import {useSyncFeedback} from '../hooks/useSyncFeedback';
 import type { SessionData } from '../hooks/useSessions';
 
 interface Props {
   sessions: SessionData[];
 }
 
+const personalVisible = (session: SessionData, uid: string | undefined) => session.uid === uid && !session.deletedAt && !session.teamId &&
+  !session.teamScopeAmbiguous && !session.encLocked &&
+  (session.sharedWithIds == null || (Array.isArray(session.sharedWithIds) && session.sharedWithIds.length === 0));
+
 export const SyncConflictPanel: React.FC<Props> = ({ sessions }) => {
   const [busyId, setBusyId] = useState<string | null>(null);
+  const currentUid = auth.currentUser?.uid;
+  const feedback=useSyncFeedback();
+  const pending = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const conflicts = useMemo(
-    () => sessions.filter((session) => session.tags?.includes('sync-conflict') || session.conflictReason),
-    [sessions]
+    () => sessions.filter((session) => personalVisible(session, currentUid) &&
+      (session.tags?.includes('sync-conflict') || session.conflictReason)),
+    [sessions, currentUid]
   );
   const sessionById = useMemo(
-    () => new Map(sessions.map((session) => [session.id, session])),
-    [sessions]
+    () => new Map(sessions.filter(session => personalVisible(session, currentUid)).map((session) => [session.id, session])),
+    [sessions, currentUid]
   );
 
   const textPreview = (value?: string): string[] => (
@@ -28,34 +40,25 @@ export const SyncConflictPanel: React.FC<Props> = ({ sessions }) => {
   );
 
   const resolveConflict = async (conflict: SessionData, action: 'apply' | 'keep-both' | 'discard') => {
+    if (pending.current) return;
+    pending.current = true;
     setBusyId(conflict.id);
+    const active=feedback.capture(conflict.uid);
     try {
-      if (action === 'discard') {
-        await deleteDoc(doc(db, 'sessions', conflict.id));
-        return;
-      }
-
-      if (action === 'apply' && conflict.originalMemoryId) {
-        await updateDoc(doc(db, 'sessions', conflict.originalMemoryId), {
-          text: conflict.text,
-          title: conflict.title || null,
-          tags: (conflict.tags || []).filter((tag) => tag !== 'sync-conflict'),
-          category: conflict.category || null,
-          updatedAt: Date.now(),
-          resolvedFromConflictId: conflict.id,
-        });
-        await deleteDoc(doc(db, 'sessions', conflict.id));
-        return;
-      }
-
-      await updateDoc(doc(db, 'sessions', conflict.id), {
-        tags: (conflict.tags || []).filter((tag) => tag !== 'sync-conflict'),
-        originalMemoryId: deleteField(),
-        conflictReason: deleteField(),
-        updatedAt: Date.now(),
-      });
+      if (!auth.currentUser || auth.currentUser.uid !== conflict.uid) throw new Error('Account changed');
+      const original = sessionById.get(conflict.originalMemoryId || '');
+      if(!conflict.syncConflictDigest||action==='apply'&&!original?.syncConflictDigest)throw Error('Atualiza a vista.');
+      await resolvePersonalSyncConflict({uid: conflict.uid, conflictId: conflict.id, action,
+        conflictViewDigest: conflict.syncConflictDigest,
+        originalId: action==='apply'?original!.id:null,
+        originalViewDigest: action==='apply'?original!.syncConflictDigest!:null,
+      },()=>{if(!active())throw Error('O contexto mudou.');});
+      if (mounted.current && active()) toast.success('Conflito resolvido.');
+    } catch {
+      if (mounted.current && active()) toast.error('Não foi possível confirmar a resolução. O pedido pendente pode ser recuperado.');
     } finally {
-      setBusyId(null);
+      pending.current = false;
+      if (mounted.current) setBusyId(null);
     }
   };
 
@@ -109,7 +112,7 @@ export const SyncConflictPanel: React.FC<Props> = ({ sessions }) => {
             <div className="grid grid-cols-3 gap-2">
               <button
                 onClick={() => resolveConflict(conflict, 'apply')}
-                disabled={busyId === conflict.id || !conflict.originalMemoryId}
+                disabled={!syncConflictWritesEnabled() || !conflict.syncConflictDigest || busyId !== null || !conflict.originalMemoryId || !sessionById.get(conflict.originalMemoryId)?.syncConflictDigest}
                 className="flex items-center justify-center gap-1 rounded-lg border border-green-500/20 bg-green-500/10 px-2 py-2 text-[10px] font-bold uppercase tracking-widest text-green-200 disabled:opacity-40"
               >
                 <GitMerge className="h-3.5 w-3.5" />
@@ -117,7 +120,7 @@ export const SyncConflictPanel: React.FC<Props> = ({ sessions }) => {
               </button>
               <button
                 onClick={() => resolveConflict(conflict, 'keep-both')}
-                disabled={busyId === conflict.id}
+                disabled={!syncConflictWritesEnabled() || !conflict.syncConflictDigest || busyId !== null}
                 className="flex items-center justify-center gap-1 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-2 py-2 text-[10px] font-bold uppercase tracking-widest text-cyan-200 disabled:opacity-40"
               >
                 <Check className="h-3.5 w-3.5" />
@@ -125,7 +128,7 @@ export const SyncConflictPanel: React.FC<Props> = ({ sessions }) => {
               </button>
               <button
                 onClick={() => resolveConflict(conflict, 'discard')}
-                disabled={busyId === conflict.id}
+                disabled={!syncConflictWritesEnabled() || !conflict.syncConflictDigest || busyId !== null}
                 className="flex items-center justify-center gap-1 rounded-lg border border-red-500/20 bg-red-500/10 px-2 py-2 text-[10px] font-bold uppercase tracking-widest text-red-200 disabled:opacity-40"
               >
                 <Trash2 className="h-3.5 w-3.5" />

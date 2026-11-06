@@ -1,39 +1,60 @@
-import React, { Suspense, useMemo, useRef, useEffect, useState } from 'react';
+import React, { Suspense, useMemo, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Billboard, OrbitControls, Text } from '@react-three/drei';
+import { Billboard, OrbitControls } from '@react-three/drei';
+import { SceneLabel } from './SceneLabel';
 import * as THREE from 'three';
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { useUniverseStore } from '../../store/universeStore';
 import { CelestialObject } from './CelestialObject';
 import { ConnectionLines } from './ConnectionLines';
 import { Space3DBackdrop } from './Space3DBackdrop';
-import { CELESTIAL_CONFIGS, UNIVERSE_COLORS } from '../../types/universe';
+import { CELESTIAL_CONFIGS } from '../../types/universe';
+import { getUniverseTheme } from '../../engines/universeThemes';
 import {
   buildCognitiveConstellations,
   getUniverseRenderBudget,
-  rankMemoriesForRender,
   getDynamicPosition,
   type CognitiveConstellation,
 } from '../../engines/celestialLayout';
+import {
+  computeFocusCameraPosition,
+  computeFocusDistance,
+  computeMinOrbitDistance,
+  expSmoothVec3,
+} from './cameraEasing';
+import { getUniverseQualityProfile, type UniverseQualityProfile } from './qualityProfile';
+import { UniverseRuntimeContext, useUniverseRuntime, type UniverseRuntime } from './universeRuntime';
+import { useMemoryView } from '../../hooks/useMemoryView';
+import type { MemoryViewOptions } from '../../services/memoryViewProtocol';
+import { useTranslation } from '../../utils/translations';
+import { attachedSceneEvents } from '../../utils/attachedSceneEvents';
 
-function UniverseScene() {
-  const {
-    memories,
-    universeType,
-    selectedMemoryId,
-    hoveredMemoryId,
-    filteredIds,
-    cameraTarget,
-    isGalaxyView,
-  } = useUniverseStore();
+function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile; selection: ReturnType<typeof useMemoryView> }) {
+  const memories = useUniverseStore((state) => state.memories);
+  const universeType = useUniverseStore((state) => state.universeType);
+  const selectedMemoryId = useUniverseStore((state) => state.selectedMemoryId);
+  const cameraTarget = useUniverseStore((state) => state.cameraTarget);
+  const isGalaxyView = useUniverseStore((state) => state.isGalaxyView);
+
   const { scene, camera } = useThree();
-  const controlsRef = useRef<any>(null);
+  const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  const theme = getUniverseTheme(universeType);
 
-  const colors = UNIVERSE_COLORS[universeType];
-  const activeMemoryId = selectedMemoryId || hoveredMemoryId;
-
-  // Lockstep Delta Tracking state
   const lastTrackedPosRef = useRef<THREE.Vector3 | null>(null);
   const prevSelectedIdRef = useRef<string | null>(null);
+  const introDoneRef = useRef(false);
+  const scratchTarget = useRef(new THREE.Vector3());
+  const scratchCam = useRef(new THREE.Vector3());
+  const scratchGalaxy = useRef(new THREE.Vector3(0, 55, 95));
+  const scratchOrigin = useRef(new THREE.Vector3(0, 0, 0));
+  const scratchIntro = useRef(new THREE.Vector3(0, 8, 28));
+
+  const memoriesRef = useRef(memories);
+  memoriesRef.current = memories;
+
+  const lookup = selection.lookup;
+  const lookupRef = useRef(lookup);
+  lookupRef.current = lookup;
 
   useEffect(() => {
     if (selectedMemoryId !== prevSelectedIdRef.current) {
@@ -44,147 +65,178 @@ function UniverseScene() {
 
   const minOrbitDistance = useMemo(() => {
     if (!selectedMemoryId) return 4.0;
-    const mem = memories.find((m) => m.id === selectedMemoryId);
+    const mem = lookup.get(selectedMemoryId);
     if (!mem) return 4.0;
     const config = CELESTIAL_CONFIGS[mem.celestialType];
     const scale = config.baseScale * (mem.scale || 1) * (mem.importance || 0.5) * 1.5;
-    // O raio da esfera foi ajustado para 1, então a escala final real no espaço é 'scale'.
-    // Mantemos uma folga de segurança proporcional à escala real para evitar que a câmera entre na atmosfera do corpo celeste.
-    return Math.max(1.5, scale * 1.35 + 0.8);
-  }, [selectedMemoryId, memories]);
-
-  // Throttled clock for high-performance constellation layout updates
-  const [constellationTime, setConstellationTime] = useState(0);
-  const lastUpdateTimeRef = useRef(0);
+    return computeMinOrbitDistance(scale);
+  }, [lookup, selectedMemoryId]);
 
   useEffect(() => {
-    scene.background = new THREE.Color(colors.bg);
-  }, [universeType, colors.bg, scene]);
+    scene.background = new THREE.Color(theme.bg);
+    scene.fog = new THREE.FogExp2(theme.fog, quality.fogDensity * theme.fogDensityMul);
+  }, [quality.fogDensity, scene, theme.bg, theme.fog, theme.fogDensityMul]);
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
     if (!controlsRef.current) return;
     const time = state.clock.getElapsedTime();
-
-    // Throttle constellation layout updates to 10fps for ultimate smooth performance
-    if (time - lastUpdateTimeRef.current > 0.1) {
-      lastUpdateTimeRef.current = time;
-      setConstellationTime(time);
-    }
+    const dt = Math.min(0.05, delta);
 
     if (isGalaxyView) {
-      // Galaxy Overview Observatory zoom-out perspective [0, 55, 95]
-      const targetGalaxyPos = new THREE.Vector3(0, 55, 95);
-      const targetCenter = new THREE.Vector3(0, 0, 0);
-
-      controlsRef.current.target.lerp(targetCenter, 0.04);
-      camera.position.lerp(targetGalaxyPos, 0.04);
+      introDoneRef.current = true;
+      expSmoothVec3(controlsRef.current.target, scratchOrigin.current, dt, 2.2);
+      expSmoothVec3(camera.position, scratchGalaxy.current, dt, 2.2);
       controlsRef.current.update();
-    } else if (selectedMemoryId) {
-      // 360 Lock-on Dynamic camera tracking (Lockstep Delta Tracking)
-      const mem = memories.find((m) => m.id === selectedMemoryId);
-      if (mem) {
-        const dynPosArray = getDynamicPosition(mem, memories, time);
-        const dynamicTarget = new THREE.Vector3(...dynPosArray);
+      return;
+    }
 
-        if (!lastTrackedPosRef.current) {
-          // Fase 1: Lerp inicial e suave de aproximação até o corpo celeste
-          const scale = mem.scale ?? CELESTIAL_CONFIGS[mem.celestialType].baseScale;
-          const focusDistance = Math.max(5.5, scale * 4 + 3);
+    if (selectedMemoryId) {
+      introDoneRef.current = true;
+      const mem = lookupRef.current.get(selectedMemoryId);
+      if (!mem) return;
 
-          const currentTarget = controlsRef.current.target.clone();
-          const cameraOffset = camera.position.clone().sub(currentTarget);
-          if (cameraOffset.lengthSq() < 0.001) cameraOffset.set(0, 0, 1);
-          const targetCamPos = dynamicTarget.clone().add(cameraOffset.normalize().multiplyScalar(focusDistance));
+      const dynPosArray = getDynamicPosition(mem, memoriesRef.current, time, lookupRef.current);
+      const dynamicTarget = scratchTarget.current.set(dynPosArray[0], dynPosArray[1], dynPosArray[2]);
 
-          controlsRef.current.target.lerp(dynamicTarget, 0.06);
-          camera.position.lerp(targetCamPos, 0.06);
-          controlsRef.current.update();
+      if (!lastTrackedPosRef.current) {
+        const scale = mem.scale ?? CELESTIAL_CONFIGS[mem.celestialType].baseScale;
+        const focusDistance = computeFocusDistance(scale);
+        const targetCamPos = computeFocusCameraPosition(
+          dynamicTarget,
+          camera.position,
+          controlsRef.current.target,
+          focusDistance,
+          scratchCam.current,
+        );
 
-          // Uma vez muito perto do corpo celeste, entramos em rastreamento síncrono silencioso
-          if (controlsRef.current.target.distanceTo(dynamicTarget) < 0.1) {
-            lastTrackedPosRef.current = dynamicTarget.clone();
-          }
-        } else {
-          // Fase 2: Lockstep Delta Tracking - move a câmera e o foco na exata mesma translação orbital do planeta
-          // Isso resolve o travamento e permite ao usuário rotacionar e usar o scroll de zoom livremente
-          const delta = dynamicTarget.clone().sub(lastTrackedPosRef.current);
-          
-          camera.position.add(delta);
-          controlsRef.current.target.add(delta);
-          
-          lastTrackedPosRef.current.copy(dynamicTarget);
-          controlsRef.current.update();
+        expSmoothVec3(controlsRef.current.target, dynamicTarget, dt, 3.4);
+        expSmoothVec3(camera.position, targetCamPos, dt, 3.2);
+        controlsRef.current.update();
+
+        if (controlsRef.current.target.distanceTo(dynamicTarget) < 0.12) {
+          lastTrackedPosRef.current = dynamicTarget.clone();
         }
+      } else {
+        const tracked = lastTrackedPosRef.current;
+        camera.position.x += dynamicTarget.x - tracked.x;
+        camera.position.y += dynamicTarget.y - tracked.y;
+        camera.position.z += dynamicTarget.z - tracked.z;
+        controlsRef.current.target.x += dynamicTarget.x - tracked.x;
+        controlsRef.current.target.y += dynamicTarget.y - tracked.y;
+        controlsRef.current.target.z += dynamicTarget.z - tracked.z;
+        tracked.copy(dynamicTarget);
+        controlsRef.current.update();
       }
+      return;
+    }
+
+    if (introDoneRef.current) return;
+    expSmoothVec3(camera.position, scratchIntro.current, dt, 1.8);
+    expSmoothVec3(controlsRef.current.target, scratchOrigin.current, dt, 2.0);
+    controlsRef.current.update();
+    if (camera.position.distanceTo(scratchIntro.current) < 0.35) {
+      introDoneRef.current = true;
     }
   });
 
-  const filteredMemories = useMemo(() => {
-    if (!filteredIds) return memories;
-    return memories.filter((m) => filteredIds.includes(m.id));
-  }, [memories, filteredIds]);
-
+  const budgetCount = selection.loading ? memories.length : selection.count;
   const renderBudget = useMemo(
-    () => getUniverseRenderBudget(filteredMemories.length),
-    [filteredMemories.length]
+    () => getUniverseRenderBudget(budgetCount),
+    [budgetCount],
   );
 
-  useEffect(() => {
-    scene.fog = new THREE.Fog(colors.fog, renderBudget.fogNear, renderBudget.fogFar);
-  }, [colors.fog, renderBudget.fogFar, renderBudget.fogNear, scene]);
+  const detailLevel = quality.reduceEffects && renderBudget.detail === 'high'
+    ? 'medium'
+    : renderBudget.detail;
 
-  const visibleMemories = useMemo(
-    () => rankMemoriesForRender(filteredMemories, activeMemoryId, renderBudget.maxObjects),
-    [activeMemoryId, filteredMemories, renderBudget.maxObjects]
-  );
+  const visibleMemories = selection.memories;
 
   const constellations = useMemo(
     () =>
       buildCognitiveConstellations(
         visibleMemories,
-        renderBudget.detail === 'high' ? 12 : 7,
-        constellationTime
+        renderBudget.detail === 'high' && !quality.reduceEffects ? 12 : 7,
+        0,
       ),
-    [renderBudget.detail, visibleMemories, constellationTime]
+    [quality.reduceEffects, renderBudget.detail, visibleMemories],
   );
 
-  // Intro de câmara — chegada ao universo
-  const introDoneRef = useRef(false);
-  useFrame(() => {
-    if (introDoneRef.current || !controlsRef.current || selectedMemoryId || isGalaxyView) {
-      introDoneRef.current = true;
-      return;
-    }
-    const targetPos = new THREE.Vector3(0, 8, 28);
-    camera.position.lerp(targetPos, 0.035);
-    controlsRef.current.target.lerp(new THREE.Vector3(0, 0, 0), 0.04);
-    controlsRef.current.update();
-    if (camera.position.distanceTo(targetPos) < 0.35) {
-      introDoneRef.current = true;
-    }
-  });
+  const sphereGeometry = useMemo(
+    () => new THREE.SphereGeometry(1, renderBudget.sphereSegments, renderBudget.sphereSegments),
+    [renderBudget.sphereSegments],
+  );
+  const glowGeometry = useMemo(
+    () => {
+      const segments = Math.max(12, Math.floor(renderBudget.sphereSegments / 2));
+      return new THREE.SphereGeometry(1, segments, segments);
+    },
+    [renderBudget.sphereSegments],
+  );
+
+  useEffect(() => () => {
+    sphereGeometry.dispose();
+    glowGeometry.dispose();
+  }, [glowGeometry, sphereGeometry]);
+
+  const runtime = useMemo<UniverseRuntime>(
+    () => ({
+      memoriesRef,
+      lookupRef,
+      sphereGeometry,
+      glowGeometry,
+      quality,
+    }),
+    [glowGeometry, quality, sphereGeometry],
+  );
 
   return (
-    <>
-      <color attach="background" args={[colors.bg]} />
-      <ambientLight color={colors.ambient} intensity={0.45} />
-      <pointLight position={[0, 0, 0]} intensity={1.1} color="#fff6e0" distance={90} decay={2} />
-      <pointLight position={[24, 18, -22]} intensity={0.45} color="#6d8cff" distance={100} decay={2} />
-      <pointLight position={[-22, -12, 26]} intensity={0.32} color="#ff7a5c" distance={80} decay={2} />
-      <pointLight position={[0, 40, 10]} intensity={0.18} color="#a78bfa" distance={120} decay={2} />
-      <hemisphereLight args={['#9eb6ff', '#0a0a18', 0.22]} />
+    <UniverseRuntimeContext.Provider value={runtime}>
+      <color attach="background" args={[theme.bg]} />
+      <hemisphereLight
+        color={theme.lights.hemisphereSky}
+        groundColor={theme.lights.hemisphereGround}
+        intensity={quality.reduceEffects ? theme.lights.hemisphereIntensity * 0.7 : theme.lights.hemisphereIntensity}
+      />
+      <ambientLight
+        color={theme.ambient}
+        intensity={quality.reduceEffects ? theme.lights.ambientIntensity * 1.2 : theme.lights.ambientIntensity}
+      />
+      <directionalLight
+        position={[16, 26, 12]}
+        intensity={quality.reduceEffects ? theme.lights.directionalIntensity * 0.65 : theme.lights.directionalIntensity}
+        color={theme.lights.directionalColor}
+      />
+      {!quality.reduceEffects && (
+        <>
+          <pointLight
+            position={[0, 0, 0]}
+            intensity={theme.lights.corePointIntensity}
+            color={theme.lights.corePointColor}
+            distance={72}
+            decay={2}
+          />
+          <pointLight
+            position={[22, 16, -18]}
+            intensity={theme.lights.fillPointIntensity}
+            color={theme.lights.fillPointColor}
+            distance={90}
+            decay={2}
+          />
+        </>
+      )}
 
       <Space3DBackdrop
         universeType={universeType}
-        detailLevel={renderBudget.detail}
+        detailLevel={detailLevel}
         starCount={renderBudget.starCount}
+        reduceEffects={quality.reduceEffects}
       />
 
       {visibleMemories.length === 0 && <ProtoStarField />}
 
       <ConstellationGuides
         constellations={constellations}
-        showLabels={renderBudget.showConstellationLabels}
+        showLabels={renderBudget.showConstellationLabels && !quality.reduceEffects}
       />
 
       <ConnectionLines
@@ -196,10 +248,11 @@ function UniverseScene() {
         <CelestialObject
           key={memory.id}
           memory={memory}
-          detailLevel={renderBudget.detail}
-          sphereSegments={renderBudget.sphereSegments}
+          detailLevel={detailLevel}
         />
       ))}
+
+      <MemoryHoverLabel />
 
       <OrbitControls
         ref={controlsRef}
@@ -214,12 +267,54 @@ function UniverseScene() {
         autoRotate={visibleMemories.length === 0}
         autoRotateSpeed={0.28}
       />
-    </>
+    </UniverseRuntimeContext.Provider>
   );
 }
 
-/** Estrelas-semente quando o universo ainda não tem memórias — espaço vivo, não ecrã vazio. */
+function MemoryHoverLabel() {
+  const hoveredId = useUniverseStore((state) => state.hoveredMemoryId);
+  const selectedId = useUniverseStore((state) => state.selectedMemoryId);
+  const memories = useUniverseStore((state) => state.memories);
+  const groupRef = useRef<THREE.Group>(null);
+  const { memoriesRef, lookupRef } = useUniverseRuntime();
+
+  const memory = hoveredId && hoveredId !== selectedId
+    ? memories.find((item) => item.id === hoveredId) ?? null
+    : null;
+
+  useFrame((state) => {
+    if (!groupRef.current || !memory) return;
+    const pos = getDynamicPosition(
+      memory,
+      memoriesRef.current,
+      state.clock.getElapsedTime(),
+      lookupRef.current,
+    );
+    const config = CELESTIAL_CONFIGS[memory.celestialType];
+    const scale = config.baseScale * (memory.scale || 1) * (memory.importance || 0.5) * 1.5;
+    groupRef.current.position.set(pos[0], pos[1] + scale * 2.5, pos[2]);
+  });
+
+  if (!memory) return null;
+
+  return (
+    <group ref={groupRef}>
+      <Billboard follow>
+        <SceneLabel
+          fontSize={0.32}
+          color="#e8eeff"
+          maxWidth={6}
+          opacity={0.92}
+        >
+          {memory.title || memory.text.substring(0, 40)}
+        </SceneLabel>
+      </Billboard>
+    </group>
+  );
+}
+
 function ProtoStarField() {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
   const groupRef = useRef<THREE.Group>(null);
   const seeds = useMemo(() => {
     const out: Array<{ pos: [number, number, number]; scale: number; color: string }> = [];
@@ -235,27 +330,42 @@ function ProtoStarField() {
     return out;
   }, []);
 
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+    seeds.forEach((seed, index) => {
+      dummy.position.set(...seed.pos);
+      dummy.scale.setScalar(seed.scale);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(index, dummy.matrix);
+      mesh.setColorAt(index, color.set(seed.color));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [seeds]);
+
   useFrame((state) => {
-    if (!groupRef.current) return;
-    groupRef.current.rotation.y = state.clock.getElapsedTime() * 0.04;
+    if (groupRef.current) {
+      groupRef.current.rotation.y = state.clock.getElapsedTime() * 0.04;
+    }
   });
 
   return (
     <group ref={groupRef}>
-      {seeds.map((seed, index) => (
-        <mesh key={`proto-${index}`} position={seed.pos}>
-          <sphereGeometry args={[seed.scale, 12, 12]} />
-          <meshBasicMaterial
-            color={seed.color}
-            transparent
-            opacity={0.55}
-            depthWrite={false}
-            blending={THREE.AdditiveBlending}
-          />
-        </mesh>
-      ))}
+      <instancedMesh ref={meshRef} args={[undefined, undefined, seeds.length]}>
+        <sphereGeometry args={[1, 10, 10]} />
+        <meshBasicMaterial
+          transparent
+          opacity={0.55}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </instancedMesh>
       <mesh>
-        <ringGeometry args={[11, 11.35, 96]} />
+        <ringGeometry args={[11, 11.35, 64]} />
         <meshBasicMaterial
           color="#6366f1"
           transparent
@@ -302,13 +412,13 @@ const ConstellationGuide: React.FC<{
     const bitangent = new THREE.Vector3().crossVectors(normal, tangent).normalize();
     const points: THREE.Vector3[] = [];
 
-    for (let i = 0; i < 96; i += 1) {
-      const t = (i / 96) * Math.PI * 2;
+    for (let i = 0; i < 64; i += 1) {
+      const t = (i / 64) * Math.PI * 2;
       points.push(
         center
           .clone()
-          .add(tangent.clone().multiplyScalar(Math.cos(t) * constellation.radius))
-          .add(bitangent.clone().multiplyScalar(Math.sin(t) * constellation.radius))
+          .addScaledVector(tangent, Math.cos(t) * constellation.radius)
+          .addScaledVector(bitangent, Math.sin(t) * constellation.radius),
       );
     }
 
@@ -316,7 +426,7 @@ const ConstellationGuide: React.FC<{
     const material = new THREE.LineBasicMaterial({
       color: constellation.color,
       transparent: true,
-      opacity: 0.18,
+      opacity: 0.16,
       depthWrite: false,
     });
 
@@ -336,7 +446,7 @@ const ConstellationGuide: React.FC<{
       constellation.center[1] + constellation.radius + 0.8,
       constellation.center[2],
     ],
-    [constellation]
+    [constellation],
   );
 
   return (
@@ -344,16 +454,14 @@ const ConstellationGuide: React.FC<{
       <primitive object={ring} />
       {showLabel && (
         <Billboard position={labelPosition}>
-          <Text
+          <SceneLabel
             fontSize={0.32}
             color="#b8c7ff"
-            anchorX="center"
-            anchorY="middle"
             maxWidth={8}
-            fillOpacity={0.62}
+            opacity={0.62}
           >
             {constellation.label} / {constellation.count}
-          </Text>
+          </SceneLabel>
         </Billboard>
       )}
     </group>
@@ -365,22 +473,40 @@ function LoadingFallback() {
 }
 
 export const Universe3D: React.FC = () => {
+  const memories = useUniverseStore((state) => state.memories);
+  const activeId = useUniverseStore((state) => state.selectedMemoryId);
+  const filteredIds = useUniverseStore((state) => state.filteredIds);
+  const taxonomy = useUniverseStore((state) => state.taxonomyFilter);
+  const options = useMemo<MemoryViewOptions>(() => ({ mode: 'scene', activeId, filteredIds, taxonomy }), [activeId, filteredIds, taxonomy]);
+  const selection = useMemoryView(memories, options);
+  const quality = useMemo(() => getUniverseQualityProfile(memories.length), [memories.length]);
+  const { t } = useTranslation();
+
   return (
-    <Canvas
-      camera={{ position: [0, 18, 48], fov: 55, near: 0.1, far: 600 }}
-      gl={{
-        antialias: true,
-        alpha: false,
-        powerPreference: 'high-performance',
-        toneMapping: THREE.ACESFilmicToneMapping,
-        toneMappingExposure: 1.28,
-      }}
-      style={{ width: '100%', height: '100%' }}
-      dpr={[1, 1.75]}
-    >
-      <Suspense fallback={<LoadingFallback />}>
-        <UniverseScene />
-      </Suspense>
-    </Canvas>
+    <div className="absolute inset-0 z-0">
+      <Canvas
+        events={attachedSceneEvents}
+        camera={{ position: [0, 18, 48], fov: 55, near: 0.1, far: 600 }}
+        frameloop="always"
+        dpr={quality.dpr}
+        gl={{
+          antialias: quality.antialias,
+          alpha: false,
+          powerPreference: quality.isAndroid ? 'low-power' : 'high-performance',
+          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMappingExposure: 1.18,
+        }}
+        style={{ width: '100%', height: '100%', pointerEvents: 'auto' }}
+      >
+        <Suspense fallback={<LoadingFallback />}>
+          <UniverseScene quality={quality} selection={selection} />
+        </Suspense>
+      </Canvas>
+      {(selection.loading || selection.error) && <p role={selection.error ? 'alert' : 'status'}
+        className="pointer-events-none absolute bottom-24 left-4 rounded-lg bg-black/70 px-3 py-2 text-xs text-slate-200">
+        {selection.error ? t('memoryViewUnavailable') : t('loading')}
+        {selection.error && <button type="button" onClick={selection.retry} className="pointer-events-auto ml-3 underline">{t('memoryViewRetry')}</button>}
+      </p>}
+    </div>
   );
 };

@@ -1,13 +1,20 @@
 # Mnemosyne Document Import And Summary
 
-Data: 2026-06-15
+Data: 2026-06-15 · **Atualização 2026-09-14:** vault Obsidian + Starter Founder
 
 Objetivo: ficheiros e pastas carregados pelo utilizador devem virar conhecimento navegavel no universo, nao apenas anexos guardados.
+
+## Extensão — Vault Obsidian e Starter (14 set 2026)
+
+- **Import Obsidian:** pasta com `.md` + frontmatter YAML simples + `[[wikilinks]]` → memórias E2EE; wikilinks resolvidos → `connections`; pastas de topo A–E → `taxonomyLane` / tags (não schema de pastas). Limite: 150 notas. Auto-detect quando a maioria dos ficheiros é Markdown.
+- **Código:** `frontend/src/services/obsidianVaultParse.ts`, `obsidianVaultImport.ts`; UI no empty state, chip “Vault Obsidian” / pasta no `CognitiveInput`, drop no Universo.
+- **Starter Founder:** seed in-app (`frontend/src/data/starterFounder.ts`, 42 notas) assimilado localmente para o first-run. Expandir o ficheiro para densificar o céu.
+- **Fora de âmbito:** plugins Obsidian, Dataview, sync bidirecional, OCR em PDF scaneado.
 
 ## Estado alvo desta entrega (Atualizado em 2026-06-15)
 
 - O utilizador pode largar/carregar ate 20 ficheiros por lote, ou importar pastas inteiras recursivamente através do Tauri (Tauri Native Folder Import).
-- O `Flow` e as `Configurações` têm botões de importação direta do computador; no Tauri, abre-se o seletor nativo de pastas, que lê ficheiros recursivamente.
+- As **Configurações** e a captura no **Universo** têm importação directa do computador; no Tauri, abre-se o seletor nativo de pastas, que lê ficheiros recursivamente.
 - O sistema extrai texto localmente quando o formato permite:
   - TXT, MD, CSV, JSON, HTML, XML, YAML;
   - Código fonte e configurações comuns (`.js`, `.jsx`, `.ts`, `.tsx`, `.rs`, `.py`, `.go`, `.c`, `.cpp`, `.h`, `.hpp`, `.java`, `.kt`, `.swift`, `.sh`, `.bat`, `.ps1`, `.sql`, `.css`, `.scss`, `.ini`, `.toml`, `.conf`, `.env`, `.jsonld`, `.mdx`);
