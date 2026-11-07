@@ -281,11 +281,9 @@ const App: React.FC = () => {
     sessions,
     allSessions,
     searchResults,
+    legacyPersonalCount: legacySessionCount,
   } = useSessions(currentUser, searchQuery, filters);
-  const legacyPersonalCount = legacyPlaintextCount + allSessions.filter((session) =>
-    session.uid === currentUser?.uid && !session.teamId && !session.deletedAt &&
-    !session.encrypted && Boolean(session.text.trim() || session.title?.trim())
-  ).length;
+  const legacyPersonalCount = legacyPlaintextCount + legacySessionCount;
 
   useSemanticClusterBackfill(currentUser, allSessions, isAuthenticated && Boolean(mnemonic));
   useSemanticConnectionBackfill(currentUser, allSessions, isAuthenticated && Boolean(mnemonic));

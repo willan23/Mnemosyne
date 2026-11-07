@@ -53,7 +53,7 @@ import {withPersonalMemoryMutation} from '../services/personalMemoryMutation';
 
 interface CognitiveInputProps {
   onWebResearchCommand?: (query: string) => void;
-  existingMemories?: SessionData[];
+  existingMemories?: readonly SessionData[];
   onClose?: () => void;
   onMemoryCreated?: (memoryId: string) => void;
   mnemonic?: string[] | null;

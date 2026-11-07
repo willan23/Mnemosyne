@@ -4,7 +4,7 @@ import {SEMANTIC_CLUSTER_MAX_DEPENDENCIES, SEMANTIC_CLUSTER_MAX_PATCHES} from '.
 import {applySemanticClusterBatch, hasPendingSemanticClusters, prepareSemanticClusterComponent, semanticClusterWritesEnabled, type SemanticClusterGraphView} from './semanticClusterRecovery';
 
 /** Use the complete visible scope. Search results are never an input to maintenance. */
-export function semanticClusterMaintenancePlan(uid: string, sessions: SessionData[]) {
+export function semanticClusterMaintenancePlan(uid: string, sessions: readonly SessionData[]) {
   const scopes = new Map<string | null, SemanticClusterGraphView[]>();
   for (const memory of sessions) {
     if (!memory.semanticGraphHash || memory.deletedAt != null || memory.teamScopeAmbiguous || memory.encLocked) continue;
@@ -19,11 +19,11 @@ export function semanticClusterMaintenancePlan(uid: string, sessions: SessionDat
     .map(graphs => ({teamId, graphs: graphs.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)})));
 }
 
-export const semanticClusterMaintenanceKey = (uid: string, sessions: SessionData[]) => JSON.stringify([uid,
+export const semanticClusterMaintenanceKey = (uid: string, sessions: readonly SessionData[]) => JSON.stringify([uid,
   semanticClusterMaintenancePlan(uid, sessions).map(component => [component.teamId, component.graphs.map(row => [row.id, row.graphHash])])]);
 
 const defaults = {enabled: semanticClusterWritesEnabled, pending: hasPendingSemanticClusters, prepare: prepareSemanticClusterComponent, apply: applySemanticClusterBatch};
-export async function runSemanticClusterMaintenance(uid: string, sessions: SessionData[], assertCurrent: () => void, deps = defaults) {
+export async function runSemanticClusterMaintenance(uid: string, sessions: readonly SessionData[], assertCurrent: () => void, deps = defaults) {
   const plan = semanticClusterMaintenancePlan(uid, sessions);
   for (const component of plan) {
     assertCurrent();

@@ -20,7 +20,7 @@ function capture(payload:CapsuleImportPayload){
   const items=pack?.items??captureCapsuleItems([{text:body}]);
   return{items:items.map(item=>({...item,title:item.title||payload.titleHint?.trim()||undefined,tags:[...(item.tags??[])]})),shareId:payload.shareId??null};
 }
-export async function buildCapsuleImportPlan(uid:string,payload:CapsuleImportPayload,sessions:SessionData[],guard:()=>void=()=>{},deps:CapsuleImportBuildDeps=defaults):Promise<CapturedObsidianImport>{
+export async function buildCapsuleImportPlan(uid:string,payload:CapsuleImportPayload,sessions:readonly SessionData[],guard:()=>void=()=>{},deps:CapsuleImportBuildDeps=defaults):Promise<CapturedObsidianImport>{
   guard();const data=capture(payload);const importId=`capsule-${deps.id()}`;const ids=data.items.map(()=>deps.id());
   return withSemanticCandidateOperation(sessions,{assertCurrent:guard,eligible:semanticCandidateEligibility(uid)},async(working,semanticGuard)=>{const guard=semanticGuard;guard();const memories:ObsidianImportMemory[]=[];
   for(let index=0;index<data.items.length;index++){
@@ -40,7 +40,7 @@ export async function buildCapsuleImportPlan(uid:string,payload:CapsuleImportPay
   return{plan,result:{imported:memories.length,linked:0,unresolvedLinks:0,hubIds:[],memoryIds:ids,statsLabel:'Cápsula importada',skipped:0}};
   });
 }
-export async function importCapsuleRecoverably(uid:string,payload:CapsuleImportPayload,sessions:SessionData[]=[],assertCurrent:()=>void=()=>{},deps?:ObsidianImportRecoveryDeps,buildDeps?:CapsuleImportBuildDeps){
+export async function importCapsuleRecoverably(uid:string,payload:CapsuleImportPayload,sessions:readonly SessionData[]=[],assertCurrent:()=>void=()=>{},deps?:ObsidianImportRecoveryDeps,buildDeps?:CapsuleImportBuildDeps){
   const captured=structuredClone(payload);capture(captured);assertCurrent();
   const result=await startCapturedCapsuleImport(uid,guard=>buildCapsuleImportPlan(uid,captured,sessions,guard,buildDeps),assertCurrent,deps);assertCurrent();
   return{id:result.memoryIds[0],processingMethod:'learned:capsule-import',importedCount:result.imported,memoryIds:result.memoryIds};

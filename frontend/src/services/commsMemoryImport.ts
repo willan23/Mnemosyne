@@ -73,7 +73,7 @@ function outcome(value:unknown,request:AttachedMemoryInput,hash:string):CommsImp
   object(value,['sessionId','digest','status','createdAt']);if(value.sessionId!==request.sessionId||value.digest!==hash||!['unknown','committed','cancelled'].includes(value.status as string)||
     (value.status==='unknown'?value.createdAt!==null:!Number.isSafeInteger(value.createdAt)||(value.createdAt as number)<1))throw fail();return {...value} as unknown as CommsImportOutcome;
 }
-async function prepare(uid:string,input:CommsMemoryInput,existing:SessionData[],guard:()=>void,deps:CommsImportDeps):Promise<Journal>{
+async function prepare(uid:string,input:CommsMemoryInput,existing:readonly SessionData[],guard:()=>void,deps:CommsImportDeps):Promise<Journal>{
   const sessionId=deps.id(),attachmentId=input.attachment?deps.id():null,now=deps.now();guard();
   if(!attachmentIdValid(sessionId)||attachmentId!==null&&!attachmentIdValid(attachmentId)||!Number.isSafeInteger(now)||now<1)throw fail();
   const file=input.attachment?fileFromAttachment(input.attachment):null;guard();
@@ -86,7 +86,7 @@ async function prepare(uid:string,input:CommsMemoryInput,existing:SessionData[],
     semanticClusterId:semantic?.semanticClusterId??null,position:semantic?.position??null,importance:semantic?.importance??.55,celestialType:semantic?.celestialType??null,
     processingMethod:semantic?'learned:comms-import+local-embedding':'learned:comms-import',learning:{schemaVersion:1,source:'comms-import',modality:input.attachment?'mixed':'text',learnedAt:now,batchId:sessionId,attachmentCount:upload?1:0}}}},uid);
 }
-async function operate(uid:string,mode:'start'|'recover'|'cancel',input:CommsMemoryInput|undefined,existing:SessionData[],outer:()=>void,deps:CommsImportDeps):Promise<CommsImportOutcome>{
+async function operate(uid:string,mode:'start'|'recover'|'cancel',input:CommsMemoryInput|undefined,existing:readonly SessionData[],outer:()=>void,deps:CommsImportDeps):Promise<CommsImportOutcome>{
   if(!attachmentActorIdValid(uid)||mode==='start'&&(!input||!deps.enabled(Boolean(input.attachment))))throw fail();const policy=deps.policy();
   if(!['never-cloud','confirm-cloud','allow-cloud'].includes(policy)||mode==='start'&&input?.attachment&&policy==='never-cloud')throw fail();
   let changed=false;const stop=deps.subscribePolicy(()=>{changed=true;});
@@ -114,7 +114,7 @@ async function operate(uid:string,mode:'start'|'recover'|'cancel',input:CommsMem
     try{guard();deps.storage.removeItem(key);raw=null;if(stored()!==null)throw fail();}catch{throw fail();}guard();notify();guard();return after;
   }),deps.mutation);}finally{stop();}
 }
-export async function importCommsMemory(uid:string,input:CommsMemoryInput,existing:SessionData[]=[],outer:()=>void=()=>{},deps=defaults()){
+export async function importCommsMemory(uid:string,input:CommsMemoryInput,existing:readonly SessionData[]=[],outer:()=>void=()=>{},deps=defaults()){
   const captured=captureCommsMemory(input);outer();const result=await operate(uid,'start',captured,existing,outer,deps);if(result.status!=='committed')throw fail();return{id:result.sessionId};
 }
 export const recoverPendingCommsImport=(uid:string,deps=defaults())=>operate(uid,'recover',undefined,[],()=>{},deps);

@@ -15,7 +15,7 @@ import {useTranslation} from '../utils/translations';
 type Preview={kind:'publish';plan:EmbeddingPublicationPlan}|{kind:'rollback';id:string;viewDigest:string;baseline:EmbeddingIndexBaseline;entry:EmbeddingIndexHistoryEntry}
   |{kind:'recover';id:string;operation:'publish'|'rollback'};
 type Feedback='published'|'confirmed'|'cancelled'|'imported'|'failed'|EmbeddingIndexRecoveryError['reason'];
-export function EmbeddingPublicationPanel({uid,sessions}:{uid:string|null;sessions:SessionData[]}) {
+export function EmbeddingPublicationPanel({uid,sessions}:{uid:string|null;sessions:readonly SessionData[]}) {
   const {t,language}=useTranslation();
   const ready=useSyncExternalStore(onMemoryCryptoChanged,isMemoryCryptoReady,()=>false);
   const subscribe=useCallback((callback:()=>void)=>observeEmbeddingIndexRequests(callback,()=>uid),[uid]);

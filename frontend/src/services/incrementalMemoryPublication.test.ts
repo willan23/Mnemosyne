@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { IncrementalMemoryPublication, type MemoryPublicationDelta, type MemoryPublicationPatch } from './incrementalMemoryPublication';
+import { memorySnapshotDelta } from './memorySnapshot';
 
 type Value = { id: string; timestamp: number; text: string };
 const value = (id: string, timestamp = 1, text = id): Value => ({ id, timestamp, text });
@@ -72,7 +73,7 @@ it.each(['asc', 'desc'] as const)('matches full Map merge and stable sort throug
   const random = (limit: number) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % limit; };
   const allIds = Array.from({ length: 24 }, (_, index) => 'id-' + index), keys = ['personal', 'team-a', 'team-b', 'legacy'];
   for (let step = 0; step < 500; step++) {
-    const key = keys[random(keys.length)], source = reference.sources.get(key), before = reference.rows();
+    const key = keys[random(keys.length)], source = reference.sources.get(key), before = reference.rows(), previousSnapshot = publisher.snapshot();
     let delta: MemoryPublicationDelta<Value>;
     const operation = random(10);
     if (operation === 8) {
@@ -106,6 +107,11 @@ it.each(['asc', 'desc'] as const)('matches full Map merge and stable sort throug
     const expected = reference.rows(), actual = await published(publisher);
     expect(actual, 'step ' + step).toEqual(expected); expect(publisher.count).toBe(expected.length);
     actual.forEach((row, index) => expect(row).toBe(expected[index])); assertDelta(delta, before, expected);
+    const snapshot = publisher.snapshot(), snapshotDelta = memorySnapshotDelta(previousSnapshot, snapshot)!;
+    expect([...snapshot]).toEqual(expected); const order = before.map(value => value.id);
+    for (const move of snapshotDelta.order) { if (move.type === 'removed') expect(order.splice(move.oldIndex, 1)).toEqual([move.id]); else order.splice(move.newIndex, 0, move.id); }
+    expect(order).toEqual(expected.map(value => value.id)); expect([...previousSnapshot]).toEqual(before);
+    for (const value of expected) expect(snapshot.get(value.id)).toBe(value);
     for (const sourceKey of keys) {
       const source = reference.sources.get(sourceKey);
       const expectedSource = (source?.ids ?? []).filter(id => source?.values.get(id) && !reference.excluded.get(sourceKey)?.has(id)).map(id => source!.values.get(id));

@@ -99,7 +99,7 @@ const titleFromPulse = (label: string, dateKeyValue: string): string => {
   return `Pulso · ${day}/${month} · ${label}`;
 };
 
-export function buildCognitivePulse(sessions: SessionData[], now = Date.now()): CognitivePulse {
+export function buildCognitivePulse(sessions: readonly SessionData[], now = Date.now()): CognitivePulse {
   const active = sessions.filter((s) => !s.deletedAt && (s.text?.trim() || s.title?.trim()));
   const insights = generateCognitiveInsights(active, now);
 

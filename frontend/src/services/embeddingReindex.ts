@@ -63,7 +63,7 @@ export async function readPreparedEmbedding(uid: string, profile: EmbeddingProfi
 
 /** Stages encrypted candidate vectors only. It never changes active vectors or Firestore. */
 async function prepare(uid: string, profile: EmbeddingProfileId,
-  readCurrent: () => SessionData[], options: {
+  readCurrent: () => readonly SessionData[], options: {
     signal: AbortSignal;
     store?: EmbeddingReindexStore;
     embed?: (text: string) => Promise<number[]>;
@@ -84,7 +84,7 @@ async function prepare(uid: string, profile: EmbeddingProfileId,
     if (invalidated || options.signal.aborted || !isMemoryCryptoReady()) throw new Error('Reindex cancelled');
   };
   const progress = { prepared: 0, reused: 0, skipped: 0, total: 0 };
-  let source: SessionData[] | null = null;
+  let source: readonly SessionData[] | null = null;
   let byId = new Map<string, SessionData>();
   const currentById = (id: string) => {
     const next = readCurrent();

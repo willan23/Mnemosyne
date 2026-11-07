@@ -7,7 +7,7 @@ import { onEmbeddingSelectionChanged, writeEmbeddingSelection } from './embeddin
 
 /** Select only a fully prepared immutable snapshot. Active Firestore vectors remain the rollback source. */
 export async function promotePreparedEmbeddings(uid: string, profile: EmbeddingProfileId,
-  readCurrent: () => SessionData[], options: { signal: AbortSignal; store?: EmbeddingReindexStore }) {
+  readCurrent: () => readonly SessionData[], options: { signal: AbortSignal; store?: EmbeddingReindexStore }) {
   if (!uid || !isMemoryCryptoReady()) throw new Error('Unlock the vault before promotion');
   let invalidated = false;
   const invalidate = () => { invalidated = true; };

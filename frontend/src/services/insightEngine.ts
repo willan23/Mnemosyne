@@ -93,7 +93,7 @@ const relationScore = (a: MemorySignal, b: MemorySignal) => {
   return Math.max(semantic, lexical);
 };
 
-const makeSignals = (sessions: SessionData[]): MemorySignal[] =>
+const makeSignals = (sessions: readonly SessionData[]): MemorySignal[] =>
   sessions
     .filter((memory) => memory.text?.trim())
     .map((memory) => {
@@ -144,7 +144,7 @@ const contradictionInsights = (signals: MemorySignal[]): CognitiveInsight[] => {
     .slice(0, 6);
 };
 
-const orphanInsights = (sessions: SessionData[], now: number): CognitiveInsight[] => {
+const orphanInsights = (sessions: readonly SessionData[], now: number): CognitiveInsight[] => {
   const day = 24 * 60 * 60 * 1000;
   const orphans = sessions
     .filter((memory) => (memory.connections?.length || 0) === 0)
@@ -203,7 +203,7 @@ const resurfaceInsights = (signals: MemorySignal[], now: number): CognitiveInsig
     .slice(0, 5);
 };
 
-const patternInsights = (sessions: SessionData[], signals: MemorySignal[]): CognitiveInsight[] => {
+const patternInsights = (sessions: readonly SessionData[], signals: MemorySignal[]): CognitiveInsight[] => {
   const tagCounts = new Map<string, SessionData[]>();
   for (const memory of sessions) {
     for (const tag of memory.tags || []) {
@@ -257,7 +257,7 @@ const patternInsights = (sessions: SessionData[], signals: MemorySignal[]): Cogn
   }];
 };
 
-export const generateCognitiveInsights = (sessions: SessionData[], now = Date.now()): CognitiveInsight[] => {
+export const generateCognitiveInsights = (sessions: readonly SessionData[], now = Date.now()): CognitiveInsight[] => {
   if (!sessions.length) return [];
 
   const signals = makeSignals(sessions);

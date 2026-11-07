@@ -3,14 +3,14 @@ import type {MobileMemoryDelta,MobileMemorySnapshot} from './mobileSync';
 import {MemoryCryptoLockedError} from './memoryCrypto';
 
 /** Impede sync com conteúdo bloqueado: enviaria placeholders e corromperia o outro lado. */
-const assertSessionsSyncable = (sessions: SessionData[]): void => {
+const assertSessionsSyncable = (sessions: readonly SessionData[]): void => {
   if (sessions.some((session) => session.encLocked)) {
     throw new MemoryCryptoLockedError();
   }
 };
 
 /** This channel carries personal memories; team/shared content uses its own key and authority. */
-export const personalSyncSessions = (ownerUid: string, sessions: SessionData[]): SessionData[] => sessions.filter(session =>
+export const personalSyncSessions = (ownerUid: string, sessions: readonly SessionData[]): SessionData[] => sessions.filter(session =>
   session.uid === ownerUid && session.teamId == null && !session.teamScopeAmbiguous &&
   (session.sharedWithIds == null || (Array.isArray(session.sharedWithIds) && session.sharedWithIds.length === 0)));
 
@@ -35,7 +35,7 @@ const toSnapshotMemory = (session: SessionData): MobileMemorySnapshot['memories'
 
 export const buildMobileMemorySnapshot = (
   ownerUid: string,
-  sessions: SessionData[]
+  sessions: readonly SessionData[]
 ): MobileMemorySnapshot => {
   sessions = personalSyncSessions(ownerUid, sessions);
   assertSessionsSyncable(sessions);
@@ -52,7 +52,7 @@ export const buildMobileMemoryDelta = (
   ownerUid: string,
   deviceId: string,
   source: 'desktop' | 'mobile',
-  sessions: SessionData[],
+  sessions: readonly SessionData[],
   since = 0
 ): MobileMemoryDelta => {
   sessions = personalSyncSessions(ownerUid, sessions);

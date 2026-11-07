@@ -10,6 +10,8 @@ import { appendLocalMemoryActivity, type LocalMemoryActivity } from '../services
 import { IncrementalSessionSnapshot } from '../services/incrementalSessionSnapshot';
 import { IncrementalMemoryPublication, type MemoryPublicationDelta } from '../services/incrementalMemoryPublication';
 import { IndexedSemanticWriteCorpus } from '../services/indexedSemanticWriteCorpus';
+import { isMemorySnapshot, memoryById, memorySnapshotScopeActive } from '../services/memorySnapshot';
+import { IncrementalSessionResources, type SessionResources } from '../services/incrementalSessionResources';
 import { onEmbeddingSelectionChanged, readEmbeddingSelection } from '../services/embeddingSelection';
 import { searchSelectedEmbeddingProfile } from '../services/selectedEmbeddingSearch';
 import { PreparedEmbeddingSearchCache } from '../services/preparedEmbeddingSearchCache';
@@ -26,6 +28,8 @@ import {syncConflictViewDigest} from '../services/syncConflictResolution';
 import { useMyTeams, useTeamIds, useUnlockTeamKeys } from './useMyTeams';
 
 const NO_SEARCH_HITS: MemorySearchHit[] = [];
+const NO_SESSIONS: readonly SessionData[] = [];
+const NO_RESOURCES: SessionResources = { tags: [], categories: [] };
 
 export interface FilterOptions {
     dateRange: string;
@@ -139,7 +143,8 @@ async function mapSessionDoc(docSnap: { id: string; data: () => Record<string, u
 }
 
 export const useSessions = (user: User | null, searchQuery: string, filters: FilterOptions) => {
-    const [allSessions, setAllSessions] = useState<SessionData[]>([]);
+    const [allSessions, setAllSessions] = useState<readonly SessionData[]>([]);
+    const [resourceState, setResourceState] = useState<{ uid: string; cryptoEpoch: number; teamIds: string[]; resources: SessionResources } | null>(null);
     const activeCorpus = useRef<HybridSearchCorpus | null>(null);
     const activePublication = useRef<IncrementalMemoryPublication<SessionData> | null>(null);
     const activeSemanticCorpus = useRef<IndexedSemanticWriteCorpus<SessionData> | null>(null);
@@ -148,7 +153,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
     } | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [rankedResult, setRankedResult] = useState<{
-        uid: string; query: string; source: SessionData[]; filters: FilterOptions; hits: MemorySearchHit[];
+        uid: string; query: string; source: readonly SessionData[]; filters: FilterOptions; hits: MemorySearchHit[];
         candidateIds: string[]; loading: boolean; error?: 'unavailable'; selectionEpoch: number;
     } | null>(null);
     // Incrementa quando a chave pessoal ou uma teamKey muda (unlock/lock) para re-decifrar.
@@ -169,21 +174,27 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         });
     }, [user, searchIndex, hybridIndex, preparedSearchCache]);
     const [loadedScope, setLoadedScope] = useState<{ uid: string; cryptoEpoch: number; teamIds: string[] | null }>({ uid: '', cryptoEpoch: -1, teamIds: null });
+    const scopeCarry = useRef<{ candidate: readonly SessionData[]; scope: typeof loadedScope } | null>(null);
     const teams = useMyTeams(user?.uid ?? null);
     const teamIds = useTeamIds(teams);
     useEffect(() => () => { searchIndex.dispose(); hybridIndex.dispose(); preparedSearchCache.dispose(); setRankedResult(null); }, [searchIndex, hybridIndex, preparedSearchCache, user?.uid, cryptoEpoch, teamIds]);
     useUnlockTeamKeys(user?.uid ?? null, teams);
-    const authorizedAllSessions = useMemo(() => {
+    const authorizedCandidate = useMemo(() => {
         if (!user || !isMemoryCryptoReady() || loadedScope.uid !== user.uid ||
-            loadedScope.cryptoEpoch !== cryptoEpoch) return [];
+            loadedScope.cryptoEpoch !== cryptoEpoch || !memorySnapshotScopeActive(allSessions)) return [];
         // Publications already passed this captured ACL. Only a membership change
         // before its replacement publication needs to filter the prior array.
         if (loadedScope.teamIds === teamIds) return allSessions;
         const scope = { uid: user.uid, teamIds: new Set(teamIds) };
         return allSessions.filter((session) => canReadCachedMemory(session, scope));
     }, [user, loadedScope, cryptoEpoch, teamIds, allSessions]);
-    const sessions = useMemo(() => authorizedAllSessions.filter((session) => !session.deletedAt),
+    // Scope retirement can precede React's next memo invalidation (including a same-UID auth refresh).
+    const authorizedAllSessions = memorySnapshotScopeActive(allSessions) ? authorizedCandidate : NO_SESSIONS;
+    useEffect(() => { scopeCarry.current = { candidate: authorizedCandidate, scope: loadedScope }; }, [authorizedCandidate, loadedScope]);
+    const sessions = useMemo(() => isMemorySnapshot(authorizedAllSessions) ? authorizedAllSessions.view('active') : authorizedAllSessions.filter((session) => !session.deletedAt),
         [authorizedAllSessions]);
+    const legacyPersonalCount = isMemorySnapshot(authorizedAllSessions) ? authorizedAllSessions.view('legacy').length : authorizedAllSessions.filter(session =>
+        session.uid === user?.uid && !session.teamId && !session.deletedAt && !session.encrypted && Boolean(session.text.trim() || session.title?.trim())).length;
     const currentCorpus = searchCorpus?.uid === user?.uid && searchCorpus?.cryptoEpoch === cryptoEpoch &&
         searchCorpus?.teamIds === teamIds ? searchCorpus.snapshot : null;
     const resultCurrent = rankedResult?.uid === user?.uid && rankedResult?.query === searchQuery.trim() &&
@@ -209,7 +220,22 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
             return;
         }
 
-        const publication = new IncrementalMemoryPublication<SessionData>('desc');
+        // Keep only the already ACL-filtered native carry-over during membership replacement.
+        // Account, key and same-UID auth refreshes retire the entire prior view.
+        const carry = scopeCarry.current;
+        const retained = carry?.scope.uid === user.uid && carry.scope.cryptoEpoch === cryptoEpoch && carry.scope.teamIds !== teamIds &&
+            isMemoryCryptoReady() && !isMemorySnapshot(carry.candidate) ? carry.candidate : NO_SESSIONS;
+        setAllSessions(retained); setSearchCorpus(null); setRankedResult(null);
+        const retainedResources = new IncrementalSessionResources(); retainedResources.apply({ changed: retained, removed: [] });
+        setResourceState(retained.length ? { uid: user.uid, cryptoEpoch, teamIds, resources: retainedResources.capture() } : null);
+        setLoadedScope(retained.length ? { uid: user.uid, cryptoEpoch, teamIds } : { uid: '', cryptoEpoch: -1, teamIds: null });
+
+        const publication = new IncrementalMemoryPublication<SessionData>('desc', { views: {
+            active: session => !session.deletedAt,
+            legacy: session => session.uid === user.uid && !session.teamId && !session.deletedAt && !session.encrypted && Boolean(session.text.trim() || session.title?.trim()),
+        } });
+        const resources = new IncrementalSessionResources();
+        let publicationScope = publication.snapshot();
         activePublication.current = publication;
         const corpus = new HybridSearchCorpus();
         activeCorpus.current = corpus;
@@ -222,21 +248,29 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
 
         const publish = (delta: MemoryPublicationDelta<SessionData>) => {
             if (!active) return;
+            // A rejected patch retires every root. Aggregates from that former root
+            // cannot be reused when an empty replacement is published.
+            const retireAggregates = () => { resources.clear(); corpus.clear(); semanticCorpus.clear(); corpusUnavailable = true; publicationScope = publication.snapshot(); };
+            if (!memorySnapshotScopeActive(publicationScope)) retireAggregates();
+            try { resources.apply(delta); } catch { publication.clear(); retireAggregates(); }
+            const available = resources.capture();
             let snapshot: HybridCorpusSnapshot | 'unavailable' = 'unavailable';
             if (!corpusUnavailable) {
                 try { corpus.update(delta.changed, delta.removed); snapshot = corpus.capture(); }
                 catch { corpusUnavailable = true; }
             }
             const revision = ++publicationRevision;
-            void publication.publish(() => active && revision === publicationRevision, nextAllSessions => {
+            void publication.publishSnapshot(() => active && revision === publicationRevision, nextAllSessions => {
                 semanticCorpus.associate(nextAllSessions);
                 setSearchCorpus({ uid: user.uid, cryptoEpoch, teamIds, snapshot });
                 setAllSessions(nextAllSessions);
+                setResourceState({ uid: user.uid, cryptoEpoch, teamIds, resources: available });
                 setLoadedScope({ uid: user.uid, cryptoEpoch, teamIds });
                 setIsLoading(false);
             }).catch(() => {
                 if (!active || revision !== publicationRevision) return;
                 publication.clear(); corpus.clear(); semanticCorpus.clear(); corpusUnavailable = true;
+                resources.clear(); setResourceState(null);
                 setAllSessions([]); setSearchCorpus({ uid: user.uid, cryptoEpoch, teamIds, snapshot: 'unavailable' });
                 setIsLoading(false);
                 console.warn('Session publication unavailable.');
@@ -311,11 +345,10 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
             if (!needsSearch || !user || !isMemoryCryptoReady() || !currentCorpus) {
                 hybridIndex.dispose(); searchIndex.dispose(); preparedSearchCache.dispose(); setRankedResult(null); return;
             }
-            const byId = new Map(sessions.map(session => [session.id, session]));
             const publish = (rows: HybridSearchHit[], candidateIds: string[], loading: boolean, error?: 'unavailable') => {
                 if (cancelled) return;
                 const hits: MemorySearchHit[] = rows.flatMap(row => {
-                    const memory = byId.get(row.id);
+                    const memory = memoryById(sessions, row.id);
                     return memory && !memory.encLocked && !memory.deletedAt
                         ? [{ memory: { ...memory, semanticScore: row.semanticScore }, score: row.score,
                             matchKind: row.matchKind, snippet: row.snippet, matchedTags: row.matchedTags }] : [];
@@ -338,7 +371,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
                         await appendLocalMemoryActivity(user.uid, rows);
                     })().catch(() => console.warn('Local memory activity unavailable.'));
                 };
-                const candidates = lease.candidateIds.map(id => byId.get(id)!);
+                const candidates = lease.candidateIds.map(id => memoryById(sessions, id)!);
                 const queryText = parseSearchQuery(searchQuery).text;
                 const hasSemantic = queryText.length >= 2 && candidates.length > 0 &&
                     Boolean(selectedProfile || candidates.some(session => session.embedding?.length));
@@ -377,12 +410,11 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
     const filteredSessions = useMemo(() => {
         if (!needsSearch) return sessions;
         if (!resultCurrent) return [];
-        const byId = new Map(sessions.map(session => [session.id, session]));
         if (!searchQuery.trim()) return rankedResult.candidateIds.flatMap(id => {
-            const session = byId.get(id); return session ? [session] : [];
+            const session = memoryById(sessions, id); return session ? [session] : [];
         });
         return searchHits.flatMap(hit => {
-            const session = byId.get(hit.memory.id);
+            const session = memoryById(sessions, hit.memory.id);
             return session ? [{ ...session, semanticScore: hit.score }] : [];
         });
     }, [sessions, searchQuery, needsSearch, resultCurrent, rankedResult, searchHits]);
@@ -393,21 +425,8 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         error: resultCurrent ? rankedResult.error : undefined,
     }), [user?.uid, searchQuery, searchHits, needsSearch, resultCurrent, rankedResult]);
 
-    // Extrair Tags e Categorias disponíveis para a UI
-    const availableResources = useMemo(() => {
-        const tags = new Set<string>();
-        const categories = new Set<string>();
-
-        sessions.forEach(s => {
-            s.tags?.forEach(tag => tags.add(tag));
-            if (s.category) categories.add(s.category);
-        });
-
-        return {
-            tags: Array.from(tags).sort(),
-            categories: Array.from(categories).sort()
-        };
-    }, [sessions]);
+    const availableResources = resourceState?.uid === user?.uid && resourceState?.cryptoEpoch === cryptoEpoch && resourceState?.teamIds === teamIds &&
+        loadedScope.uid === user?.uid && loadedScope.cryptoEpoch === cryptoEpoch && isMemoryCryptoReady() && memorySnapshotScopeActive(allSessions) ? resourceState.resources : NO_RESOURCES;
 
     return {
         sessions,
@@ -415,6 +434,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         filteredSessions,
         searchResults,
         isLoading,
+        legacyPersonalCount,
         availableTags: availableResources.tags,
         availableCategories: availableResources.categories
     };

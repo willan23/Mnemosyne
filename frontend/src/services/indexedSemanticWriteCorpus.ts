@@ -98,7 +98,7 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
     const alias = { [Symbol.iterator](): Iterator<SemanticWriteCandidate> { throw fail(); } };
     bindings.set(alias, { owner: this, revision: this.revision, size, source, defaultScope: scope }); return alias;
   }
-  associate(values: T[]): void { bindings.set(values, { owner: this, revision: this.revision, size: values.length }); }
+  associate(values: readonly T[]): void { bindings.set(values, { owner: this, revision: this.revision, size: values.length }); }
   associateCaptured(source: Iterable<SemanticWriteCandidate>, size: number, scope: SemanticWriteScope): void {
     bindings.set(source, { owner: this, revision: this.revision, size, defaultScope: scope });
   }

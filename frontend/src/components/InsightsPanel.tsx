@@ -4,7 +4,7 @@ import type { SessionData } from '../hooks/useSessions';
 import { generateCognitiveInsights, type CognitiveInsight, type InsightKind } from '../services/insightEngine';
 
 interface Props {
-  sessions: SessionData[];
+  sessions: readonly SessionData[];
   onMemoryClick: (session: SessionData) => void;
   onClose?: () => void;
 }
@@ -31,11 +31,11 @@ const memoryLabel = (memory: SessionData, index: number) => {
   return `Memória ${index + 1}`;
 };
 
-const findMemory = (sessions: SessionData[], id: string) => sessions.find((session) => session.id === id);
+const findMemory = (sessions: readonly SessionData[], id: string) => sessions.find((session) => session.id === id);
 
 const InsightCard: React.FC<{
   insight: CognitiveInsight;
-  sessions: SessionData[];
+  sessions: readonly SessionData[];
   onMemoryClick: (session: SessionData) => void;
 }> = ({ insight, sessions, onMemoryClick }) => {
   const Icon = ICONS[insight.kind];

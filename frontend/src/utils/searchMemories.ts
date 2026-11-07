@@ -217,7 +217,7 @@ function passesCategoryFilter(memory: SearchableMemory, category?: string): bool
   return cat.includes(category) || type.includes(category);
 }
 
-export function filterSearchCandidates<T extends SearchableMemory>(memories: T[], queryInput: string): T[] {
+export function filterSearchCandidates<T extends SearchableMemory>(memories: readonly T[], queryInput: string): T[] {
   const parsed = parseSearchQuery(queryInput);
   if (parsed.invalidFilter) return [];
   return memories.filter((memory) => !memory.encLocked &&
@@ -232,7 +232,7 @@ export function filterSearchCandidates<T extends SearchableMemory>(memories: T[]
  * Rankeia memórias com query textual + scores semânticos opcionais.
  */
 export function searchMemories(
-  memories: SearchableMemory[],
+  memories: readonly SearchableMemory[],
   queryInput: string,
   options?: {
     semanticScores?: Map<string, number>;

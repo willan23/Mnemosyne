@@ -24,7 +24,7 @@ import { onMemoryCryptoChanged } from '../services/memoryCrypto';
 interface CommandPaletteProps {
   uid?: string | null;
   vaultUnlocked?: boolean;
-  memories?: SessionData[];
+  memories?: readonly SessionData[];
   searchQuery?: string;
   searchResults?: SessionSearchResults;
   onSearchQueryChange?: (query: string) => void;

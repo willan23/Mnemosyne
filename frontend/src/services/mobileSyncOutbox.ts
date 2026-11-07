@@ -98,7 +98,7 @@ async function writeCipher(key:string,value:unknown,expectedRaw:string|null,deps
   const text=JSON.stringify(value);if(text.length>2000000)throw failure();const cipher=await deps.encryptJournal({text});guard();if(!isEncryptedMemoryEnvelope(cipher))throw failure();
   const raw=JSON.stringify(cipher);if(raw.length>4000000||deps.storage.getItem(key)!==expectedRaw)throw failure();deps.storage.setItem(key,raw);if(deps.storage.getItem(key)!==raw)throw failure();guard();return raw;
 }
-async function operate(uid:string,deviceId:string,direction:Direction,mode:'start'|'recover'|'cancel',sessions:SessionData[]|undefined,snapshot:boolean,privateKey:JsonWebKey|undefined,deps:SyncOutboxDeps):Promise<SyncOutboxResult>{
+async function operate(uid:string,deviceId:string,direction:Direction,mode:'start'|'recover'|'cancel',sessions:readonly SessionData[]|undefined,snapshot:boolean,privateKey:JsonWebKey|undefined,deps:SyncOutboxDeps):Promise<SyncOutboxResult>{
   if(mode==='start'&&!deps.enabled())throw new Error('A sincronização está temporariamente em validação. Os envelopes existentes foram conservados.');
   if(!syncIdValid(deviceId)||!['desktop-to-mobile','mobile-to-desktop'].includes(direction))throw failure();
   try{return await withPersonalMemoryMutation(uid,async context=>deps.exclusive(mobileSyncOutboxKey(uid,deviceId,direction),async()=>{
@@ -165,7 +165,7 @@ async function operate(uid:string,deviceId:string,direction:Direction,mode:'star
     }finally{stopDevice?.();}
   }),deps.mutation);}catch{throw failure();}
 }
-export const queuePersonalSyncSnapshot=(uid:string,deviceId:string,sessions:SessionData[],deps=defaults())=>operate(uid,deviceId,'desktop-to-mobile','start',sessions,true,undefined,deps);
-export const queuePersonalSyncDelta=(uid:string,deviceId:string,direction:Direction,sessions:SessionData[],privateKey?:JsonWebKey,deps=defaults())=>operate(uid,deviceId,direction,'start',sessions,false,privateKey,deps);
+export const queuePersonalSyncSnapshot=(uid:string,deviceId:string,sessions:readonly SessionData[],deps=defaults())=>operate(uid,deviceId,'desktop-to-mobile','start',sessions,true,undefined,deps);
+export const queuePersonalSyncDelta=(uid:string,deviceId:string,direction:Direction,sessions:readonly SessionData[],privateKey?:JsonWebKey,deps=defaults())=>operate(uid,deviceId,direction,'start',sessions,false,privateKey,deps);
 export const recoverPendingSyncOutbox=(uid:string,deviceId:string,direction:Direction,deps=defaults())=>operate(uid,deviceId,direction,'recover',undefined,false,undefined,deps);
 export const cancelPendingSyncOutbox=(uid:string,deviceId:string,direction:Direction,deps=defaults())=>operate(uid,deviceId,direction,'cancel',undefined,false,undefined,deps);

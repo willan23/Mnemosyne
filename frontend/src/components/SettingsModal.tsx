@@ -88,7 +88,7 @@ interface SettingsModalProps {
     onClose: () => void;
     mnemonic: string[] | null;
     onResetKey: () => void;
-    sessions?: SessionData[];
+    sessions?: readonly SessionData[];
     onReplayOnboarding?: () => void;
     onOpenExport?: () => void;
     /** Secção inicial (ex: 'privacy', 'ai') — deep-link da Command Palette */

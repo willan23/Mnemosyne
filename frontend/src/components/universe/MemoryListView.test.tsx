@@ -22,12 +22,21 @@ describe('MemoryListView', () => {
     useUniverseStore.setState({language: 'en'});
     render(<MemoryListView mode={mode} memories={Array.from({length: 205}, (_, index) => memory(`Result ${index}`, 'Synthetic page text'))} selectedMemoryId={null} onSelect={vi.fn()}/>);
     const more = await screen.findByText('Show more', {selector: 'button'}); more.focus(); fireEvent.click(more);
-    // Check the actual focus target without computing every result's accessible name.
-    await waitFor(() => expect(document.activeElement).toHaveAccessibleName(/Result 100(?![0-9])/));
+    // While the Worker is pending, the previous button is unmounted and focus can be on body.
+    // Wait on the actual button/title before computing its accessible name once.
+    await waitFor(() => {
+      expect(document.activeElement?.tagName).toBe('BUTTON');
+      expect(document.activeElement?.firstElementChild?.textContent ?? document.activeElement?.textContent).toBe('Result 100');
+    });
+    expect(document.activeElement).toHaveAccessibleName(/Result 100(?![0-9])/);
     expect(document.activeElement).toHaveRole('button');
     expect(document.activeElement).toBeVisible();
     fireEvent.click(screen.getByText('Show more', {selector: 'button'}));
-    await waitFor(() => expect(document.activeElement).toHaveAccessibleName(/Result 200(?![0-9])/));
+    await waitFor(() => {
+      expect(document.activeElement?.tagName).toBe('BUTTON');
+      expect(document.activeElement?.firstElementChild?.textContent ?? document.activeElement?.textContent).toBe('Result 200');
+    });
+    expect(document.activeElement).toHaveAccessibleName(/Result 200(?![0-9])/);
     expect(document.activeElement).toHaveRole('button');
     expect(document.activeElement).toBeVisible();
     expect(screen.queryByText('Show more', {selector: 'button'})).toBeNull();

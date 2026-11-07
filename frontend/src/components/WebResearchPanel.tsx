@@ -15,7 +15,7 @@ import { AttachedMemoryRecoveryPanel } from './AttachedMemoryRecoveryPanel';
 interface WebResearchPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  sessions: SessionData[];
+  sessions: readonly SessionData[];
   initialQuery?: string;
   onMemoryCreated?: (memoryId: string) => void;
 }
@@ -31,7 +31,7 @@ const toTerms = (value: string): Set<string> => new Set(
     .filter((token) => !STOPWORDS.has(token))
 );
 
-const buildPrivateLocalComparisons = (result: WebResearchResult, memories: SessionData[]): string[] => {
+const buildPrivateLocalComparisons = (result: WebResearchResult, memories: readonly SessionData[]): string[] => {
   const researchTerms = toTerms([
     result.summary,
     ...result.main_ideas,

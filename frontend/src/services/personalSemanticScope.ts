@@ -21,6 +21,6 @@ export function isPersonalSemanticCandidate(memory: PersonalSemanticCandidate, o
     !memory.encLocked
   );
 }
-export function personalSemanticCandidates<T extends PersonalSemanticCandidate>(memories: T[], ownerUid: string): T[] {
+export function personalSemanticCandidates<T extends PersonalSemanticCandidate>(memories: readonly T[], ownerUid: string): T[] {
   return memories.filter(memory => isPersonalSemanticCandidate(memory, ownerUid));
 }

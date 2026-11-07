@@ -35,7 +35,7 @@ async function spaced(positions:Position[],guard:()=>void,yieldTask:()=>Promise<
   return best;
 }
 /** Captures all UUIDs and folder relationships before the first file read. Performs local analysis and sealing only. */
-export async function buildDocumentImportPlan(uid:string,input:File[],existing:SessionData[],outerGuard:()=>void,deps=defaults()):Promise<CapturedDocumentImport>{
+export async function buildDocumentImportPlan(uid:string,input:File[],existing:readonly SessionData[],outerGuard:()=>void,deps=defaults()):Promise<CapturedDocumentImport>{
   outerGuard();const policy=deps.policy();const guard=()=>{outerGuard();if(deps.policy()!==policy)throw fail();};
   const yieldTask=deps.yieldTask??(()=>new Promise<void>(resolve=>setTimeout(resolve,0)));
   if(!Array.isArray(input)||input.length<1||input.length>20)throw new Error('Importa entre um e 20 documentos por lote.');

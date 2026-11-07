@@ -32,7 +32,7 @@ export interface AnalyticsData {
 /**
  * Calcula todas as métricas de analytics
  */
-export const calculateAnalytics = (sessions: any[]): AnalyticsData => {
+export const calculateAnalytics = (sessions: readonly any[]): AnalyticsData => {
     if (!sessions || sessions.length === 0) {
         return getEmptyAnalytics();
     }
@@ -142,7 +142,7 @@ export const calculateAnalytics = (sessions: any[]): AnalyticsData => {
 /**
  * Calcula streaks (dias consecutivos)
  */
-const calculateStreaks = (sessions: any[]): { currentStreak: number; longestStreak: number } => {
+const calculateStreaks = (sessions: readonly any[]): { currentStreak: number; longestStreak: number } => {
     if (sessions.length === 0) return { currentStreak: 0, longestStreak: 0 };
 
     // Agrupar por dia
@@ -201,7 +201,7 @@ const calculateStreaks = (sessions: any[]): { currentStreak: number; longestStre
 /**
  * Calcula atividade recente
  */
-const calculateRecentActivity = (sessions: any[], days: number): Array<{ date: string; count: number }> => {
+const calculateRecentActivity = (sessions: readonly any[], days: number): Array<{ date: string; count: number }> => {
     const now = Date.now();
     const activity = new Map<string, number>();
 

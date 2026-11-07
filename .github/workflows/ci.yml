@@ -51,6 +51,9 @@ jobs:
       - name: Universe semantic view and listener ordering, tombstones and membership changes in Chromium
         run: node scripts/universe-semantic-index-browser.cjs
         working-directory: .
+      - name: Persistent memory snapshots and incremental capture preview in Chromium
+        run: node scripts/memory-snapshot-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

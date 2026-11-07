@@ -21,7 +21,7 @@ import { useTranslation } from '../utils/translations';
 
 interface CognitivePulsePanelProps {
   isOpen: boolean;
-  sessions: SessionData[];
+  sessions: readonly SessionData[];
   uid: string;
   onClose: () => void;
   onOpenMemory: (memoryId: string) => void;

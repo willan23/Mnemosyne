@@ -49,7 +49,7 @@ export function starterNotesToFiles(
 
 export async function assimilateStarterFounder(
   uid: string,
-  existingMemories: SessionData[] = [],
+  existingMemories: readonly SessionData[] = [],
   options?: { onProgress?: (done: number, total: number) => void; force?: boolean; assertCurrent?:()=>void },
 ): Promise<ObsidianVaultImportResult & { starterId: string }> {
   return withPersonalMemoryMutation(uid,async context=>{

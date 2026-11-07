@@ -45,9 +45,10 @@ it('discards an old pending query even when its message callback is invoked afte
   vi.stubGlobal('Worker', class { constructor() { const worker = new CapturePreviewWorkerMock(); worker.postMessage.mockImplementation(() => {}); workers.push(worker); return worker; } });
   const rows = [row('a')], { result, rerender } = renderHook(({ text }) => useCapturePreview(rows, text, scope), { initialProps: { text: query } });
   const late = workers[0].onmessage;
-  rerender({ text: query + ' current' }); expect(workers[0].terminate).toHaveBeenCalledOnce();
+  rerender({ text: query + ' current' }); expect(workers[0].terminate).not.toHaveBeenCalled();
   await act(async () => late?.({ data: { v: 1, id: 1, ok: true, hits: [{ id: 'a', score: .9 }] } }));
   expect(result.current).toEqual([]);
-  const request = workers[1].postMessage.mock.calls[0][0];
-  await act(async () => workers[1].onmessage?.({ data: { v: 1, id: request.id, ok: true, hits: [] } })); expect(result.current).toEqual([]);
+  await waitFor(() => expect(workers[0].postMessage).toHaveBeenCalledTimes(2)); expect(workers).toHaveLength(1);
+  const request = workers[0].postMessage.mock.calls[1][0]; expect(request.changed).toEqual([]); expect(request.order).toBeUndefined();
+  await act(async () => workers[0].onmessage?.({ data: { v: 1, id: request.id, ok: true, hits: [] } })); expect(result.current).toEqual([]);
 });

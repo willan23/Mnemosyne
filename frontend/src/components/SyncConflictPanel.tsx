@@ -7,7 +7,7 @@ import {useSyncFeedback} from '../hooks/useSyncFeedback';
 import type { SessionData } from '../hooks/useSessions';
 
 interface Props {
-  sessions: SessionData[];
+  sessions: readonly SessionData[];
 }
 
 const personalVisible = (session: SessionData, uid: string | undefined) => session.uid === uid && !session.deletedAt && !session.teamId &&

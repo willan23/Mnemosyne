@@ -1,4 +1,6 @@
 import type { SessionSnapshotLease } from './incrementalSessionSnapshot';
+import { createMemorySnapshot, type MemorySnapshot, type MemorySnapshotFence, type MemorySnapshotJournal, type MemorySnapshotMove } from './memorySnapshot';
+import { eraseMemoryNode, insertMemoryNode, memoryNode, memoryNodeRanks, type PersistentMemoryNode } from './persistentMemoryTree';
 
 export interface MemoryPublicationPatch<T> {
   changed: Array<{ id: string; value: T | null }>;
@@ -59,29 +61,35 @@ class SnapshotOrder {
 }
 type Source<T> = { key: string; priority: number; ordinal: number; order: SnapshotOrder; values: Map<string, T | null> };
 type Resolved<T> = { value: T; first: Source<T> };
-type SortedNode = { id: string; priority: number; left: SortedNode | null; right: SortedNode | null };
+type SortedNode<T extends { id: string }> = PersistentMemoryNode<T>;
 const unavailable = () => new Error('memory_publication_unavailable');
 const validId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512 && !value.includes('/');
 
 /**
  * Scoped, in-memory publication. Values are local authorized objects, never sent to a Worker or storage.
- * Only changed IDs are reconciled/reordered. Existing array consumers still require O(N) materialization,
- * performed in cancellable task batches; this class does not claim to paginate those consumers.
+ * Only changed IDs are reconciled/reordered. Snapshot consumers receive immutable persistent roots in O(1).
+ * The legacy publish method still materializes arrays in cancellable batches for unmigrated consumers.
  */
 export class IncrementalMemoryPublication<T extends { id: string; timestamp: number }> {
   private sources = new Map<string, Source<T>>();
   private variants = new Map<string, Map<string, T | null>>();
   private excluded = new Map<string, Set<string>>();
   private resolved = new Map<string, Resolved<T>>();
-  private root: SortedNode | null = null;
+  private root: SortedNode<T> | null = null;
+  private byId: SortedNode<T> | null = null;
+  private fence: MemorySnapshotFence = { active: true };
+  private journal: MemorySnapshotJournal = { entries: new Map(), weight: 0 };
+  private snapshotCache: MemorySnapshot<T> | null = null;
+  private viewNames: string[];
   private nextSource = 0;
   private revision = 0;
   private cached: { revision: number; values: T[] } | null = null;
   private seed = (Math.random() * 0x100000000) >>> 0 || 1;
   private direction: 'asc' | 'desc';
-  private options: { sourceBase?: number; batchSize?: number; yieldTask?: () => Promise<void> };
-  constructor(direction: 'asc' | 'desc', options: { sourceBase?: number; batchSize?: number; yieldTask?: () => Promise<void> } = {}) {
+  private options: { sourceBase?: number; batchSize?: number; yieldTask?: () => Promise<void>; views?: Record<string, (value: T) => boolean> };
+  constructor(direction: 'asc' | 'desc', options: { sourceBase?: number; batchSize?: number; yieldTask?: () => Promise<void>; views?: Record<string, (value: T) => boolean> } = {}) {
     this.direction = direction; this.options = options;
+    this.viewNames = Object.keys(options.views ?? {}); if (this.viewNames.length > 8) throw unavailable();
     if (direction !== 'asc' && direction !== 'desc' || options.sourceBase !== undefined && !Number.isFinite(options.sourceBase) ||
         options.batchSize !== undefined && (!Number.isInteger(options.batchSize) || options.batchSize < 1 || options.batchSize > 4096)) throw unavailable();
   }
@@ -101,10 +109,10 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
   }
   /** Ordered iteration for controlled consumers such as the semantic Worker. */
   *orderedValues(): IterableIterator<T> {
-    const stack: SortedNode[] = []; let node = this.root;
+    const stack: SortedNode<T>[] = []; let node = this.root;
     while (node || stack.length) {
       while (node) { stack.push(node); node = node.left; }
-      node = stack.pop()!; yield this.resolved.get(node.id)!.value; node = node.right;
+      node = stack.pop()!; yield node.value; node = node.right;
     }
   }
   private random = () => {
@@ -113,6 +121,8 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
   };
   clear(): void {
     this.sources.clear(); this.variants.clear(); this.excluded.clear(); this.resolved.clear();
+    this.fence.active = false; this.fence = { active: true }; this.byId = null;
+    this.journal.entries.clear(); this.journal.weight = 0; this.snapshotCache = null;
     this.root = null; this.cached = null; this.nextSource = 0; this.revision++;
   }
   private compareSources(a: Source<T>, b: Source<T>): number { return a.priority - b.priority || a.ordinal - b.ordinal; }
@@ -122,29 +132,13 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
     const time = this.direction === 'asc' ? left.value.timestamp - right.value.timestamp : right.value.timestamp - left.value.timestamp;
     return time || this.compareSources(left.first, right.first) || left.first.order.position(a) - right.first.order.position(b);
   }
-  private rotateInsert(root: SortedNode | null, node: SortedNode): SortedNode {
-    if (!root) return node;
-    if (this.compare(node.id, root.id) < 0) {
-      root.left = this.rotateInsert(root.left, node);
-      if (root.left.priority < root.priority) { const top = root.left; root.left = top.right; top.right = root; return top; }
-    } else {
-      root.right = this.rotateInsert(root.right, node);
-      if (root.right.priority < root.priority) { const top = root.right; root.right = top.left; top.left = root; return top; }
-    }
-    return root;
+  private rotateInsert(root: SortedNode<T> | null, node: SortedNode<T>): SortedNode<T> {
+    return insertMemoryNode(root, node, (a, b) => this.compare(a, b));
   }
-  private mergeSorted(left: SortedNode | null, right: SortedNode | null): SortedNode | null {
-    if (!left) return right; if (!right) return left;
-    if (left.priority < right.priority) { left.right = this.mergeSorted(left.right, right); return left; }
-    right.left = this.mergeSorted(left, right.left); return right;
+  private erase(root: SortedNode<T> | null, id: string): SortedNode<T> | null {
+    return eraseMemoryNode(root, id, (a, b) => this.compare(a, b));
   }
-  private erase(root: SortedNode | null, id: string): SortedNode | null {
-    if (!root) throw unavailable();
-    const order = this.compare(id, root.id);
-    if (!order) return this.mergeSorted(root.left, root.right);
-    if (order < 0) root.left = this.erase(root.left, id); else root.right = this.erase(root.right, id);
-    return root;
-  }
+  private flags(value: T): number { let flags = 0; this.viewNames.forEach((name, index) => { if (this.options.views![name](value)) flags |= 1 << index; }); return flags; }
   private resolve(id: string): Resolved<T> | undefined {
     let first: Source<T> | undefined, last: Source<T> | undefined, value: T | undefined;
     for (const [key, item] of this.variants.get(id) ?? []) {
@@ -156,20 +150,35 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
     return first && value ? { first, value } : undefined;
   }
   private reconcile(ids: Set<string>, mutate: () => void): MemoryPublicationDelta<T> {
+    try {
     const previous = new Map<string, T>();
+    const moves: MemorySnapshotMove[][] = Array.from({ length: this.viewNames.length + 1 }, () => []);
     // Remove every moving key before altering source positions. All other relative orders remain valid.
-    for (const id of ids) { const old = this.resolved.get(id); if (old) { previous.set(id, old.value); this.root = this.erase(this.root, id); } }
+    for (const id of ids) { const old = this.resolved.get(id); if (old) {
+      previous.set(id, old.value); const ranks = memoryNodeRanks(this.root, id, (a, b) => this.compare(a, b), this.viewNames.length);
+      ranks.forEach((at, view) => { if (at !== undefined) moves[view].push({ type: 'removed', id, oldIndex: at, newIndex: -1 }); });
+      this.root = this.erase(this.root, id); this.byId = eraseMemoryNode(this.byId, id, (a, b) => a < b ? -1 : a > b ? 1 : 0);
+    } }
     mutate();
     const delta: MemoryPublicationDelta<T> = { changed: [], removed: [] };
     for (const id of ids) {
       const next = this.resolve(id), old = previous.get(id);
       if (next) {
-        this.resolved.set(id, next); this.root = this.rotateInsert(this.root, { id, priority: this.random(), left: null, right: null });
+        const flags = this.flags(next.value); this.resolved.set(id, next);
+        this.root = this.rotateInsert(this.root, memoryNode(next.value, this.random(), null, null, flags, this.viewNames.length));
+        this.byId = insertMemoryNode(this.byId, memoryNode(next.value, this.random(), null, null, flags), (a, b) => a < b ? -1 : a > b ? 1 : 0);
+        memoryNodeRanks(this.root, id, (a, b) => this.compare(a, b), this.viewNames.length).forEach((at, view) => { if (at !== undefined) moves[view].push({ type: 'added', id, oldIndex: -1, newIndex: at }); });
         if (old !== next.value) delta.changed.push(next.value);
       } else { this.resolved.delete(id); if (old) delta.removed.push(id); }
     }
-    if (ids.size) { this.revision++; this.cached = null; }
+    if (ids.size) {
+      this.revision++; this.cached = null; this.snapshotCache = null;
+      const entry = { ids: [...ids], moves }, weight = entry.ids.length + moves.reduce((sum, rows) => sum + rows.length, 0);
+      this.journal.entries.set(this.revision, entry); this.journal.weight += weight;
+      while (this.journal.entries.size > 64 || this.journal.weight > 200_000) { const key = this.journal.entries.keys().next().value!; const old = this.journal.entries.get(key)!; this.journal.weight -= old.ids.length + old.moves.reduce((sum, rows) => sum + rows.length, 0); this.journal.entries.delete(key); }
+    }
     return delta;
+    } catch { this.clear(); throw unavailable(); }
   }
   apply(key: string, patch: MemoryPublicationPatch<T>, priority?: number): MemoryPublicationDelta<T> {
     try {
@@ -248,11 +257,11 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
     const revision = this.revision, current = () => revision === this.revision && isCurrent();
     if (!current()) return false;
     if (this.cached?.revision === revision) { deliver(this.cached.values); return true; }
-    const values: T[] = [], stack: SortedNode[] = []; let node = this.root, visited = 0;
+    const values: T[] = [], stack: SortedNode<T>[] = []; let node = this.root, visited = 0;
     const batchSize = this.options.batchSize ?? 256;
     while (node || stack.length) {
       while (node) { stack.push(node); node = node.left; }
-      node = stack.pop()!; values.push(this.resolved.get(node.id)!.value); node = node.right;
+      node = stack.pop()!; values.push(node.value); node = node.right;
       if (++visited % batchSize === 0 && (node || stack.length)) {
         await (this.options.yieldTask?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
         if (!current()) return false;
@@ -260,5 +269,13 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
     }
     if (!current()) return false;
     this.cached = { revision, values }; deliver(values); return true;
+  }
+  snapshot(): MemorySnapshot<T> {
+    if (!this.snapshotCache) this.snapshotCache = createMemorySnapshot({ root: this.root, byId: this.byId, views: this.viewNames, fence: this.fence, journal: this.journal, revision: this.revision });
+    return this.snapshotCache;
+  }
+  /** O(1) delivery: a snapshot retains roots, never copies or visits the collection. */
+  async publishSnapshot(isCurrent: () => boolean, deliver: (values: MemorySnapshot<T>) => void): Promise<boolean> {
+    if (!isCurrent()) return false; const snapshot = this.snapshot(); if (!isCurrent()) return false; deliver(snapshot); return true;
   }
 }

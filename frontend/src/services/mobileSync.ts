@@ -62,15 +62,15 @@ export interface MobileMemoryDelta {
   }>;
 }
 
-export const queueMobileMemorySnapshot = async (uid: string, device: TrustedDevice, sessions: SessionData[]) => {
+export const queueMobileMemorySnapshot = async (uid: string, device: TrustedDevice, sessions: readonly SessionData[]) => {
   assertSyncWritesEnabled(); if (device.ownerUid !== uid || device.status !== 'active') throw new Error('Dispositivo inválido ou revogado.');
   return queuePersonalSyncSnapshot(uid,device.deviceId,sessions);
 };
-export const queueDesktopMemoryDelta = async (uid: string, device: TrustedDevice, sessions: SessionData[]) => {
+export const queueDesktopMemoryDelta = async (uid: string, device: TrustedDevice, sessions: readonly SessionData[]) => {
   assertSyncWritesEnabled(); if (device.ownerUid !== uid || device.status !== 'active') throw new Error('Dispositivo inválido ou revogado.');
   return queuePersonalSyncDelta(uid,device.deviceId,'desktop-to-mobile',sessions);
 };
-export const queueMobileMemoryDelta = async (uid: string, credential: {deviceId:string;privateKeyJwk:JsonWebKey}, sessions: SessionData[]) => {
+export const queueMobileMemoryDelta = async (uid: string, credential: {deviceId:string;privateKeyJwk:JsonWebKey}, sessions: readonly SessionData[]) => {
   assertSyncWritesEnabled(); return queuePersonalSyncDelta(uid,credential.deviceId,'mobile-to-desktop',sessions,credential.privateKeyJwk);
 };
 /** Completion belongs to the atomic server import; callers cannot issue a separate ACK. */
@@ -84,6 +84,6 @@ export const importQueuedDesktopSyncEnvelopes = async (ownerUid: string, deviceI
   assertSyncWritesEnabled(); return importPersonalMobileSync(ownerUid,deviceId,'mobile-to-desktop',privateKey);
 };
 /** Retention requires server proof of committed receipts and device coverage. Keep all artifacts until that rollout is validated. */
-export const cleanupMobileSyncArtifacts = async (ownerUid: string, sessions: SessionData[], devices: TrustedDevice[] = [], olderThanMs = 30*24*60*60*1000): Promise<{deletedEnvelopes:number;deletedTombstones:number;retainedTombstones:number}> => {
+export const cleanupMobileSyncArtifacts = async (ownerUid: string, sessions: readonly SessionData[], devices: TrustedDevice[] = [], olderThanMs = 30*24*60*60*1000): Promise<{deletedEnvelopes:number;deletedTombstones:number;retainedTombstones:number}> => {
   assertSyncWritesEnabled(); void ownerUid; void sessions; void devices; void olderThanMs; throw new Error('A retenção está em validação. Os envelopes e registos de eliminação foram conservados.');
 };

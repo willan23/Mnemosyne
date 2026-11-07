@@ -41,7 +41,7 @@ function saveCheckpoint(
 
 export const useSemanticConnectionBackfill = (
   user: User | null,
-  sessions: SessionData[],
+  sessions: readonly SessionData[],
   enabled = true,
 ) => {
   const [budgetEpoch, setBudgetEpoch] = useState(0);

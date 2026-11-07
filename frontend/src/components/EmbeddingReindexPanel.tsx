@@ -6,7 +6,7 @@ import { onEmbeddingSelectionChanged, readEmbeddingSelection } from '../services
 import { isMemoryCryptoReady, onMemoryCryptoChanged } from '../services/memoryCrypto';
 import { useTranslation } from '../utils/translations';
 
-export function EmbeddingReindexPanel({ uid, sessions }: { uid: string | null; sessions: SessionData[] }) {
+export function EmbeddingReindexPanel({ uid, sessions }: { uid: string | null; sessions: readonly SessionData[] }) {
   const { t } = useTranslation();
   const current = useRef(sessions);
   const controller = useRef<AbortController | null>(null);

@@ -65,7 +65,7 @@ interface CognitiveSidebarProps {
   onClose: () => void;
   activeTab?: SidebarTab;
   onTabChange?: (tab: SidebarTab) => void;
-  allSessions?: SessionData[];
+  allSessions?: readonly SessionData[];
   onSaveMemory?: import('../types/universe').MemorySaveCallback;
   onDeleteMemory?: import('../types/universe').MemoryDeleteCallback;
   onOpenTransmission?: (
@@ -206,7 +206,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
   };
 
   // Convert universe memories to SessionData format for InsightsPanel/WebResearchPanel if needed
-  const sessionDataList: SessionData[] = useMemo(() => {
+  const sessionDataList: readonly SessionData[] = useMemo(() => {
     if (allSessions.length > 0) return allSessions;
     return memories.map((m) => ({
       id: m.id,

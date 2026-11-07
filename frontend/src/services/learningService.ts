@@ -34,7 +34,7 @@ interface PersistLearningInput {
   tags?: string[];
   category?: string | null;
   attachments?: Attachment[];
-  existingMemories?: SessionData[];
+  existingMemories?: readonly SessionData[];
   source: LearningSource;
   modality: 'text' | 'image' | 'audio' | 'video' | 'document' | 'mixed';
   provider?: string | null;
@@ -88,7 +88,7 @@ export const sessionToMemoryObject = (session: SessionData): MemoryObject => ({
   teamId: session.teamId,
 });
 
-const generateSemantics = (text: string, sessions: SessionData[], uid: string, assertCurrent: () => void, context?: AiGenerationContext, excludeId?: string) =>
+const generateSemantics = (text: string, sessions: readonly SessionData[], uid: string, assertCurrent: () => void, context?: AiGenerationContext, excludeId?: string) =>
   withSemanticCandidates(sessions, { assertCurrent, eligible: semanticCandidateEligibility(uid, context?.scope.kind === 'team' ? context.scope.teamId : undefined, excludeId) },
     (candidates, guard) => cognitiveEngine.processMemory(text, candidates, { assertCurrent: guard }));
 async function guardGeneration(uid: string, context?: AiGenerationContext) {
@@ -237,7 +237,7 @@ export const reviseLearnedMemory = async (
   memoryId: string,
   uid: string,
   text: string,
-  existingMemories: SessionData[] = [],
+  existingMemories: readonly SessionData[] = [],
   generationContext?: AiGenerationContext,
   personalRevisionBaseline?: PersonalRevisionBaseline,
   teamRevisionBaseline?: TeamRevisionBaseline,
@@ -279,7 +279,7 @@ export const learnGeneratedText = async (
   uid: string,
   prompt: string,
   output: string,
-  existingMemories: SessionData[] = [],
+  existingMemories: readonly SessionData[] = [],
   generationContext?: AiGenerationContext,
 ): Promise<LearnedMemoryResult> => persistLearnedMemory({
   uid,
@@ -302,7 +302,7 @@ export const learnGeneratedText = async (
 export const importCapsuleAsMemory = async (
   uid: string,
   payload: import('./capsuleImportRecovery').CapsuleImportPayload,
-  existingMemories: SessionData[] = [],
+  existingMemories: readonly SessionData[] = [],
   assertCurrent: () => void = () => {},
 ): Promise<LearnedMemoryResult & { importedCount: number; memoryIds: string[] }> => {
   const captured = structuredClone(payload);
@@ -316,7 +316,7 @@ export const learnGeneratedImage = async (
   uid: string,
   prompt: string,
   image: GeneratedImageResult,
-  existingMemories: SessionData[] = [],
+  existingMemories: readonly SessionData[] = [],
   generationContext?: AiGenerationContext,
 ): Promise<LearnedMemoryResult> => {
   await guardGeneration(uid, generationContext);
@@ -423,7 +423,7 @@ export const collectDroppedFiles = async (dataTransfer: DataTransfer): Promise<F
   return Array.from(dataTransfer.files || []);
 };
 
-export const learnDocumentBatch = async (uid: string, files: File[], existingMemories: SessionData[] = [], options?: {assertCurrent?:()=>void}): Promise<DocumentImportResult> => {
+export const learnDocumentBatch = async (uid: string, files: File[], existingMemories: readonly SessionData[] = [], options?: {assertCurrent?:()=>void}): Promise<DocumentImportResult> => {
   const captured=[...files];
   return startCapturedDocumentImport(uid,guard=>buildDocumentImportPlan(uid,captured,existingMemories,guard),options?.assertCurrent);
 };

@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Sessões persistentes e prévia por deltas, 7 de novembro de 2026
+
+A [publicação persistente de sessões](PUBLICACAO_PERSISTENTE_SESSOES_2026-11-07.md) substitui o array materializado de `useSessions`, mantém contagens/catálogos por alterações e leva deltas à prévia de captura. Passaram **2246 testes frontend/237 ficheiros**, 123 focados/8, TypeScript/build/identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Chromium com 10.000 registos confirmou publicação sem enumeração, uma projeção/dois movimentos por edição, paridade, retirada e zero rede externa. A falha inicial do harness e a falha de espera de foco da suite geral ficaram conservadas; a repetição geral passou.
+
+Universo/alterações otimistas, outros consumidores e compactação/recuperação das filas ainda exigem trabalho. A preparação/transmissão inicial, qualidade, rollout, CI e clientes finais continuam pendentes. **Fase 5 e objetivo completo abertos, 49 switches fechados, sem deploy ou chamadas pagas.** Functions/Rules são reutilizadas por hashes. Prova `memory-snapshots-local-validation-20261107.json`. Os blocos seguintes conservam a cronologia.
+
 ## Universo — captura e edição indexadas, 6 de novembro de 2026
 
 A [escrita indexada no Universo](UNIVERSO_ESCRITA_INDICE_2026-11-06.md) conserva a ordem crescente da vista e a ordem de cada listener no Worker, incluindo variantes por origem, supressão de legados e membership. Passaram **2214 testes frontend/235 ficheiros**, 176 focados/9, TypeScript/build, identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Chromium com 10.000 vetores/384 dimensões confirmou paridade nas duas ordens, zero projeções adicionais na consulta do editor e deltas unitários, sem pedidos externos ou inferência. O painel/motor/store reais foram testados separadamente com SDK/modelo simulados.

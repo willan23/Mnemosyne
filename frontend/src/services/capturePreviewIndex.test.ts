@@ -34,3 +34,19 @@ it('clears the index after invalid protocol and cannot reuse retired plaintext',
   expect(() => index.handle({ v: 1, id: 2, changed: [row('b'), row('b')], query: '' })).toThrow('capture_preview_unavailable');
   expect(index.handle({ v: 1, id: 3, changed: [], query: 'astronomical observation' })).toEqual([]);
 });
+it('replays anonymous positions and preserves the relative order of authorized ties', () => {
+  const index = new CapturePreviewIndex();
+  index.handle({ v: 1, id: 1, changed: [row('b'), row('a')], order: [null, 'b', null, 'a'], query: '' });
+  expect(index.handle({ v: 1, id: 2, changed: [], moves: [{ type: 'removed', index: 3 }, { type: 'added', index: 0, id: 'a' }], query: 'astronomical observation' }).map(hit => hit.id)).toEqual(['a', 'b']);
+  expect(index.handle({ v: 1, id: 3, changed: [], removed: ['a'], moves: [{ type: 'removed', index: 0 }, { type: 'added', index: 0, id: null }], query: 'astronomical observation' }).map(hit => hit.id)).toEqual(['b']);
+});
+it.each([
+  { moves: [{ type: 'removed', index: 10 }] }, { moves: [{ type: 'added', index: 2, id: null }] },
+  { moves: [{ type: 'added', index: 0, id: 'a' }] }, { moves: [{ type: 'added', index: 0, id: 'missing' }] },
+  { moves: [{ type: 'removed', index: .5 }] }, { moves: [{ type: 'removed', index: 0, id: 'a' }] },
+  { order: ['a', 'a'] }, { order: [false] }, { order: [], moves: [] }, { removed: ['a'] },
+])('retires the whole index when order/patch validation fails: %j', invalid => {
+  const index = new CapturePreviewIndex(); index.handle({ v: 1, id: 1, changed: [row('a')], order: ['a'], query: '' });
+  expect(() => index.handle({ v: 1, id: 2, changed: [], query: '', ...invalid } as unknown as Parameters<CapturePreviewIndex['handle']>[0])).toThrow('capture_preview_unavailable');
+  expect(index.handle({ v: 1, id: 3, changed: [], query: 'astronomical observation' })).toEqual([]);
+});

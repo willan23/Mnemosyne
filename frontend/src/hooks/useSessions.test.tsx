@@ -6,6 +6,7 @@ import type { IndexedSemanticWriteMessage } from '../services/indexedSemanticWri
 import { selectSemanticWriteNeighbors } from '../services/semanticWriteClient';
 import { semanticCandidateEligibility } from '../services/semanticWriteScope';
 import { CURRENT_EMBEDDING_SPACE } from '../services/embeddingModel';
+import { isMemorySnapshot, memoryById, memorySnapshotScopeActive } from '../services/memorySnapshot';
 
 type SnapshotDoc = { id: string; data: () => Record<string, unknown> };
 type SnapshotChange = { type: 'added' | 'modified' | 'removed'; doc: SnapshotDoc; oldIndex: number; newIndex: number };
@@ -200,7 +201,7 @@ describe('session cache authorization', () => {
       { type: 'added', doc: doc('team', { teamId: 'withdrawn' }), oldIndex: -1, newIndex: 1 },
       { type: 'added', doc: doc('invalid', { teamId: 3 }), oldIndex: -1, newIndex: 2 },
     ])));
-    await waitFor(() => expect(result.current.sessions).toEqual([]));
+    await waitFor(() => expect(Array.from(result.current.sessions)).toEqual([]));
     expect(state.resolve).not.toHaveBeenCalled();
   });
   it('coalesces pending decryption with explicit deltas and removes a pending row without waiting for it', async () => {
@@ -235,8 +236,8 @@ describe('session cache authorization', () => {
     const { result, rerender } = renderHook(({ user }) => useSessions(user, '', filters), { initialProps: { user: alice } });
     let resume!: () => void;
     const gate = new Promise<void>(resolve => { resume = resolve; });
-    const publish = IncrementalMemoryPublication.prototype.publish;
-    const spy = vi.spyOn(IncrementalMemoryPublication.prototype, 'publish').mockImplementation(function (this: IncrementalMemoryPublication<{ id: string; timestamp: number }>, ...args) {
+    const publish = IncrementalMemoryPublication.prototype.publishSnapshot;
+    const spy = vi.spyOn(IncrementalMemoryPublication.prototype, 'publishSnapshot').mockImplementation(function (this: IncrementalMemoryPublication<{ id: string; timestamp: number }>, ...args) {
       return gate.then(() => publish.apply(this, args));
     });
     try {
@@ -244,7 +245,7 @@ describe('session cache authorization', () => {
       expect(spy).toHaveBeenCalledOnce();
       rerender({ user: { uid: 'bob' } as User });
       await act(async () => resume());
-      expect(result.current.allSessions).toEqual([]);
+      expect(Array.from(result.current.allSessions)).toEqual([]);
       await act(async () => state.listeners[1]({ docs: [doc('bob', { uid: 'bob' })] }));
       await waitFor(() => expect(result.current.sessions.map(row => row.id)).toEqual(['bob']));
     } finally { spy.mockRestore(); }
@@ -313,6 +314,29 @@ describe('session cache authorization', () => {
     await waitFor(() => expect(result.current.searchResults.hits).toEqual([]));
     await act(async () => state.listeners[0]({ docs: [changed], changedIds: [] }));
     await waitFor(() => expect(result.current.searchResults.hits[0]?.memory.text).toBe('synthetic recovered'));
+  });
+  it('withdraws resource labels with a rejected publication and rebuilds the bucket on a fresh retry', async () => {
+    const { result } = renderHook(() => useSessions(alice, '', filters));
+    await act(async () => state.listeners[0]({ docs: [doc('a', { tags: ['private-label'], category: 'private-category' })] }));
+    await waitFor(() => expect(result.current.availableTags).toEqual(['private-label']));
+    const old = result.current.allSessions;
+    await act(async () => state.listeners[0]({ docs: [doc('a', { timestamp: Infinity, tags: ['rejected-label'] })] }));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(0));
+    expect(result.current.availableTags).toEqual([]); expect(result.current.availableCategories).toEqual([]);
+    expect(memorySnapshotScopeActive(old)).toBe(false);
+    const recovered = doc('a', { tags: ['fresh-label'], category: 'fresh-category' });
+    await act(async () => state.listeners[0]({ docs: [recovered], changedIds: [] }));
+    await waitFor(() => expect(result.current.availableTags).toEqual(['fresh-label']));
+    expect(result.current.availableCategories).toEqual(['fresh-category']);
+  });
+  it('retires the publication and labels if malformed resource metadata cannot be indexed', async () => {
+    const { result } = renderHook(() => useSessions(alice, '', filters));
+    await act(async () => state.listeners[0]({ docs: [doc('a', { tags: ['old-label'] })] }));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    const old = result.current.allSessions;
+    await act(async () => state.listeners[0]({ docs: [doc('a', { tags: 10 })] }));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(0));
+    expect(result.current.availableTags).toEqual([]); expect(result.current.availableCategories).toEqual([]); expect(memorySnapshotScopeActive(old)).toBe(false);
   });
   it('records only settled local retrieval counts and index deltas without the query or memory IDs', async () => {
     const { result, rerender } = renderHook(({ query }) => useSessions(alice, query, filters), { initialProps: { query: 'SYNTHETIC-QUERY' } });
@@ -478,14 +502,14 @@ describe('session cache authorization', () => {
     await waitFor(()=>expect(result.current.sessions).toHaveLength(1));
     state.disposeIndex.mockClear();
     rerender({ user: { uid: 'bob' } as User });
-    expect(result.current.sessions).toEqual([]);
+    expect(Array.from(result.current.sessions)).toEqual([]);
     expect(state.disposeIndex).toHaveBeenCalled();
     rerender({ user: alice });
     state.ready = false;
     state.disposeIndex.mockClear();
     act(() => state.cryptoChanged?.());
-    expect(result.current.sessions).toEqual([]);
-    expect(result.current.allSessions).toEqual([]);
+    expect(Array.from(result.current.sessions)).toEqual([]);
+    expect(Array.from(result.current.allSessions)).toEqual([]);
     expect(state.disposeIndex).toHaveBeenCalled();
   });
 
@@ -496,7 +520,7 @@ describe('session cache authorization', () => {
     act(() => state.listeners[0]({ docs: [doc('old')] }));
     await act(async () => state.listeners[0]({ docs: [] }));
     await act(async () => finish({ text: 'old private text', encrypted: true, locked: false }));
-    expect(result.current.allSessions).toEqual([]);
+    expect(Array.from(result.current.allSessions)).toEqual([]);
   });
 
   it('clears denied subscriptions and ignores an in-flight decryption after denial', async () => {
@@ -507,8 +531,39 @@ describe('session cache authorization', () => {
     state.resolve.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     act(() => state.listeners[0]({ docs: [doc('pending')] }));
     act(() => state.errors[0]());
-    expect(result.current.allSessions).toEqual([]);
+    expect(Array.from(result.current.allSessions)).toEqual([]);
     await act(async () => finish({ text: 'stale', encrypted: true, locked: false }));
-    expect(result.current.allSessions).toEqual([]);
+    expect(Array.from(result.current.allSessions)).toEqual([]);
   });
+});
+
+it('publishes an immutable session delta without enumerating the visible collection or rebuilding its catalogs', async () => {
+  const { result } = renderHook(() => useSessions(alice, '', filters));
+  await act(async () => state.listeners[0]({ docs: [doc('a', { tags: ['keep'], category: 'Notes' }), doc('b', { tags: ['keep'], category: 'Notes' }), doc('dead', { deletedAt: 2, tags: ['hidden'], category: 'Hidden' })] }));
+  await waitFor(() => expect(isMemorySnapshot(result.current.allSessions)).toBe(true)); expect(result.current.sessions).toHaveLength(2);
+  const previous = result.current.allSessions, tags = result.current.availableTags, categories = result.current.availableCategories;
+  expect(tags).toEqual(['keep']); expect(categories).toEqual(['Notes']);
+  const iterate = vi.spyOn(Object.getPrototypeOf(previous), Symbol.iterator).mockImplementation(() => { throw Error('Traversed the published snapshot'); });
+  const materialize = vi.spyOn(IncrementalMemoryPublication.prototype, 'publish').mockImplementation(() => { throw Error('Materialized an array for a delta'); });
+  try {
+    await act(async () => state.listeners[0](deltaOnly([{ type: 'modified', doc: doc('b', { text: 'Updated', tags: ['keep'], category: 'Notes' }), oldIndex: 1, newIndex: 1 }])));
+    await waitFor(() => expect(memoryById(result.current.sessions, 'b')?.text).toBe('Updated')); expect(result.current.allSessions === previous).toBe(false);
+    expect(memoryById(previous, 'b')?.text).toBe('b'); expect(result.current.availableTags).toBe(tags); expect(result.current.availableCategories).toBe(categories);
+    expect(iterate).not.toHaveBeenCalled(); expect(materialize).not.toHaveBeenCalled();
+  } finally { iterate.mockRestore(); materialize.mockRestore(); }
+});
+
+it('retires the view on a same-UID auth object replacement and accepts a fresh publication without reviving it', async () => {
+  const { result, rerender } = renderHook(({ user }) => useSessions(user, '', filters), { initialProps: { user: alice } });
+  await act(async () => state.listeners[0]({ docs: [doc('old')] })); await waitFor(() => expect(result.current.sessions).toHaveLength(1)); const previous = result.current.allSessions;
+  rerender({ user: { uid: 'alice' } as User }); expect(Array.from(result.current.allSessions)).toEqual([]); expect(memorySnapshotScopeActive(previous)).toBe(false);
+  await act(async () => state.listeners[1]({ docs: [doc('fresh')] })); await waitFor(() => expect(result.current.sessions.map(row => row.id)).toEqual(['fresh'])); expect(() => previous[0]).toThrow('memory_snapshot_unavailable');
+});
+
+it('retains authorized personal rows and catalogs while withdrawing a team before replacement snapshots arrive', async () => {
+  state.teamIds = ['crew']; const { result, rerender } = renderHook(() => useSessions(alice, '', filters));
+  await act(async () => state.listeners[0]({ docs: [doc('personal', { tags: ['personal'], category: 'Personal' })] }));
+  await act(async () => state.listeners[1]({ docs: [doc('team', { teamId: 'crew', tags: ['private-team'], category: 'Team' })] }));
+  await waitFor(() => expect(result.current.availableTags).toEqual(['personal', 'private-team'])); state.teamIds = []; rerender();
+  expect(result.current.sessions.map(row => row.id)).toEqual(['personal']); expect(result.current.availableTags).toEqual(['personal']); expect(result.current.availableCategories).toEqual(['Personal']);
 });

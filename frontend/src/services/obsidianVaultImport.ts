@@ -67,11 +67,11 @@ export async function buildObsidianImportPlan(input:ParsedObsidianNote[],options
     statsLabel:summarizeParseStats({notes:notes.length,withFrontmatter:notes.filter(note=>Object.keys(note.frontmatter.raw).length>0).length,wikilinkRefs:notes.reduce((sum,note)=>sum+note.wikilinks.length,0),lanes}),skipped:options.skipped??0}};
 }
 export{looksLikeObsidianVault};
-export async function importParsedObsidianNotes(uid:string,notes:ParsedObsidianNote[],_existingMemories?:SessionData[],options:ObsidianImportOptions={}):Promise<ObsidianVaultImportResult>{
+export async function importParsedObsidianNotes(uid:string,notes:ParsedObsidianNote[],_existingMemories?:readonly SessionData[],options:ObsidianImportOptions={}):Promise<ObsidianVaultImportResult>{
   const captured=captureNotes(notes);const selected={...options};
   return startCapturedObsidianImport(uid,guard=>buildObsidianImportPlan(captured,selected,guard),selected.assertCurrent,selected.onProgress);
 }
-export async function importObsidianVault(uid:string,files:File[],_existingMemories?:SessionData[],options:{onProgress?:(done:number,total:number)=>void;assertCurrent?:()=>void}={}):Promise<ObsidianVaultImportResult>{
+export async function importObsidianVault(uid:string,files:File[],_existingMemories?:readonly SessionData[],options:{onProgress?:(done:number,total:number)=>void;assertCurrent?:()=>void}={}):Promise<ObsidianVaultImportResult>{
   const captured=[...files];const selected={...options};
   return startCapturedObsidianImport(uid,async guard=>{
     if(captured.some(file=>isMarkdownVaultFile(file)&&file.size>1_000_000))throw new Error('O lote contém uma nota demasiado grande.');

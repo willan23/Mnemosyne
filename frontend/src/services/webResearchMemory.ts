@@ -21,7 +21,7 @@ export function formatResearchAsMemory(result:WebResearchResult):string {
     ...result.main_ideas.map((idea,index)=>`${index+1}. ${idea}`),'','Conceitos-chave',result.key_concepts.map(concept=>`#${concept}`).join(' '),'','Fontes',
     ...result.sources.map((source,index)=>`${index+1}. ${source.title} - ${source.url}`)].join('\n');
 }
-export function buildPersonalResearchContext(sessions:SessionData[],uid:string,selectedIds:readonly string[]):string[] {
+export function buildPersonalResearchContext(sessions:readonly SessionData[],uid:string,selectedIds:readonly string[]):string[] {
   let remaining=12000;const result:string[]=[];
   for(const memory of personalSemanticCandidates(sessions,uid).filter(memory=>selectedIds.includes(memory.id)).slice(0,8)){
     const budget=Math.min(2000,remaining);let text='';let bytes=0;
@@ -31,7 +31,7 @@ export function buildPersonalResearchContext(sessions:SessionData[],uid:string,s
   return result;
 }
 /** Capture the result and owner before inference; keep the guard through durable creation and its receipts. */
-export async function saveWebResearchMemory(input:{uid:string;result:WebResearchResult;sessions:SessionData[];assertCurrent?:()=>void},deps=defaults()) {
+export async function saveWebResearchMemory(input:{uid:string;result:WebResearchResult;sessions:readonly SessionData[];assertCurrent?:()=>void},deps=defaults()) {
   const result=parseWebResearchResult(input.result);deps.enabled();
   if(deps.pending(input.uid))throw new Error('Recupera ou cancela a criação pendente antes de guardar outra pesquisa.');
   return withAiGenerationContext({uid:input.uid},async context=>{

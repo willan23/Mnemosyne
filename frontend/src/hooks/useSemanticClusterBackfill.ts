@@ -5,7 +5,7 @@ import {useSyncFeedback} from './useSyncFeedback';
 import {observeSemanticClusterRequests} from '../services/semanticClusterRecovery';
 import {runSemanticClusterMaintenance, semanticClusterMaintenanceKey} from '../services/semanticClusterMaintenance';
 
-export const useSemanticClusterBackfill = (user: User | null, allSessions: SessionData[], enabled = true) => {
+export const useSemanticClusterBackfill = (user: User | null, allSessions: readonly SessionData[], enabled = true) => {
   const feedback = useSyncFeedback(enabled);
   const running = useRef(false), attempted = useRef(''), alive = useRef(false);
   const [, refresh] = useState(0);
