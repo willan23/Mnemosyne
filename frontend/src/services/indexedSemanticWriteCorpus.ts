@@ -6,12 +6,18 @@ import { readSemanticWriteScope, type SemanticWriteScope } from './semanticWrite
 import { SEMANTIC_WRITE_LIMITS as limits, semanticWriteId, type SemanticWriteCandidate } from './semanticWriteProtocol';
 import type { SemanticWriteOptions, SemanticWriteSelection } from './semanticWriteClient';
 import { INDEXED_SEMANTIC_WRITE_LIMITS as capacity, type IndexedSemanticDocument, type IndexedSemanticWriteMessage } from './indexedSemanticWriteProtocol';
+import { SemanticWriteSourceState, type SemanticWriteSourceSnapshot } from './semanticWriteSourceState';
+import { eraseMemoryNode, insertMemoryNode, memoryNode, memoryNodeCount, memoryNodeRange, type PersistentMemoryNode } from './persistentMemoryTree';
 
 type Candidate = SemanticWriteCandidate & { timestamp: number };
-type Pending<T> = { type: 'patch'; source: string; patch: MemoryPublicationPatch<T>; priority?: number } | { type: 'remove'; source: string } | { type: 'exclude'; source: string; key: string; changes: Map<string, boolean>; inFlight?: boolean };
+type Pending<T> = { type: 'patch'; source: string; key: string; patch: MemoryPublicationPatch<T>; priority: number } | { type: 'remove'; source: string } | { type: 'exclude'; source: string; key: string; changes: Map<string, boolean>; inFlight?: boolean };
+type SourceVersion<T> = { id: string; key: string; version: SemanticWriteSourceSnapshot<T> };
+type ExclusionVersion = { id: string; key: string; documentId: string };
+type RecoveryCapture<T> = { revision: number; sources: PersistentMemoryNode<SourceVersion<T>> | null; exclusions: PersistentMemoryNode<ExclusionVersion> | null };
 interface Binding { owner: IndexedSemanticWriteCorpus<Candidate>; revision: number; size: number; defaultScope?: SemanticWriteScope; source?: string }
 const bindings = new WeakMap<object, Binding>();
 const fail = () => new Error('semantic_write_unavailable');
+const compareKeys = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 type Message = IndexedSemanticWriteMessage extends infer M ? M extends { seq: number } ? Omit<M, 'seq'> : never : never;
 
 /** Scope-owned replica. Initial load is batched once; subsequent requests project only snapshot deltas. */
@@ -22,8 +28,17 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
   private pendingChanges = 0;
   private sources = new Map<string, string>();
   private scopes = new Map<string, string>();
-  private currentSources = new Map<string, Map<string, T | null>>();
+  private currentSources = new Map<string, SemanticWriteSourceState<T>>();
   private exclusions = new Map<string, Set<string>>();
+  private sourceVersions: RecoveryCapture<T>['sources'] = null;
+  private exclusionVersions: RecoveryCapture<T>['exclusions'] = null;
+  private pauses = new Set<() => void>();
+  private nextSourceOrdinal = 0;
+  private retainedReferences = 0;
+  private needsRebuild = true;
+  private transportGeneration = 0;
+  private flushScheduled = false;
+  private seed = (Math.random() * 0x100000000) >>> 0 || 1;
   private worker: Worker | null = null;
   private seq = 0;
   private requests = new Map<number, { reject: () => void }>();
@@ -31,11 +46,24 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
   private readScope: MemoryReadScope;
   private get: (id: string) => T | undefined;
   private createWorker: () => Worker;
-  private options: { direction?: 'asc' | 'desc'; sourceBase?: number };
-  constructor(scope: MemoryReadScope, get: (id: string) => T | undefined, createWorker = () => new Worker(new URL('./indexedSemanticWriteWorker.ts', import.meta.url), { type: 'module' }), options: { direction?: 'asc' | 'desc'; sourceBase?: number } = {}) {
+  private options: { direction?: 'asc' | 'desc'; sourceBase?: number; yieldTask?: () => Promise<void> };
+  constructor(scope: MemoryReadScope, get: (id: string) => T | undefined, createWorker = () => new Worker(new URL('./indexedSemanticWriteWorker.ts', import.meta.url), { type: 'module' }), options: { direction?: 'asc' | 'desc'; sourceBase?: number; yieldTask?: () => Promise<void> } = {}) {
     this.readScope = { uid: scope.uid, teamIds: new Set(scope.teamIds) };
-    this.get = get; this.createWorker = createWorker; this.options = { direction: options.direction, sourceBase: options.sourceBase };
+    this.get = get; this.createWorker = createWorker; this.options = { direction: options.direction, sourceBase: options.sourceBase, yieldTask: options.yieldTask };
   }
+  private random = () => { let value = this.seed; value ^= value << 13; value ^= value >>> 17; value ^= value << 5; return this.seed = value >>> 0; };
+  private yieldTask(): Promise<void> {
+    if (this.closed) return Promise.reject(fail());
+    const generation = this.transportGeneration, waiting = this.options.yieldTask?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cancel = () => { if (!settled) { settled = true; this.pauses.delete(cancel); reject(fail()); } };
+      this.pauses.add(cancel);
+      void waiting.then(() => { if (generation !== this.transportGeneration || this.closed) { cancel(); return; } if (!settled) { settled = true; this.pauses.delete(cancel); resolve(); } }, cancel);
+      if (generation !== this.transportGeneration || this.closed) cancel();
+    });
+  }
+  private versionId(state: SemanticWriteSourceState<T>): string { return String(state.ordinal).padStart(16, '0'); }
   private source(key: string): string { let id = this.sources.get(key); if (!id) { id = 's' + this.sources.size; this.sources.set(key, id); } return id; }
   private scope(key: string): string { let id = this.scopes.get(key); if (!id) { id = 'c' + this.scopes.size; this.scopes.set(key, id); } return id; }
   private cohort(row: Candidate): string | null {
@@ -52,34 +80,39 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
   }
   apply(source: string, patch: MemoryPublicationPatch<T>, priority?: number): void {
     if (this.closed) return;
-    let values = this.currentSources.get(source);
-    if (!values) { values = new Map(); this.currentSources.set(source, values); }
-    else if (patch.order.reset) { const retained = new Map<string, T | null>(); for (const id of patch.order.reset) if (values.has(id)) retained.set(id, values.get(id)!); values = retained; this.currentSources.set(source, values); }
-    for (const id of patch.removed) values.delete(id);
-    for (const row of patch.changed) values.set(row.id, row.value);
-    this.pending.push({ type: 'patch', source: this.source(source), patch, priority }); this.pendingChanges += patch.changed.length; this.revision++;
-    if (this.pending.length > capacity.pendingBatches || this.pendingChanges > capacity.pendingChanges) { this.clear(); return; }
-    if (this.worker) this.scheduleFlush();
+    try {
+      if (!semanticWriteId(source) || priority !== undefined && !Number.isFinite(priority)) throw fail();
+      let state = this.currentSources.get(source);
+      if (!state) { const ordinal = this.nextSourceOrdinal++; state = new SemanticWriteSourceState(priority ?? (this.options.sourceBase ?? 0) + ordinal, this.random, ordinal); this.currentSources.set(source, state); this.retainedReferences++; }
+      else if (priority !== undefined && priority !== state.priority) throw fail();
+      const before = state.size; state.apply(patch); this.retainedReferences += state.size - before; this.revision++;
+      this.sourceVersions = insertMemoryNode(this.sourceVersions, memoryNode(Object.freeze({ id: this.versionId(state), key: source, version: state.capture() }), this.random()), compareKeys);
+      if (this.retainedReferences > capacity.retainedReferences) throw fail();
+      if (this.needsRebuild) return;
+      this.enqueue({ type: 'patch', source: this.source(source), key: source, patch, priority: state.priority }, this.patchWeight(patch));
+    } catch { this.clear(); }
   }
   removeSource(source: string): void {
     if (this.closed) return;
-    this.currentSources.delete(source);
-    this.pending.push({ type: 'remove', source: this.source(source) }); this.revision++;
-    if (this.pending.length > capacity.pendingBatches) { this.clear(); return; }
-    if (this.worker) this.scheduleFlush();
+    if (!semanticWriteId(source)) { this.clear(); return; }
+    const state = this.currentSources.get(source); if (state) { this.retainedReferences -= state.size + 1; this.sourceVersions = eraseMemoryNode(this.sourceVersions, this.versionId(state), compareKeys); this.currentSources.delete(source); }
+    this.revision++; if (!this.needsRebuild) this.enqueue({ type: 'remove', source: this.source(source) }, 0);
   }
   exclude(source: string, id: string, excluded: boolean): void {
     if (this.closed) return;
+    if (!semanticWriteId(source) || !semanticWriteId(id) || typeof excluded !== 'boolean') { this.clear(); return; }
+    if (Boolean(this.exclusions.get(source)?.has(id)) === excluded) return;
+    let ids = this.exclusions.get(source); if (!ids) { ids = new Set(); this.exclusions.set(source, ids); }
+    const versionId = JSON.stringify([source, id]);
+    if (excluded) { ids.add(id); this.retainedReferences++; this.exclusionVersions = insertMemoryNode(this.exclusionVersions, memoryNode(Object.freeze({ id: versionId, key: source, documentId: id }), this.random()), compareKeys); }
+    else { ids.delete(id); this.retainedReferences--; if (!ids.size) this.exclusions.delete(source); this.exclusionVersions = eraseMemoryNode(this.exclusionVersions, versionId, compareKeys); }
+    this.revision++; if (this.retainedReferences > capacity.retainedReferences) { this.clear(); return; }
+    if (this.needsRebuild) return;
     const key = this.source(source), last = this.pending.at(-1);
-    if (Boolean(this.exclusions.get(key)?.has(id)) === excluded) return;
-    let ids = this.exclusions.get(key); if (!ids) { ids = new Set(); this.exclusions.set(key, ids); }
-    if (excluded) ids.add(id); else ids.delete(id);
     // A tombstone reset can contain thousands of IDs; one queue entry, bounded wire batches.
     if (last?.type === 'exclude' && last.source === key && !last.inFlight) { if (!last.changes.has(id)) this.pendingChanges++; last.changes.set(id, excluded); }
-    else { this.pending.push({ type: 'exclude', source: key, key: source, changes: new Map([[id, excluded]]) }); this.pendingChanges++; }
-    this.revision++;
-    if (this.pending.length > capacity.pendingBatches || this.pendingChanges > capacity.pendingChanges) { this.clear(); return; }
-    if (this.worker) this.scheduleFlush();
+    else { this.enqueue({ type: 'exclude', source: key, key: source, changes: new Map([[id, excluded]]) }, 1); return; }
+    this.checkQueue();
   }
   /** Membership changes are rare scope transitions, not per-write preparation. Reproject only affected teams. */
   setTeams(teamIds: ReadonlySet<string>): void {
@@ -89,7 +122,7 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
     this.readScope = { uid: this.readScope.uid, teamIds: new Set(teamIds) }; this.revision++;
     for (const [source, values] of this.currentSources) {
       const rows: MemoryPublicationPatch<T>['changed'] = [];
-      for (const [id, value] of values) if (value?.teamId && changed.has(value.teamId)) rows.push({ id, value });
+      for (const [id, value] of values.entries()) if (value?.teamId && changed.has(value.teamId)) rows.push({ id, value });
       if (rows.length) this.apply(source, { changed: rows, removed: [], order: { changes: [] } });
     }
   }
@@ -104,23 +137,38 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
   }
   clear(): void {
     if (this.closed) return;
-    this.closed = true; this.revision++; this.worker?.terminate(); this.worker = null;
+    this.closed = true; this.revision++; this.retireTransport();
+    this.pending = []; this.pendingChanges = 0; this.currentSources.clear(); this.exclusions.clear(); this.sourceVersions = this.exclusionVersions = null; this.retainedReferences = 0; this.needsRebuild = false;
+  }
+  private retireTransport(): void {
+    this.transportGeneration++; this.worker?.terminate(); this.worker = null;
     for (const request of this.requests.values()) request.reject(); this.requests.clear();
-    this.pending = []; this.pendingChanges = 0; this.sources.clear(); this.scopes.clear(); this.currentSources.clear(); this.exclusions.clear();
+    for (const cancel of this.pauses) cancel(); this.pauses.clear();
+    this.seq = 0; this.sources.clear(); this.scopes.clear();
+  }
+  private enqueue(entry: Pending<T>, changes: number): void { this.pending.push(entry); this.pendingChanges += changes; this.checkQueue(); }
+  private patchWeight(patch: MemoryPublicationPatch<T>): number { return patch.changed.length + patch.removed.length + patch.order.changes.length + (patch.order.reset?.length ?? 0); }
+  private checkQueue(): void {
+    const hot = Boolean(this.worker || this.flushScheduled);
+    if (this.pending.length > capacity.pendingBatches || this.pendingChanges > capacity.pendingChanges || this.sources.size > this.currentSources.size + this.exclusions.size + capacity.pendingBatches || this.scopes.size > this.readScope.teamIds.size + 1 + capacity.pendingBatches) {
+      this.needsRebuild = true; this.pending = []; this.pendingChanges = 0; this.retireTransport();
+    }
+    if (hot) this.scheduleFlush();
   }
   private current(revision: number) { if (this.closed || revision !== this.revision) throw fail(); }
   private exchange(message: Message, signal?: AbortSignal): Promise<Record<string, unknown>> {
     if (this.closed || signal?.aborted) return Promise.reject(fail());
     const seq = ++this.seq;
     if (!this.worker) this.worker = this.createWorker();
-    const worker = this.worker;
+    const worker = this.worker, generation = this.transportGeneration;
     return new Promise((resolve, reject) => {
       let settled = false;
       const cleanup = () => { clearTimeout(timer); worker.removeEventListener('message', receive); worker.removeEventListener('error', error); worker.removeEventListener('messageerror', error); signal?.removeEventListener('abort', abort); this.requests.delete(seq); };
       const refuse = () => { if (!settled) { settled = true; cleanup(); reject(fail()); } };
-      const error = () => { refuse(); this.clear(); };
+      const error = () => { refuse(); if (generation === this.transportGeneration) this.clear(); };
       const abort = () => refuse();
       const receive = (event: MessageEvent) => {
+        if (generation !== this.transportGeneration || this.worker !== worker) return;
         const data = event.data as Record<string, unknown>;
         if (!data || data.seq !== seq) return;
         if (data.v !== 1 || data.ok !== true || !Number.isSafeInteger(data.indexed) || (data.indexed as number) < 0 || (data.indexed as number) > capacity.documents) { error(); return; }
@@ -132,59 +180,116 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
       try { worker.postMessage({ ...message, seq }); } catch { error(); }
     });
   }
+  /** Immutable source, order and flag roots are captured together without enumerating any records. */
+  private captureRecovery(): RecoveryCapture<T> { return { revision: this.revision, sources: this.sourceVersions, exclusions: this.exclusionVersions }; }
+  private async recover(): Promise<void> {
+    while (this.needsRebuild) {
+      const capture = this.captureRecovery();
+      // No await between selecting the baseline and switching subsequent events to the delta queue.
+      this.needsRebuild = false;
+      const generation = this.transportGeneration;
+      const guard = () => { if (this.closed || generation !== this.transportGeneration) throw fail(); };
+      await this.exchange({ v: 1, type: 'init', direction: this.options.direction, sourceBase: this.options.sourceBase }); guard();
+      let flagKey: string | null = null, flags: Array<[string, boolean]> = [];
+      for (const flag of memoryNodeRange(capture.exclusions, 0, memoryNodeCount(capture.exclusions))) {
+        guard();
+        if (flags.length && flagKey !== flag.key) { await this.exchange({ v: 1, type: 'exclude', source: this.source(flagKey!), changes: flags }); guard(); flags = []; }
+        flagKey = flag.key; flags.push([flag.documentId, true]);
+        if (flags.length === limits.batchSize) { await this.exchange({ v: 1, type: 'exclude', source: this.source(flagKey), changes: flags }); guard(); flags = []; await this.yieldTask(); guard(); }
+      }
+      if (flags.length) { await this.exchange({ v: 1, type: 'exclude', source: this.source(flagKey!), changes: flags }); guard(); }
+      for (const { key, version } of memoryNodeRange(capture.sources, 0, memoryNodeCount(capture.sources))) {
+        guard(); const wire = this.source(key);
+        await this.exchange({ v: 1, type: 'patch-start', source: wire, changed: version.count, removed: [], order: { reset: [], changes: [] }, priority: version.priority, orderedReset: true }); guard();
+        let changed: MemoryPublicationPatch<IndexedSemanticDocument>['changed'] = [];
+        for (const { id, value } of version.orderedRows()) {
+          guard(); changed.push({ id, value: this.project(key, id, value) });
+          if (changed.length !== limits.batchSize) continue;
+          const ack = await this.exchange({ v: 1, type: 'patch-chunk', changed }); guard();
+          if (ack.changed !== changed.length) { this.clear(); throw fail(); }
+          changed = []; await this.yieldTask(); guard();
+        }
+        if (changed.length) { const ack = await this.exchange({ v: 1, type: 'patch-chunk', changed }); guard(); if (ack.changed !== changed.length) { this.clear(); throw fail(); } }
+        const ack = await this.exchange({ v: 1, type: 'patch-end' }); guard();
+        if (ack.changed !== version.count || ack.removed !== 0) { this.clear(); throw fail(); }
+      }
+    }
+  }
   private async flush(): Promise<void> {
     if (this.closed) throw fail();
-    if (!this.worker) await this.exchange({ v: 1, type: 'init', ...this.options });
+    if (this.needsRebuild) await this.recover();
+    const generation = this.transportGeneration;
+    const guard = () => { if (this.closed || generation !== this.transportGeneration) throw fail(); };
+    if (!this.worker) { await this.exchange({ v: 1, type: 'init', direction: this.options.direction, sourceBase: this.options.sourceBase }); guard(); }
     while (this.pending.length) {
-      if (this.closed) throw fail();
+      guard();
       const next = this.pending[0];
-      if (next.type === 'remove') await this.exchange({ v: 1, type: 'remove', source: next.source });
+      if (next.type === 'remove') { await this.exchange({ v: 1, type: 'remove', source: next.source }); guard(); }
       else if (next.type === 'exclude') {
         next.inFlight = true; let changes: Array<[string, boolean, (IndexedSemanticDocument | null)?]> = [];
         for (const [id, excluded] of next.changes) {
           const value = this.currentSources.get(next.key)?.get(id);
-          changes.push(!excluded && value !== undefined ? [id, excluded, this.project(next.source, id, value)] : [id, excluded]);
-          if (changes.length === limits.batchSize) { await this.exchange({ v: 1, type: 'exclude', source: next.source, changes }); changes = []; }
+          guard(); changes.push(!excluded && value !== undefined ? [id, excluded, this.project(next.key, id, value)] : [id, excluded]);
+          if (changes.length === limits.batchSize) { await this.exchange({ v: 1, type: 'exclude', source: next.source, changes }); guard(); changes = []; }
         }
-        if (changes.length) await this.exchange({ v: 1, type: 'exclude', source: next.source, changes });
+        if (changes.length) { await this.exchange({ v: 1, type: 'exclude', source: next.source, changes }); guard(); }
         this.pendingChanges -= next.changes.size;
       }
       else {
         let changed: MemoryPublicationPatch<IndexedSemanticDocument>['changed'] = [];
-        await this.exchange({ v: 1, type: 'patch-start', source: next.source, changed: next.patch.changed.length, removed: next.patch.removed, order: next.patch.order, priority: next.priority });
+        const metadata = { removed: next.patch.removed.length, changes: next.patch.order.changes.length, ...(next.patch.order.reset !== undefined ? { reset: next.patch.order.reset.length } : {}) };
+        await this.exchange({ v: 1, type: 'patch-start', source: next.source, changed: next.patch.changed.length, removed: [], order: { ...(next.patch.order.reset !== undefined ? { reset: [] } : {}), changes: [] }, metadata, priority: next.priority });
+        guard();
+        for (let at = 0; at < next.patch.removed.length; at += limits.batchSize) { const removed = next.patch.removed.slice(at, at + limits.batchSize), ack = await this.exchange({ v: 1, type: 'patch-metadata', removed }); guard(); if (ack.removed !== removed.length) { this.clear(); throw fail(); } }
+        for (let at = 0; at < next.patch.order.changes.length; at += limits.batchSize) { const changes = next.patch.order.changes.slice(at, at + limits.batchSize).map(({ id, type, oldIndex, newIndex }) => ({ id, type, oldIndex, newIndex })), ack = await this.exchange({ v: 1, type: 'patch-metadata', changes }); guard(); if (ack.orderChanges !== changes.length) { this.clear(); throw fail(); } }
+        if (next.patch.order.reset) for (let at = 0; at < next.patch.order.reset.length; at += limits.batchSize) { const resetIds = next.patch.order.reset.slice(at, at + limits.batchSize), ack = await this.exchange({ v: 1, type: 'patch-metadata', resetIds }); guard(); if (ack.resetIds !== resetIds.length) { this.clear(); throw fail(); } }
         for (let at = 0; at < next.patch.changed.length; at++) {
           const { id, value } = next.patch.changed[at];
-          changed.push({ id, value: this.project(next.source, id, value) });
+          guard(); changed.push({ id, value: this.project(next.key, id, value) });
           if (changed.length === limits.batchSize || at + 1 === next.patch.changed.length) {
-            const ack = await this.exchange({ v: 1, type: 'patch-chunk', changed }); if (ack.changed !== changed.length) { this.clear(); throw fail(); }
+            const ack = await this.exchange({ v: 1, type: 'patch-chunk', changed }); guard(); if (ack.changed !== changed.length) { this.clear(); throw fail(); }
             changed = [];
-            if (at + 1 < next.patch.changed.length) { await new Promise<void>(resolve => setTimeout(resolve, 0)); if (this.closed) throw fail(); }
+            if (at + 1 < next.patch.changed.length) { await this.yieldTask(); guard(); }
           }
         }
         const ack = await this.exchange({ v: 1, type: 'patch-end' });
+        guard();
         if (ack.changed !== next.patch.changed.length || ack.removed !== next.patch.removed.length) { this.clear(); throw fail(); }
-        this.pendingChanges -= next.patch.changed.length;
+        this.pendingChanges -= this.patchWeight(next.patch);
       }
       this.pending.shift();
     }
   }
+  private async flushRecovering(): Promise<void> {
+    while (!this.closed) {
+      const generation = this.transportGeneration;
+      try { await this.flush(); return; }
+      catch { if (generation === this.transportGeneration) { this.clear(); throw fail(); } }
+    }
+    throw fail();
+  }
   private scheduleFlush() {
-    this.tail = this.tail.then(() => this.flush()).catch(() => { this.clear(); });
+    if (this.closed || this.flushScheduled) return;
+    this.flushScheduled = true;
+    const job = this.tail.then(() => this.flushRecovering());
+    this.tail = job.then(() => undefined, () => undefined);
+    const finish = () => { this.flushScheduled = false; if (!this.closed && this.worker && (this.pending.length || this.needsRebuild)) this.scheduleFlush(); };
+    void job.then(finish, finish);
   }
   select(query: number[], scope: SemanticWriteScope, revision: number, size: number, options: SemanticWriteOptions, source?: string): Promise<SemanticWriteSelection> {
     const guard = () => { this.current(revision); if (scope.uid !== this.readScope.uid || scope.teamId && !this.readScope.teamIds.has(scope.teamId) || options.signal?.aborted) throw fail(); options.assertCurrent?.(); };
     const work = this.tail.then(async () => {
       guard();
       if (!Array.isArray(query) || !query.length || query.length > limits.dimensions || !query.every(Number.isFinite)) throw fail();
-      await this.flush(); guard();
-      const response = await this.exchange({ v: 1, type: 'query', query, space: CURRENT_EMBEDDING_SPACE, scope: this.scope(scope.teamId ? 'team:' + scope.teamId : 'personal'), excludeId: scope.excludeId, source: source === undefined ? undefined : this.source(source) }, options.signal); guard();
+      await this.flushRecovering(); guard();
+      const response = await this.exchange({ v: 1, type: 'query', query, space: CURRENT_EMBEDDING_SPACE, scope: this.scope(scope.teamId ? 'team:' + scope.teamId : 'personal'), excludeId: scope.excludeId, source: source === undefined ? undefined : this.sources.get(source) ?? 'absent' }, options.signal); guard();
       if (response.indexed !== size || !Number.isSafeInteger(response.count) || (response.count as number) < 0 || (response.count as number) > size || !Array.isArray(response.neighbors) || response.neighbors.length > limits.neighbors) { this.clear(); throw fail(); }
       const count = response.count as number, seen = new Set<string>(); let priorScore = Infinity, priorOrdinal = -1;
       const invalidResult = () => { this.clear(); return fail(); };
       const neighbors = response.neighbors.map(row => {
         if (!Array.isArray(row) || row.length !== 3 || !semanticWriteId(row[0]) || seen.has(row[0]) || typeof row[1] !== 'number' || !Number.isFinite(row[1]) || row[1] < limits.threshold || row[1] > 1 + 1e-12 || row[1] > priorScore || !Number.isSafeInteger(row[2]) || row[2] < 0 || row[2] >= count || row[1] === priorScore && row[2] <= priorOrdinal) throw invalidResult();
         const candidate = source === undefined ? this.get(row[0]) : this.currentSources.get(source)?.get(row[0]);
-        if (!candidate || source !== undefined && this.exclusions.get(this.source(source))?.has(row[0]) || this.cohort(candidate) !== this.scope(scope.teamId ? 'team:' + scope.teamId : 'personal') || candidate.id === scope.excludeId || options.eligible && !options.eligible(candidate)) throw invalidResult();
+        if (!candidate || source !== undefined && this.exclusions.get(source)?.has(row[0]) || this.cohort(candidate) !== this.scope(scope.teamId ? 'team:' + scope.teamId : 'personal') || candidate.id === scope.excludeId || options.eligible && !options.eligible(candidate)) throw invalidResult();
         seen.add(row[0]); priorScore = row[1]; priorOrdinal = row[2]; return { candidate, score: row[1], ordinal: row[2] };
       }); guard(); return { count, neighbors };
     });

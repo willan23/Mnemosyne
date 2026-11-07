@@ -1,5 +1,13 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Índice semântico — recuperação e transporte limitado, 7 de novembro de 2026
+
+A [recuperação do índice semântico](RECUPERACAO_INDICE_SEMANTICO_2026-11-07.md) captura raízes imutáveis, repõe a réplica quando o histórico excede o orçamento e aplica os deltas seguintes. Preserva ordem/prioridades, nulidade, tombstones e membership. Documentos e metadata de ordem/remoção/reset usam lotes de até 128; resets só de ordem reutilizam vetores.
+
+Passaram **2275 testes frontend/238 ficheiros**, 216 focados/11, TypeScript/build/identidade, lint zero erros/21 avisos, 23 contratos, auditorias de produção sem vulnerabilidades e cinco ensaios Chromium. O novo ensaio usa 10.000 vetores, 3.000 edições não consultadas e 800 com ACK real atrasado, paridade, reset sem nova projeção e zero rede externa. Há limites explícitos de estado; o teste não prova latência sob carga sustentada ou a aplicação completa.
+
+Universo/alterações otimistas, restantes consumidores, preparação inicial/reset, qualidade, rollout, CI e clientes finais continuam pendentes. **Fase 5 e objetivo completo abertos, 49 switches fechados, sem deploy ou chamadas pagas.** Functions/Rules são reutilizadas por hashes. Prova `semantic-index-recovery-local-validation-20261107.json`. Os blocos seguintes conservam a cronologia.
+
 ## Sessões persistentes e prévia por deltas, 7 de novembro de 2026
 
 A [publicação persistente de sessões](PUBLICACAO_PERSISTENTE_SESSOES_2026-11-07.md) substitui o array materializado de `useSessions`, mantém contagens/catálogos por alterações e leva deltas à prévia de captura. Passaram **2246 testes frontend/237 ficheiros**, 123 focados/8, TypeScript/build/identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Chromium com 10.000 registos confirmou publicação sem enumeração, uma projeção/dois movimentos por edição, paridade, retirada e zero rede externa. A falha inicial do harness e a falha de espera de foco da suite geral ficaram conservadas; a repetição geral passou.

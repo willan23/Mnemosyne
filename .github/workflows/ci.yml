@@ -54,6 +54,9 @@ jobs:
       - name: Persistent memory snapshots and incremental capture preview in Chromium
         run: node scripts/memory-snapshot-browser.cjs
         working-directory: .
+      - name: Semantic index recovery from queued changes and a delayed real Worker ACK in Chromium
+        run: node scripts/semantic-index-recovery-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

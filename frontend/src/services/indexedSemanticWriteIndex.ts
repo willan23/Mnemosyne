@@ -3,7 +3,7 @@ import { IncrementalMemoryPublication } from './incrementalMemoryPublication';
 import type { MemoryPublicationPatch } from './incrementalMemoryPublication';
 import { cosineSimilarity } from './semanticConnectionBackfill';
 import { SEMANTIC_WRITE_LIMITS as limits, semanticWriteId } from './semanticWriteProtocol';
-import { INDEXED_SEMANTIC_WRITE_LIMITS, type IndexedSemanticDocument, type IndexedSemanticWriteMessage, type IndexedSemanticWriteResult } from './indexedSemanticWriteProtocol';
+import { INDEXED_SEMANTIC_WRITE_LIMITS, type IndexedSemanticDocument, type IndexedSemanticWriteMessage, type IndexedSemanticWriteResult, type IndexedSemanticMetadataSize } from './indexedSemanticWriteProtocol';
 
 function validateDocument(value: IndexedSemanticDocument) {
   if (!semanticWriteId(value.id) || !Number.isFinite(value.timestamp) || Object.keys(value).some(key => !['id', 'timestamp', 'scope', 'embedding', 'embeddingModel'].includes(key)) ||
@@ -17,7 +17,7 @@ export class IndexedSemanticWriteIndex {
   private publication = new IncrementalMemoryPublication<IndexedSemanticDocument>('desc');
   private seq = 0;
   private initialized = false;
-  private pending: { source: string; expected: number; patch: MemoryPublicationPatch<IndexedSemanticDocument>; priority?: number } | null = null;
+  private pending: { source: string; expected: number; patch: MemoryPublicationPatch<IndexedSemanticDocument>; priority?: number; orderedReset?: string[]; metadata?: IndexedSemanticMetadataSize; resetIds?: string[] } | null = null;
   clear(): void { this.publication.clear(); this.seq = 0; this.initialized = false; this.pending = null; }
   handle(message: IndexedSemanticWriteMessage): IndexedSemanticWriteResult {
     try {
@@ -30,19 +30,38 @@ export class IndexedSemanticWriteIndex {
         if (!this.initialized) throw Error();
         if (message.type === 'patch-start') {
           if (this.pending || !semanticWriteId(message.source) || !Number.isSafeInteger(message.changed) || message.changed < 0 || message.changed > INDEXED_SEMANTIC_WRITE_LIMITS.documents || !Array.isArray(message.removed) || message.removed.length > INDEXED_SEMANTIC_WRITE_LIMITS.documents || !message.order || !Array.isArray(message.order.changes) || message.order.changes.length > INDEXED_SEMANTIC_WRITE_LIMITS.documents || message.order.reset !== undefined && (!Array.isArray(message.order.reset) || message.order.reset.length > INDEXED_SEMANTIC_WRITE_LIMITS.documents)) throw Error();
-          if (message.priority !== undefined && !Number.isFinite(message.priority)) throw Error();
-          this.pending = { source: message.source, expected: message.changed, patch: { changed: [], removed: message.removed, order: message.order }, priority: message.priority };
+          if (message.priority !== undefined && !Number.isFinite(message.priority) || message.orderedReset !== undefined &&
+              (message.orderedReset !== true || message.removed.length || message.order.reset?.length !== 0 || message.order.changes.length)) throw Error();
+          const metadata = message.metadata;
+          if (metadata !== undefined && (!metadata || typeof metadata !== 'object' || message.orderedReset || message.removed.length || message.order.changes.length ||
+              Object.keys(metadata).some(key => !['removed', 'changes', 'reset'].includes(key)) ||
+              !Number.isSafeInteger(metadata.removed) || metadata.removed < 0 || metadata.removed > INDEXED_SEMANTIC_WRITE_LIMITS.documents ||
+              !Number.isSafeInteger(metadata.changes) || metadata.changes < 0 || metadata.changes > INDEXED_SEMANTIC_WRITE_LIMITS.documents ||
+              (metadata.reset === undefined ? message.order.reset !== undefined : !Number.isSafeInteger(metadata.reset) || metadata.reset < 0 || metadata.reset > INDEXED_SEMANTIC_WRITE_LIMITS.documents || message.order.reset?.length !== 0))) throw Error();
+          const resetIds = message.order.reset === undefined ? undefined : [...message.order.reset];
+          this.pending = { source: message.source, expected: message.changed, patch: { changed: [], removed: message.removed, order: { ...message.order, reset: resetIds } }, priority: message.priority, orderedReset: message.orderedReset ? [] : undefined, metadata, resetIds };
           this.seq = message.seq; return { indexed: this.publication.count };
         }
+        if (message.type === 'patch-metadata') {
+          const pending = this.pending, removed = message.removed ?? [], changes = message.changes ?? [], resetIds = message.resetIds ?? [];
+          if (!pending?.metadata || pending.patch.changed.length || !Array.isArray(removed) || !Array.isArray(changes) || !Array.isArray(resetIds) ||
+              removed.length + changes.length + resetIds.length < 1 || removed.length + changes.length + resetIds.length > limits.batchSize ||
+              pending.patch.removed.length + removed.length > pending.metadata.removed || pending.patch.order.changes.length + changes.length > pending.metadata.changes ||
+              resetIds.length && (pending.metadata.reset === undefined || (pending.resetIds?.length ?? 0) + resetIds.length > pending.metadata.reset) || removed.some(id => !semanticWriteId(id)) || resetIds.some(id => !semanticWriteId(id))) throw Error();
+          pending.patch.removed.push(...removed); pending.patch.order.changes.push(...changes); pending.resetIds?.push(...resetIds);
+          this.seq = message.seq; return { indexed: this.publication.count, removed: removed.length, orderChanges: changes.length, resetIds: resetIds.length };
+        }
         if (message.type === 'patch-chunk') {
-          if (!this.pending || !Array.isArray(message.changed) || !message.changed.length || message.changed.length > limits.batchSize || this.pending.patch.changed.length + message.changed.length > this.pending.expected) throw Error();
+          if (!this.pending || !this.metadataComplete() || !Array.isArray(message.changed) || !message.changed.length || message.changed.length > limits.batchSize || this.pending.patch.changed.length + message.changed.length > this.pending.expected) throw Error();
           for (const { value } of message.changed) if (value) validateDocument(value);
           this.pending.patch.changed.push(...message.changed);
+          if (this.pending.orderedReset) for (const row of message.changed) this.pending.orderedReset.push(row.id);
           this.seq = message.seq; return { indexed: this.publication.count, changed: message.changed.length };
         }
         if (message.type === 'patch-end') {
-          if (!this.pending || this.pending.patch.changed.length !== this.pending.expected) throw Error();
-          const { source, patch, priority } = this.pending;
+          if (!this.pending || !this.metadataComplete() || this.pending.patch.changed.length !== this.pending.expected) throw Error();
+          const { source, patch, priority, orderedReset } = this.pending;
+          if (orderedReset) patch.order = { reset: orderedReset, changes: [] };
           this.publication.apply(source, patch, priority); this.pending = null;
           if (this.publication.count > INDEXED_SEMANTIC_WRITE_LIMITS.documents) throw Error();
           this.seq = message.seq;
@@ -85,5 +104,10 @@ export class IndexedSemanticWriteIndex {
       this.seq = message.seq;
       return { indexed: this.publication.count };
     } catch { this.clear(); throw new Error('semantic_write_unavailable'); }
+  }
+  private metadataComplete(): boolean {
+    const pending = this.pending, expected = pending?.metadata;
+    return !expected || Boolean(pending && pending.patch.removed.length === expected.removed && pending.patch.order.changes.length === expected.changes &&
+      (expected.reset === undefined || pending.resetIds?.length === expected.reset));
   }
 }
