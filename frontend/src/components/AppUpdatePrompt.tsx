@@ -6,6 +6,7 @@
 import { useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { RefreshCw } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
 import {
   APP_BUILD_ID,
   APP_VERSION,
@@ -14,9 +15,11 @@ import {
   type RemoteAppVersion,
 } from '../config/appVersion';
 import { DesktopUpdatePrompt } from './DesktopUpdatePrompt';
+import { MOBILE_APP_DOWNLOAD_URL, openExternalDownload } from '../config/downloads';
 
 const CHECK_INTERVAL_MS = 3 * 60 * 1000; // 3 min
 const STORAGE_DISMISS_KEY = 'mnemosyne.update.dismissedBuildId';
+const VERSION_FEED_URL = 'https://mnemosyne-one.web.app/version.json';
 
 const isTauriRuntime = () =>
   typeof window !== 'undefined' &&
@@ -24,7 +27,7 @@ const isTauriRuntime = () =>
 
 async function fetchRemoteVersion(): Promise<RemoteAppVersion | null> {
   try {
-    const url = `/version.json?t=${Date.now()}`;
+    const url = `${VERSION_FEED_URL}?t=${Date.now()}`;
     const response = await fetch(url, {
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' },
@@ -66,6 +69,12 @@ async function applyWebUpdate(buildId?: string): Promise<void> {
   if (buildId) {
     dismissBuild(buildId);
   }
+
+  if (Capacitor.isNativePlatform()) {
+    openExternalDownload(MOBILE_APP_DOWNLOAD_URL);
+    return;
+  }
+
   try {
     if ('serviceWorker' in navigator) {
       const registrations = await navigator.serviceWorker.getRegistrations();
@@ -129,12 +138,12 @@ function showWebUpdateToast(remote: RemoteAppVersion): void {
                 type="button"
                 className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-400/30 bg-cyan-500/20 px-3 py-2 text-xs font-semibold text-cyan-50 transition hover:bg-cyan-500/30"
                 onClick={() => {
-                  toast.loading('A atualizar…', { id: t.id });
+                  toast.dismiss(t.id);
                   void applyWebUpdate(remote.buildId || remote.version);
                 }}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
-                Atualizar agora
+                {Capacitor.isNativePlatform() ? 'Abrir descarga' : 'Atualizar agora'}
               </button>
             </div>
           </div>

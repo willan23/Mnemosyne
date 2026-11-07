@@ -1,9 +1,46 @@
 import * as functions from 'firebase-functions/v1';
 import * as cheerio from 'cheerio';
+import { verifyBearerIdToken } from './httpAuth';
 import { clientKeyFromRequest, consumeServerRateLimit, RATE_LIMITS } from './rateLimit';
+import { resolveTextModel, resolveImageModel, validImageOptions, validTextTokenRequest } from './modelPolicy';
+import { reserveAiGenerationBudget, isAiGenerationAdmissionLive, AiGenerationAccessError } from './aiBudget';
+import { parseAiGenerationScope, AI_INPUT_OVERHEAD_RESERVATION } from './aiCostPolicy';
+import { attachmentActorIdValid } from './attachmentEnvelope';
+import { isLiveAccount, withLiveAccount, AccountUnavailableError } from './accountAccess';
+import { beginProviderAttempt, finishProviderAttempt, releaseProviderAttempt } from './providerCircuit';
+import { ProviderHttpError, shouldTripProviderCircuit } from './providerErrorPolicy';
+import { fetchProviderResponse } from './providerTransport';
+import { isGenerationProviderEnabled } from './generationProviderPolicy';
+import { GENERATION_HTTP_POLICY } from './generationHttpPolicy';
+import { reportedTextModel, decodeProviderImage } from './providerResponsePolicy';
+import { generateGeminiText, generateGeminiImage } from './geminiGeneration';
+import { generateOpenRouterFreeText } from './openrouterFreeGeneration';
+import { safeFetchExternalUrl } from './safeExternalFetch';
+import { observeAiHandler, type AiOperation } from './aiOperationalEvents';
+
+import { readEnv, readSecret, openaiApiKey, nvidiaApiKey, huggingfaceApiKey, geminiApiKey, openrouterApiKey } from './params';
 
 type ResearchMode = 'public' | 'contextual' | 'private-local';
 type SourceStatus = 'read' | 'snippet-only' | 'failed';
+
+export function parseResearchModeAndContext(
+    rawMode: unknown,
+    rawContext: unknown,
+): { mode: ResearchMode; context: string[] } | null {
+    const mode = rawMode === undefined || rawMode === null ? 'public' : rawMode;
+    if (mode !== 'public' && mode !== 'contextual' && mode !== 'private-local') return null;
+    // The private-local contract is enforced again on the server. A modified
+    // client cannot make the server process local memory in this mode.
+    if (mode !== 'contextual') return { mode, context: [] };
+    if (rawContext === undefined || rawContext === null) return { mode, context: [] };
+    if (!Array.isArray(rawContext) || rawContext.length > 8 ||
+        rawContext.some((item) => typeof item !== 'string' || Buffer.byteLength(item, 'utf8') > 2000)) {
+        return null;
+    }
+    const context = rawContext.map((item: string) => item.trim());
+    if (Buffer.byteLength(context.join(''), 'utf8') > 12_000) return null;
+    return { mode, context };
+}
 
 interface WebResearchSource {
     title: string;
@@ -36,11 +73,6 @@ interface ImageGenerationResponsePayload {
     warning?: string | null;
 }
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36';
-const HUGGINGFACE_TEXT_MODEL_DEFAULT = 'openai/gpt-oss-120b:cheapest';
-const HUGGINGFACE_IMAGE_MODEL_DEFAULT = 'black-forest-labs/FLUX.1-schnell';
-const OPENAI_TEXT_MODEL_DEFAULT = 'gpt-4o-mini';
-const NVIDIA_TEXT_MODEL_DEFAULT = 'meta/llama-3.1-70b-instruct';
 const STOPWORDS = new Set([
     'about', 'after', 'again', 'also', 'because', 'before', 'being', 'between', 'could',
     'every', 'first', 'from', 'have', 'into', 'more', 'most', 'other', 'over', 'same',
@@ -58,7 +90,22 @@ const normalizeText = (value: string): string => (value || '').replace(/\s+/g, '
 
 const envValue = (...names: string[]): string | undefined => {
     for (const name of names) {
-        const value = process.env[name]?.trim();
+        if (name === 'OPENAI_API_KEY') {
+            const v = readSecret(openaiApiKey, name);
+            if (v) return v;
+            continue;
+        }
+        if (name === 'NVIDIA_API_KEY') {
+            const v = readSecret(nvidiaApiKey, 'NVIDIA_API_KEY');
+            if (v) return v;
+            continue;
+        }
+        if (name === 'HUGGINGFACE_API_KEY') {
+            const v = readSecret(huggingfaceApiKey, 'HUGGINGFACE_API_KEY');
+            if (v) return v;
+            continue;
+        }
+        const value = readEnv(name);
         if (value) return value;
     }
     return undefined;
@@ -75,11 +122,6 @@ const getString = (value: unknown): string | undefined =>
 const clampNumber = (value: number, min: number, max: number): number =>
     Math.max(min, Math.min(max, value));
 
-const maxTokensFromBody = (value: unknown): number => {
-    const parsed = typeof value === 'number' ? value : Number(value);
-    return Number.isFinite(parsed) ? clampNumber(Math.floor(parsed), 64, 4096) : 900;
-};
-
 const imageSizeToDimensions = (size: unknown): { width: number; height: number } => {
     const match = /^(\d{3,4})x(\d{3,4})$/.exec(String(size || '1024x1024'));
     if (!match) return { width: 1024, height: 1024 };
@@ -87,23 +129,6 @@ const imageSizeToDimensions = (size: unknown): { width: number; height: number }
         width: clampNumber(Number(match[1]), 256, 1024),
         height: clampNumber(Number(match[2]), 256, 1024),
     };
-};
-
-const imageQualityToSteps = (quality: unknown): number => {
-    const normalized = String(quality || '').toLowerCase();
-    if (normalized === 'high') return 8;
-    if (normalized === 'low') return 2;
-    return 4;
-};
-
-const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs: number): Promise<Response> => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        return await fetch(url, { ...init, signal: controller.signal });
-    } finally {
-        clearTimeout(timeout);
-    }
 };
 
 const words = (value: string): string[] => (
@@ -146,7 +171,7 @@ const extractConcepts = (text: string, limit = 12): string[] => {
 const isUsableUrl = (url: string): boolean => {
     try {
         const parsed = new URL(url);
-        if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+        if (parsed.protocol !== 'https:') return false;
         if (blockedHosts.has(parsed.hostname.toLowerCase())) return false;
         if (parsed.pathname.startsWith('/y.js') || parsed.pathname.includes('/aclick')) return false;
         if (parsed.search.includes('ad_domain=') || parsed.search.includes('ad_provider=')) return false;
@@ -169,16 +194,10 @@ const resolveDuckDuckGoUrl = (href: string): string => {
     }
 };
 
-const fetchText = async (url: string, init?: RequestInit): Promise<string> => {
-    const response = await fetch(url, {
-        ...init,
-        headers: {
-            'user-agent': USER_AGENT,
-            ...(init?.headers || {}),
-        },
-    });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return response.text();
+const fetchText = async (url: string): Promise<string> => {
+    const response = await safeFetchExternalUrl(url);
+    if (response.status < 200 || response.status >= 300) throw new Error(`Pesquisa externa: ${response.status}`);
+    return response.body;
 };
 
 const searchDuckDuckGo = async (query: string, maxSources: number): Promise<WebSearchResult[]> => {
@@ -215,9 +234,9 @@ const searchWikipedia = async (query: string, maxSources: number): Promise<WebSe
     url.searchParams.set('limit', String(maxSources));
     url.searchParams.set('namespace', '0');
     url.searchParams.set('format', 'json');
-    const response = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    const payload = await response.json() as [string, string[], string[], string[]];
+    const response = await safeFetchExternalUrl(url.toString());
+    if (response.status < 200 || response.status >= 300) throw new Error(`Pesquisa externa: ${response.status}`);
+    const payload = JSON.parse(response.body) as [string, string[], string[], string[]];
     const titles = Array.isArray(payload[1]) ? payload[1] : [];
     const snippets = Array.isArray(payload[2]) ? payload[2] : [];
     const urls = Array.isArray(payload[3]) ? payload[3] : [];
@@ -227,21 +246,34 @@ const searchWikipedia = async (query: string, maxSources: number): Promise<WebSe
         .slice(0, maxSources);
 };
 
-const searchPublicWeb = async (query: string, maxSources: number): Promise<WebSearchResult[]> => {
+type WebSearcher = (query: string, maxSources: number) => Promise<WebSearchResult[]>;
+type SearchProvider = { id: 'duckduckgo' | 'wikipedia'; search: WebSearcher };
+
+const defaultSearchProviders: SearchProvider[] = [
+    { id: 'duckduckgo', search: searchDuckDuckGo },
+    { id: 'wikipedia', search: searchWikipedia },
+];
+
+export const searchPublicWeb = async (
+    query: string,
+    maxSources: number,
+    providers: readonly SearchProvider[] = defaultSearchProviders,
+): Promise<WebSearchResult[]> => {
     const collected: WebSearchResult[] = [];
     const seen = new Set<string>();
-    for (const searcher of [searchDuckDuckGo, searchWikipedia]) {
+    for (const { id, search } of providers) {
         if (collected.length >= maxSources) break;
         try {
-            const results = await searcher(query, maxSources);
+            const results = await search(query, maxSources);
             for (const result of results) {
                 if (seen.has(result.url) || !isUsableUrl(result.url)) continue;
                 seen.add(result.url);
                 collected.push(result);
                 if (collected.length >= maxSources) break;
             }
-        } catch (error) {
-            console.warn(`Search provider failed: ${error instanceof Error ? error.message : String(error)}`);
+        } catch {
+            // Provider errors can contain full query URLs or request bodies.
+            console.warn('Search provider failed', { provider: id });
         }
     }
     return collected;
@@ -267,9 +299,8 @@ const extractPageText = (html: string): { title: string; text: string } => {
 
 const fetchResearchSource = async (result: WebSearchResult, query: string): Promise<WebResearchSource> => {
     try {
-        const response = await fetch(result.url, { headers: { 'user-agent': USER_AGENT }, redirect: 'follow' });
-        const contentType = response.headers.get('content-type') || '';
-        if (!response.ok || !contentType.includes('text/html')) {
+        const response = await safeFetchExternalUrl(result.url);
+        if (response.status < 200 || response.status >= 300 || !response.contentType.includes('text/html')) {
             return {
                 title: result.title,
                 url: result.url,
@@ -278,11 +309,11 @@ const fetchResearchSource = async (result: WebSearchResult, query: string): Prom
                 status: 'snippet-only',
             };
         }
-        const { title, text } = extractPageText(await response.text());
+        const { title, text } = extractPageText(response.body);
         if (text.length < 160) {
             return {
                 title: title || result.title,
-                url: response.url || result.url,
+                url: response.url,
                 snippet: result.snippet,
                 summary: rankSummary([result.snippet, text, result.title].join(' '), query, 1),
                 status: 'snippet-only',
@@ -290,7 +321,7 @@ const fetchResearchSource = async (result: WebSearchResult, query: string): Prom
         }
         return {
             title: title || result.title,
-            url: response.url || result.url,
+            url: response.url,
             snippet: result.snippet,
             summary: rankSummary(text, query, 3),
             status: 'read',
@@ -342,21 +373,41 @@ const setCors = (res: functions.Response): void => {
     res.set('Access-Control-Expose-Headers', 'X-RateLimit-Remaining, Retry-After');
 };
 
-const enforceRateLimit = async (
+const enforceAuthAndRateLimit = async (
     req: functions.Request,
     res: functions.Response,
     config: { bucket: string; max: number; windowMs: number },
-): Promise<boolean> => {
-    const decision = await consumeServerRateLimit(clientKeyFromRequest(req), config);
+    operation?: AiOperation,
+): Promise<string | null> => {
+    const caller = await verifyBearerIdToken(req);
+    if (!caller) {
+        operation?.finish('auth_required');
+        res.status(401).json({
+            detail: 'Autenticação obrigatória. Envia Authorization: Bearer <Firebase ID token>.',
+        });
+        return null;
+    }
+
+    if (!await enforceLiveAccount(caller.uid, res, operation)) return null;
+
+    const decision = await consumeServerRateLimit(clientKeyFromRequest(req, caller.uid), config);
     res.set('X-RateLimit-Remaining', String(decision.remaining));
-    if (decision.allowed) return true;
+    if (decision.allowed) return caller.uid;
     const retrySec = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
     res.set('Retry-After', String(retrySec));
+    operation?.finish('rate_limited');
     res.status(429).json({
         detail: `Rate limit excedido para ${config.bucket}. Tenta de novo em ~${Math.ceil(retrySec / 60)} min.`,
         retry_after_ms: decision.retryAfterMs,
         bucket: config.bucket,
     });
+    return null;
+};
+
+const enforceLiveAccount = async (uid: string, res: functions.Response, operation?: AiOperation): Promise<boolean> => {
+    if (await isLiveAccount(uid)) return true;
+    operation?.finish('account_unavailable');
+    res.status(403).json({ error: 'account_unavailable', detail: 'Conta indisponível.' });
     return false;
 };
 
@@ -370,21 +421,36 @@ export const webResearchHandler = async (req: functions.Request, res: functions.
         res.status(405).json({ detail: 'Method not allowed' });
         return;
     }
-    if (!(await enforceRateLimit(req, res, RATE_LIMITS.webResearch))) return;
+    const callerUid = await enforceAuthAndRateLimit(req, res, RATE_LIMITS.webResearch);
+    if (!callerUid) return;
 
     const query = normalizeText(String(req.body?.query || ''));
-    const mode = (req.body?.mode || 'public') as ResearchMode;
-    const context = Array.isArray(req.body?.context) ? req.body.context.filter((item: unknown): item is string => typeof item === 'string') : [];
+    const parsedResearch = parseResearchModeAndContext(req.body?.mode, req.body?.context);
+    if (!parsedResearch) {
+        res.status(400).json({ detail: 'Modo ou contexto de pesquisa inválido.' });
+        return;
+    }
+    const { mode, context } = parsedResearch;
     const maxSources = Math.max(1, Math.min(Number(req.body?.max_sources || 8), 12));
     if (query.length < 2) {
         res.status(400).json({ detail: 'A query de pesquisa está vazia.' });
         return;
     }
 
-    const searchResults = await searchPublicWeb(query, maxSources);
-    const sources = searchResults.length
-        ? await Promise.all(searchResults.map((result) => fetchResearchSource(result, query)))
-        : directSources(query, maxSources);
+    let sources: WebResearchSource[];
+    try {
+        const searchResults = await withLiveAccount(callerUid, () => searchPublicWeb(query, maxSources));
+        sources = searchResults.length
+            ? await Promise.all(searchResults.map((result) => withLiveAccount(callerUid, () => fetchResearchSource(result, query))))
+            : directSources(query, maxSources);
+    } catch (error) {
+        if (error instanceof AccountUnavailableError) {
+            res.status(403).json({ error: 'account_unavailable', detail: 'Conta indisponível.' });
+        } else {
+            res.status(503).json({ detail: 'Pesquisa temporariamente indisponível.' });
+        }
+        return;
+    }
     const combinedText = sources.map((source) => source.summary).filter(Boolean).join(' ');
     const keyConcepts = extractConcepts(`${query} ${combinedText}`);
     const summary = combinedText
@@ -395,6 +461,7 @@ export const webResearchHandler = async (req: functions.Request, res: functions.
         .slice(0, 6)
         .map((source) => `${source.title}: ${source.summary}`);
 
+    if (!await enforceLiveAccount(callerUid, res)) return;
     res.status(200).json({
         query,
         mode,
@@ -405,38 +472,6 @@ export const webResearchHandler = async (req: functions.Request, res: functions.
         sources,
         local_comparisons: context.length ? compareWithContext(context, combinedText) : [],
     });
-};
-
-const fallbackGeneratedText = (prompt: string): string => {
-    const normalized = normalizeText(prompt);
-    const conceptLine = extractConcepts(normalized, 6).join(', ') || 'tema principal';
-    if (/\b(frase curta|slogan|uma frase)\b/i.test(normalized)) {
-        return 'Mnemosyne transforma memórias dispersas num universo vivo, pesquisável e pronto para agir.';
-    }
-    if (/\b(lista|checklist|passos)\b/i.test(normalized)) {
-        return [
-            `Checklist para: ${normalized}`,
-            '',
-            '1. Definir o objetivo em uma frase.',
-            '2. Separar factos confirmados de hipóteses.',
-            '3. Recolher fontes ou memórias relevantes.',
-            '4. Criar uma ação concreta para o próximo passo.',
-            '5. Guardar o resultado como memória ligada ao tema.',
-        ].join('\n');
-    }
-    if (/\b(resumo|resumir|sumariza)\b/i.test(normalized)) {
-        return `Resumo de trabalho sobre ${conceptLine}:\n\nO pedido aponta para organizar informação dispersa num formato curto e acionável. A versão final deve destacar o ponto central, as evidências principais e a próxima decisão prática.`;
-    }
-    return [
-        'Rascunho gerado a partir do pedido:',
-        '',
-        normalized,
-        '',
-        'Estrutura sugerida:',
-        `1. Contexto: delimitar ${conceptLine} e explicar por que isto importa agora.`,
-        '2. Desenvolvimento: separar factos, hipóteses e próximos passos.',
-        '3. Ação: transformar o resultado numa memória, plano ou checklist verificável.',
-    ].join('\n');
 };
 
 const extractChatCompletionText = (payload: unknown): string => {
@@ -460,8 +495,8 @@ const requestChatCompletion = async (
     prompt: string,
     maxTokens: number,
     timeoutMs: number,
-): Promise<string> => {
-    const response = await fetchWithTimeout(endpoint, {
+): Promise<{ text: string; model: string }> => {
+    const response = await fetchProviderResponse(endpoint, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -480,20 +515,22 @@ const requestChatCompletion = async (
                 },
                 { role: 'user', content: prompt },
             ],
-            temperature: 0.4,
+            ...(['nvidia/nemotron-3-super-120b-a12b', 'nvidia/nemotron-3-ultra-550b-a55b'].includes(model)
+                ? { temperature: 1, top_p: 0.95, chat_template_kwargs: { enable_thinking: false } }
+                : { temperature: 0.4 }),
             max_tokens: maxTokens,
             stream: false,
         }),
-    }, timeoutMs);
+    }, timeoutMs, 1024 * 1024);
 
     if (!response.ok) {
-        const detail = (await response.text()).slice(0, 320);
-        throw new Error(`${response.status} ${response.statusText} ${detail}`.trim());
+        throw new ProviderHttpError(response.status);
     }
 
-    const text = extractChatCompletionText(await response.json());
+    const data = await response.json() as Record<string, unknown>;
+    const text = extractChatCompletionText(data);
     if (!text) throw new Error('resposta vazia');
-    return text;
+    return { text, model: reportedTextModel(data.model, model) };
 };
 
 const generateTextWithHuggingFace = async (
@@ -501,12 +538,11 @@ const generateTextWithHuggingFace = async (
     requestedModel: string | undefined,
     maxTokens: number,
 ): Promise<GenerationResponsePayload> => {
-    const apiKey = envValue('HUGGINGFACE_API_KEY', 'HF_TOKEN', 'HUGGINGFACE_HUB_TOKEN');
-    if (!apiKey) throw new Error('HUGGINGFACE_API_KEY/HF_TOKEN não configurada');
-    const baseUrl = normalizeBaseUrl(envValue('HUGGINGFACE_API_BASE_URL') || 'https://router.huggingface.co');
-    const model = requestedModel || envValue('HUGGINGFACE_TEXT_MODEL') || HUGGINGFACE_TEXT_MODEL_DEFAULT;
-    const text = await requestChatCompletion(`${baseUrl}/v1/chat/completions`, apiKey, model, prompt, maxTokens, 22000);
-    return { text, model, provider: 'huggingface' };
+    const apiKey = envValue('HUGGINGFACE_API_KEY');
+    if (!apiKey) throw new Error('HUGGINGFACE_API_KEY não configurada');
+    const model = requestedModel || 'openai/gpt-oss-120b:nscale';
+    const result = await requestChatCompletion('https://router.huggingface.co/v1/chat/completions', apiKey, model, prompt, maxTokens, GENERATION_HTTP_POLICY.text.providerTimeoutMs);
+    return { ...result, provider: 'huggingface-nscale' };
 };
 
 const generateTextWithNvidia = async (
@@ -514,12 +550,11 @@ const generateTextWithNvidia = async (
     requestedModel: string | undefined,
     maxTokens: number,
 ): Promise<GenerationResponsePayload> => {
-    const apiKey = envValue('NVIDIA_API_KEY', 'NVIDIA_API_KEY_FAST', 'NVIDIA_API_KEY_CORE');
+    const apiKey = envValue('NVIDIA_API_KEY');
     if (!apiKey) throw new Error('NVIDIA_API_KEY não configurada');
-    const baseUrl = normalizeBaseUrl(envValue('NVIDIA_BASE_URL') || 'https://integrate.api.nvidia.com/v1');
-    const model = requestedModel || envValue('NVIDIA_MODEL_FAST', 'NVIDIA_MODEL_CORE') || NVIDIA_TEXT_MODEL_DEFAULT;
-    const text = await requestChatCompletion(`${baseUrl}/chat/completions`, apiKey, model, prompt, maxTokens, 30000);
-    return { text, model, provider: 'nvidia-nim' };
+    const model = requestedModel || 'nvidia/nemotron-3-super-120b-a12b';
+    const result = await requestChatCompletion('https://integrate.api.nvidia.com/v1/chat/completions', apiKey, model, prompt, maxTokens, GENERATION_HTTP_POLICY.text.providerTimeoutMs);
+    return { ...result, provider: 'nvidia-nim' };
 };
 
 const generateTextWithOpenAI = async (
@@ -530,88 +565,47 @@ const generateTextWithOpenAI = async (
     const apiKey = envValue('OPENAI_API_KEY');
     if (!apiKey) throw new Error('OPENAI_API_KEY não configurada');
     const baseUrl = normalizeBaseUrl(envValue('OPENAI_API_BASE_URL') || 'https://api.openai.com/v1');
-    const model = requestedModel || envValue('OPENAI_TEXT_MODEL') || OPENAI_TEXT_MODEL_DEFAULT;
-    const text = await requestChatCompletion(`${baseUrl}/chat/completions`, apiKey, model, prompt, maxTokens, 30000);
-    return { text, model, provider: 'openai' };
+    const model = requestedModel || 'gpt-4o-mini';
+    const result = await requestChatCompletion(`${baseUrl}/chat/completions`, apiKey, model, prompt, maxTokens, GENERATION_HTTP_POLICY.text.providerTimeoutMs);
+    return { ...result, provider: 'openai' };
 };
 
 const generateImageWithHuggingFace = async (
     prompt: string,
     requestedModel: string | undefined,
     size: unknown,
-    quality: unknown,
+    _quality: unknown,
 ): Promise<ImageGenerationResponsePayload> => {
-    const apiKey = envValue('HUGGINGFACE_API_KEY', 'HF_TOKEN', 'HUGGINGFACE_HUB_TOKEN');
-    if (!apiKey) throw new Error('HUGGINGFACE_API_KEY/HF_TOKEN não configurada');
-    const model = requestedModel || envValue('HUGGINGFACE_IMAGE_MODEL') || HUGGINGFACE_IMAGE_MODEL_DEFAULT;
+    const apiKey = envValue('HUGGINGFACE_API_KEY');
+    if (!apiKey) throw new Error('HUGGINGFACE_API_KEY não configurada');
+    const model = requestedModel || 'black-forest-labs/FLUX.1-schnell';
     const { width, height } = imageSizeToDimensions(size);
-    const response = await fetchWithTimeout(`https://api-inference.huggingface.co/models/${model}`, {
+    const response = await fetchProviderResponse('https://router.huggingface.co/nscale/v1/images/generations', {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
-            'Accept': 'image/png',
+            'Accept': 'application/json',
         },
         body: JSON.stringify({
-            inputs: prompt,
-            parameters: {
-                width,
-                height,
-                num_inference_steps: imageQualityToSteps(quality),
-            },
+            model,
+            prompt,
+            size: `${width}x${height}`,
+            n: 1,
+            response_format: 'b64_json',
         }),
-    }, 60000);
+    }, 60000, 16 * 1024 * 1024);
 
     if (!response.ok) {
-        const detail = (await response.text()).slice(0, 320);
-        throw new Error(`${response.status} ${response.statusText} ${detail}`.trim());
+        throw new ProviderHttpError(response.status);
     }
 
-    const mediaType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
-    if (mediaType.includes('application/json')) {
-        const detail = (await response.text()).slice(0, 320);
-        throw new Error(`sem bytes de imagem: ${detail}`);
-    }
-
-    const imageBase64 = Buffer.from(await response.arrayBuffer()).toString('base64');
+    const data = await response.json() as { data?: Array<{ b64_json?: string }> };
     return {
-        image_base64: imageBase64,
+        ...decodeProviderImage(data.data?.[0]?.b64_json),
         image_url: null,
-        media_type: mediaType,
         model,
-        provider: 'huggingface',
-        revised_prompt: null,
-    };
-};
-
-const generateImageWithPollinations = async (
-    prompt: string,
-    requestedModel: string | undefined,
-    size: unknown,
-    quality: unknown,
-): Promise<ImageGenerationResponsePayload> => {
-    const { width, height } = imageSizeToDimensions(size);
-    const seed = Math.floor(Math.random() * 1000000);
-    const encodedPrompt = encodeURIComponent(normalizeText(prompt));
-    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=flux`;
-
-    const response = await fetchWithTimeout(url, {
-        method: 'GET',
-        headers: { 'Accept': 'image/jpeg, image/png, image/*' },
-    }, 45000);
-
-    if (!response.ok) {
-        throw new Error(`Pollinations falhou: ${response.status}`);
-    }
-
-    const mediaType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
-    const imageBase64 = Buffer.from(await response.arrayBuffer()).toString('base64');
-    return {
-        image_base64: imageBase64,
-        image_url: url,
-        media_type: mediaType,
-        model: 'flux-pollinations',
-        provider: 'pollinations',
+        provider: 'huggingface-nscale',
         revised_prompt: null,
     };
 };
@@ -620,14 +614,15 @@ const generateImageWithNvidia = async (
     prompt: string,
     requestedModel: string | undefined,
     size: unknown,
-    quality: unknown,
+    _quality: unknown,
 ): Promise<ImageGenerationResponsePayload> => {
-    const apiKey = envValue('NVIDIA_API_KEY', 'NVIDIA_API_KEY_FAST', 'NVIDIA_API_KEY_CORE');
+    const apiKey = envValue('NVIDIA_API_KEY');
     if (!apiKey) throw new Error('NVIDIA_API_KEY não configurada');
-    const model = requestedModel || envValue('NVIDIA_IMAGE_MODEL') || 'stabilityai/sdxl-turbo';
+    const model = requestedModel || 'black-forest-labs/flux.1-schnell';
     const url = `https://ai.api.nvidia.com/v1/genai/${model}`;
+    const { width, height } = imageSizeToDimensions(size);
 
-    const response = await fetchWithTimeout(url, {
+    const response = await fetchProviderResponse(url, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -635,16 +630,19 @@ const generateImageWithNvidia = async (
             'Accept': 'application/json',
         },
         body: JSON.stringify({
-            text_prompts: [{ text: normalizeText(prompt), weight: 1 }],
-            cfg_scale: 7,
-            steps: 25,
+            prompt: normalizeText(prompt),
+            height,
+            width,
+            cfg_scale: 0,
+            mode: 'base',
+            image: null,
+            steps: 4,
             samples: 1,
         }),
-    }, 120000);
+    }, GENERATION_HTTP_POLICY.image.providerTimeoutMs, 16 * 1024 * 1024);
 
     if (!response.ok) {
-        const detail = (await response.text()).slice(0, 320);
-        throw new Error(`NVIDIA NIM imagem falhou: ${response.status} ${response.statusText} ${detail}`);
+        throw new ProviderHttpError(response.status);
     }
 
     const data = await response.json() as { artifacts?: Array<{ base64?: string }> };
@@ -654,9 +652,8 @@ const generateImageWithNvidia = async (
     }
 
     return {
-        image_base64: artifacts[0].base64,
+        ...decodeProviderImage(artifacts[0].base64),
         image_url: null,
-        media_type: 'image/png',
         model,
         provider: 'nvidia',
         revised_prompt: null,
@@ -675,7 +672,7 @@ const generateImageWithOpenAI = async (
     const model = requestedModel || envValue('OPENAI_IMAGE_MODEL') || 'dall-e-3';
     const { width, height } = imageSizeToDimensions(size);
 
-    const response = await fetchWithTimeout(`${baseUrl}/images/generations`, {
+    const response = await fetchProviderResponse(`${baseUrl}/images/generations`, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -688,11 +685,10 @@ const generateImageWithOpenAI = async (
             size: `${width}x${height}`,
             response_format: 'b64_json',
         }),
-    }, 120000);
+    }, GENERATION_HTTP_POLICY.image.providerTimeoutMs, 16 * 1024 * 1024);
 
     if (!response.ok) {
-        const detail = (await response.text()).slice(0, 320);
-        throw new Error(`OpenAI imagem falhou: ${response.status} ${response.statusText} ${detail}`);
+        throw new ProviderHttpError(response.status);
     }
 
     const data = await response.json() as { data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> };
@@ -702,88 +698,234 @@ const generateImageWithOpenAI = async (
     }
 
     return {
-        image_base64: items[0].b64_json || null,
-        image_url: items[0].url || null,
-        media_type: 'image/png',
+        ...decodeProviderImage(items[0].b64_json),
+        image_url: null,
         model,
         provider: 'openai',
         revised_prompt: items[0].revised_prompt || null,
     };
 };
 
-export const generateTextHandler = async (req: functions.Request, res: functions.Response): Promise<void> => {
+export const generateTextHandler = observeAiHandler('text', async (req, res, operation) => {
     setCors(res);
     if (req.method === 'OPTIONS') {
         res.status(204).send('');
         return;
     }
     if (req.method !== 'POST') {
+        operation.finish('method_not_allowed');
         res.status(405).json({ detail: 'Method not allowed' });
         return;
     }
-    if (!(await enforceRateLimit(req, res, RATE_LIMITS.generateText))) return;
+    const callerUid = await enforceAuthAndRateLimit(req, res, RATE_LIMITS.generateText, operation);
+    if (!callerUid) return;
 
-    const prompt = normalizeText(String(req.body?.prompt || ''));
-    if (prompt.length < 2) {
-        res.status(400).json({ detail: 'O prompt está vazio.' });
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) ||
+        Object.keys(req.body).some(key => !['prompt', 'model', 'max_tokens', 'scope', 'expectedUid'].includes(key)) || typeof req.body.prompt !== 'string') {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'Pedido de geração inválido.' }); return;
+    }
+    const scope = parseAiGenerationScope(req.body.scope);
+    if (!scope || (scope.kind === 'team' && req.body.expectedUid === undefined)) {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'Âmbito de geração inválido.' }); return;
+    }
+    if (req.body.expectedUid !== undefined && (!attachmentActorIdValid(req.body.expectedUid) || req.body.expectedUid !== callerUid)) {
+        operation.finish('access_changed');
+        res.status(403).json({ error: 'ai_access_changed', detail: 'A conta da operação mudou.' }); return;
+    }
+    const prompt = normalizeText(req.body.prompt);
+    if (prompt.length < 2 || prompt.length > 4000) {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'O prompt deve ter entre 2 e 4000 caracteres.' });
         return;
     }
 
-    const model = getString(req.body?.model);
-    const maxTokens = maxTokensFromBody(req.body?.max_tokens);
-    const warnings: string[] = [];
-    for (const provider of [generateTextWithHuggingFace, generateTextWithNvidia, generateTextWithOpenAI]) {
-        try {
-            const generated = await provider(prompt, model, maxTokens);
-            res.status(200).json(generated);
+    const model = resolveTextModel(req.body?.model);
+    if (!model || !validTextTokenRequest(req.body?.max_tokens, model)) {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'Modelo ou limite de tokens não permitido.' });
+        return;
+    }
+    if (!isGenerationProviderEnabled(model.provider)) {
+        operation.finish('invalid_request');
+        res.status(400).json({ error: 'ai_provider_disabled', detail: 'Fornecedor não ativo neste lançamento.' }); return;
+    }
+    const maxTokens = req.body?.max_tokens === undefined ? model.maxOutputTokens : req.body.max_tokens as number;
+    operation.bind(model.id, scope.kind, Buffer.byteLength(prompt, 'utf8'));
+    const attempt = await beginProviderAttempt(`text_${model.provider}`);
+    if (!attempt) {
+        operation.finish('circuit_unavailable');
+        res.status(503).json({ error: 'ai_unavailable', detail: 'Fornecedor de texto temporariamente indisponível.' });
+        return;
+    }
+    const decision = await reserveAiGenerationBudget(callerUid, { kind: 'text', modelId: model.id,
+        promptBytes: Buffer.byteLength(prompt, 'utf8'), outputTokens: maxTokens, scope });
+    if (!decision.admitted) {
+        await releaseProviderAttempt(attempt);
+        operation.finish(decision.reason === 'denied' ? 'admission_denied' : decision.reason === 'exhausted' ? 'budget_exhausted' : 'budget_unavailable');
+        res.status(decision.reason === 'denied' ? 403 : decision.reason === 'exhausted' ? 429 : 503)
+            .json({ error: 'ai_admission_denied', detail: 'Não foi possível autorizar a geração dentro dos limites de IA.' });
+        return;
+    }
+    operation.reservation(maxTokens);
+    const provider = {
+        huggingface: generateTextWithHuggingFace,
+        nvidia: generateTextWithNvidia,
+        openai: generateTextWithOpenAI,
+        gemini: (prompt: string, model: string, maxTokens: number) => generateGeminiText(prompt, model, maxTokens, readSecret(geminiApiKey, 'GEMINI_API_KEY')),
+        openrouter: (prompt: string, model: string, maxTokens: number) => generateOpenRouterFreeText(prompt, model, maxTokens, readSecret(openrouterApiKey, 'OPENROUTER_API_KEY')),
+    }[model.provider];
+    try {
+        const generated = await withLiveAccount(callerUid, async () => {
+            if (!await isAiGenerationAdmissionLive(decision.admission)) throw new AiGenerationAccessError();
+            operation.providerAttempt();
+            const result = await provider(prompt, model.externalModel, maxTokens);
+            if (!await isAiGenerationAdmissionLive(decision.admission)) throw new AiGenerationAccessError();
+            return result;
+        });
+        await finishProviderAttempt(attempt, true);
+        if (!await enforceLiveAccount(callerUid, res, operation)) return;
+        if (!await isAiGenerationAdmissionLive(decision.admission)) {
+            operation.finish('access_changed');
+            res.status(403).json({ error: 'ai_access_changed', detail: 'O acesso à operação mudou.' }); return;
+        }
+        operation.finish('success');
+        res.status(200).json({ ...generated, cost_reference: { unit: 'relative', reserved: model.costUnitsPerRequest,
+            input_token_units_reserved: Buffer.byteLength(prompt, 'utf8') + AI_INPUT_OVERHEAD_RESERVATION,
+            output_tokens_reserved: maxTokens } });
+    } catch (error) {
+        if (error instanceof AiGenerationAccessError) {
+            await releaseProviderAttempt(attempt);
+            if (!await enforceLiveAccount(callerUid, res, operation)) return;
+            operation.finish('access_changed');
+            res.status(403).json({ error: 'ai_access_changed', detail: 'O acesso à operação mudou.' }); return;
+        }
+        if (error instanceof AccountUnavailableError) {
+            await releaseProviderAttempt(attempt);
+            operation.finish('account_unavailable');
+            res.status(403).json({ error: 'account_unavailable', detail: 'Conta indisponível.' });
             return;
-        } catch (error) {
-            warnings.push(error instanceof Error ? error.message.slice(0, 180) : 'provider indisponível');
+        }
+        const circuitFailure = shouldTripProviderCircuit(error);
+        await finishProviderAttempt(attempt, !circuitFailure);
+        if (error instanceof ProviderHttpError && !circuitFailure) {
+            operation.finish('provider_rejected');
+            res.status(422).json({ error: 'ai_rejected', detail: 'Pedido rejeitado pelo fornecedor de texto.' });
+        } else {
+            operation.finish('provider_failed');
+            res.status(503).json({ error: 'ai_unavailable', detail: 'Fornecedor de texto indisponível de momento.' });
         }
     }
+});
 
-    res.status(200).json({
-        text: fallbackGeneratedText(prompt),
-        model: model || null,
-        provider: 'firebase-fallback',
-        warning: warnings.join(' | '),
-    });
-};
-
-export const generateImageHandler = async (req: functions.Request, res: functions.Response): Promise<void> => {
+export const generateImageHandler = observeAiHandler('image', async (req, res, operation) => {
     setCors(res);
     if (req.method === 'OPTIONS') {
         res.status(204).send('');
         return;
     }
     if (req.method !== 'POST') {
+        operation.finish('method_not_allowed');
         res.status(405).json({ detail: 'Method not allowed' });
         return;
     }
-    if (!(await enforceRateLimit(req, res, RATE_LIMITS.generateImage))) return;
+    const callerUid = await enforceAuthAndRateLimit(req, res, RATE_LIMITS.generateImage, operation);
+    if (!callerUid) return;
 
-    const prompt = normalizeText(String(req.body?.prompt || ''));
-    if (prompt.length < 2) {
-        res.status(400).json({ detail: 'O prompt está vazio.' });
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) ||
+        Object.keys(req.body).some(key => !['prompt', 'model', 'size', 'quality', 'scope', 'expectedUid'].includes(key)) || typeof req.body.prompt !== 'string') {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'Pedido de geração inválido.' }); return;
+    }
+    const scope = parseAiGenerationScope(req.body.scope);
+    if (!scope || (scope.kind === 'team' && req.body.expectedUid === undefined)) {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'Âmbito de geração inválido.' }); return;
+    }
+    if (req.body.expectedUid !== undefined && (!attachmentActorIdValid(req.body.expectedUid) || req.body.expectedUid !== callerUid)) {
+        operation.finish('access_changed');
+        res.status(403).json({ error: 'ai_access_changed', detail: 'A conta da operação mudou.' }); return;
+    }
+    const prompt = normalizeText(req.body.prompt);
+    if (prompt.length < 2 || prompt.length > 2000) {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'O prompt deve ter entre 2 e 2000 caracteres.' });
         return;
     }
 
-    const model = getString(req.body?.model);
-    const size = req.body?.size;
-    const quality = req.body?.quality;
-    const warnings: string[] = [];
-
-    for (const provider of [generateImageWithNvidia, generateImageWithHuggingFace, generateImageWithOpenAI, generateImageWithPollinations]) {
-        try {
-            const generated = await provider(prompt, model, size, quality);
-            res.status(200).json(generated);
+    const model = resolveImageModel(req.body?.model);
+    if (!model || !validImageOptions(req.body?.size, req.body?.quality)) {
+        operation.finish('invalid_request');
+        res.status(400).json({ detail: 'Modelo, tamanho ou qualidade de imagem não permitido.' });
+        return;
+    }
+    if (!isGenerationProviderEnabled(model.provider)) {
+        operation.finish('invalid_request');
+        res.status(400).json({ error: 'ai_provider_disabled', detail: 'Fornecedor não ativo neste lançamento.' }); return;
+    }
+    operation.bind(model.id, scope.kind, Buffer.byteLength(prompt, 'utf8'));
+    const attempt = await beginProviderAttempt(`image_${model.provider}`);
+    if (!attempt) {
+        operation.finish('circuit_unavailable');
+        res.status(503).json({ error: 'ai_unavailable', detail: 'Fornecedor de imagem temporariamente indisponível.' });
+        return;
+    }
+    const decision = await reserveAiGenerationBudget(callerUid, { kind: 'image', modelId: model.id,
+        promptBytes: Buffer.byteLength(prompt, 'utf8'), outputTokens: 0, scope });
+    if (!decision.admitted) {
+        await releaseProviderAttempt(attempt);
+        operation.finish(decision.reason === 'denied' ? 'admission_denied' : decision.reason === 'exhausted' ? 'budget_exhausted' : 'budget_unavailable');
+        res.status(decision.reason === 'denied' ? 403 : decision.reason === 'exhausted' ? 429 : 503)
+            .json({ error: 'ai_admission_denied', detail: 'Não foi possível autorizar a geração dentro dos limites de IA.' });
+        return;
+    }
+    operation.reservation(0);
+    const provider = {
+        huggingface: generateImageWithHuggingFace,
+        nvidia: generateImageWithNvidia,
+        openai: generateImageWithOpenAI,
+        gemini: (prompt: string, model: string) => generateGeminiImage(prompt, model, readSecret(geminiApiKey, 'GEMINI_API_KEY')),
+    }[model.provider];
+    try {
+        const generated = await withLiveAccount(callerUid, async () => {
+            if (!await isAiGenerationAdmissionLive(decision.admission)) throw new AiGenerationAccessError();
+            operation.providerAttempt();
+            const result = await provider(prompt, model.externalModel, `${model.width}x${model.height}`, 'medium');
+            if (!await isAiGenerationAdmissionLive(decision.admission)) throw new AiGenerationAccessError();
+            return result;
+        });
+        await finishProviderAttempt(attempt, true);
+        if (!await enforceLiveAccount(callerUid, res, operation)) return;
+        if (!await isAiGenerationAdmissionLive(decision.admission)) {
+            operation.finish('access_changed');
+            res.status(403).json({ error: 'ai_access_changed', detail: 'O acesso à operação mudou.' }); return;
+        }
+        operation.finish('success');
+        res.status(200).json({ ...generated, cost_reference: { unit: 'relative', reserved: model.costUnitsPerRequest,
+            input_token_units_reserved: Buffer.byteLength(prompt, 'utf8') + AI_INPUT_OVERHEAD_RESERVATION,
+            output_tokens_reserved: 0 } });
+    } catch (error) {
+        if (error instanceof AiGenerationAccessError) {
+            await releaseProviderAttempt(attempt);
+            if (!await enforceLiveAccount(callerUid, res, operation)) return;
+            operation.finish('access_changed');
+            res.status(403).json({ error: 'ai_access_changed', detail: 'O acesso à operação mudou.' }); return;
+        }
+        if (error instanceof AccountUnavailableError) {
+            await releaseProviderAttempt(attempt);
+            operation.finish('account_unavailable');
+            res.status(403).json({ error: 'account_unavailable', detail: 'Conta indisponível.' });
             return;
-        } catch (error) {
-            warnings.push(error instanceof Error ? error.message.slice(0, 180) : 'provider indisponível');
+        }
+        const circuitFailure = shouldTripProviderCircuit(error);
+        await finishProviderAttempt(attempt, !circuitFailure);
+        if (error instanceof ProviderHttpError && !circuitFailure) {
+            operation.finish('provider_rejected');
+            res.status(422).json({ error: 'ai_rejected', detail: 'Pedido rejeitado pelo fornecedor de imagem.' });
+        } else {
+            operation.finish('provider_failed');
+            res.status(503).json({ error: 'ai_unavailable', detail: 'Fornecedor de imagem indisponível de momento.' });
         }
     }
-
-    res.status(503).json({
-        detail: `Nenhum provider de imagem conseguiu gerar o resultado. ${warnings.join(' | ')}`,
-    });
-};
+});

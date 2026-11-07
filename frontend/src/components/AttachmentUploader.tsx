@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, Image, Mic, X, Play, Pause, StopCircle, Trash2, Check, FileText, Film } from 'lucide-react';
-import { uploadFile, validateFile, formatFileSize, compressImage } from '../utils/storage';
+import { validateFile, formatFileSize, compressImage, describeUploadError } from '../utils/storage';
+import { uploadEncryptedAttachment } from '../services/attachmentUploadClient';
 import { useAudioRecorder, formatDuration } from '../hooks/useAudioRecorder';
 import { auth } from '../firebase';
 import { useSubscription } from '../hooks/useSubscription';
@@ -9,7 +10,9 @@ import { getEffectivePlanLimits } from '../config/planLimits';
 import { isFreeFirstMode } from '../config/monetization';
 import { FAIR_USE } from '../config/fairUse';
 import { useNavigate } from 'react-router-dom';
+import { DOCUMENT_FILE_ACCEPT_NO_MEDIA } from '../utils/fileTypes';
 import type { Attachment } from '../types/attachments';
+import { ATTACHMENT_READ_ONLY_MESSAGE, ATTACHMENT_WRITES_ENABLED } from '../config/releaseGates';
 
 export type { Attachment };
 
@@ -20,6 +23,7 @@ interface AttachmentUploaderProps {
     maxAudios?: number;
     maxDocuments?: number;
     maxVideos?: number;
+    teamId?: string;
 }
 
 export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
@@ -28,7 +32,8 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     maxImages = 5,
     maxAudios = 3,
     maxDocuments = 12,
-    maxVideos = 3
+    maxVideos = 3,
+    teamId,
 }) => {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -39,10 +44,10 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     const navigate = useNavigate();
     const { tier } = useSubscription();
     const planLimits = getEffectivePlanLimits(tier);
-    const canUploadImages = planLimits.attachments.images.enabled;
-    const canUploadAudio = planLimits.attachments.audio.enabled;
-    const canUploadDocuments = planLimits.attachments.pdfs.enabled;
-    const canUploadVideos = planLimits.attachments.images.enabled;
+    const canUploadImages = ATTACHMENT_WRITES_ENABLED && planLimits.attachments.images.enabled;
+    const canUploadAudio = ATTACHMENT_WRITES_ENABLED && planLimits.attachments.audio.enabled;
+    const canUploadDocuments = ATTACHMENT_WRITES_ENABLED && planLimits.attachments.pdfs.enabled;
+    const canUploadVideos = ATTACHMENT_WRITES_ENABLED && planLimits.attachments.images.enabled;
     const effectiveMaxImages = canUploadImages ? maxImages : 0;
     const effectiveMaxAudios = canUploadAudio ? maxAudios : 0;
     const effectiveMaxDocuments = canUploadDocuments ? maxDocuments : 0;
@@ -97,24 +102,13 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
                 // Compress image
                 const compressedFile = await compressImage(file);
 
-                // Upload to Firebase Storage
-                const url = await uploadFile(
-                    compressedFile,
-                    auth.currentUser?.uid || 'anonymous',
+                const newAttachment = await uploadEncryptedAttachment(
+                    { file: compressedFile, uid: auth.currentUser?.uid || '', teamId },
                     (progress) => setUploadProgress(progress.progress)
                 );
 
-                // Add to attachments
-                const newAttachment: Attachment = {
-                    type: 'image',
-                    url,
-                    name: file.name,
-                    size: compressedFile.size
-                };
-
                 onChange([...attachments, newAttachment]);
-            } catch (error) {
-                console.error('Upload error:', error);
+            } catch {
                 alert('Erro ao fazer upload da imagem');
             } finally {
                 setIsUploading(false);
@@ -141,7 +135,7 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
         let nextAttachments = [...attachments];
         let currentDocuments = documents.length;
-        const allowedExtensions = /\.(pdf|txt|md|markdown|csv|json|doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp|rtf|pages|key|numbers)$/i;
+        const allowedExtensions = /\.(pdf|txt|md|markdown|csv|json|doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp|rtf|pages|key|numbers|py|js|jsx|ts|tsx|rs|go|java|html|htm|xml|yaml|yml|css|sql|log|mdx)$/i;
 
         for (const file of files.slice(0, maxDocuments)) {
             if (currentDocuments >= effectiveMaxDocuments) {
@@ -160,24 +154,15 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
             try {
                 setIsUploading(true);
-                const url = await uploadFile(
-                    file,
-                    auth.currentUser?.uid || 'anonymous',
+                const attachment = await uploadEncryptedAttachment(
+                    { file, uid: auth.currentUser?.uid || '', teamId },
                     (progress) => setUploadProgress(progress.progress)
                 );
-                nextAttachments = [...nextAttachments, {
-                    type: 'document',
-                    url,
-                    name: file.name,
-                    size: file.size,
-                    mimeType: file.type || undefined,
-                    source: 'upload',
-                }];
+                nextAttachments = [...nextAttachments, attachment];
                 currentDocuments += 1;
                 onChange(nextAttachments);
             } catch (error) {
-                console.error('Document upload error:', error);
-                alert(`Erro ao fazer upload de "${file.name}"`);
+                alert(`Erro ao fazer upload de "${file.name}": ${describeUploadError(error)}`);
             } finally {
                 setIsUploading(false);
                 setUploadProgress(0);
@@ -217,23 +202,14 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
             try {
                 setIsUploading(true);
-                const url = await uploadFile(
-                    file,
-                    auth.currentUser?.uid || 'anonymous',
+                const attachment = await uploadEncryptedAttachment(
+                    { file, uid: auth.currentUser?.uid || '', teamId },
                     (progress) => setUploadProgress(progress.progress)
                 );
-                nextAttachments = [...nextAttachments, {
-                    type: 'video',
-                    url,
-                    name: file.name,
-                    size: file.size,
-                    mimeType: file.type || undefined,
-                    source: 'upload',
-                }];
+                nextAttachments = [...nextAttachments, attachment];
                 currentVideos += 1;
                 onChange(nextAttachments);
-            } catch (error) {
-                console.error('Video upload error:', error);
+            } catch {
                 alert(`Erro ao fazer upload de "${file.name}"`);
             } finally {
                 setIsUploading(false);
@@ -271,27 +247,15 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
                 type: 'audio/webm'
             });
 
-            // Upload to Firebase Storage
-            const url = await uploadFile(
-                file,
-                auth.currentUser?.uid || 'anonymous',
+            const newAttachment = await uploadEncryptedAttachment(
+                { file, uid: auth.currentUser?.uid || '', teamId },
                 (progress) => setUploadProgress(progress.progress)
             );
-
-            // Add to attachments
-            const newAttachment: Attachment = {
-                type: 'audio',
-                url,
-                name: file.name,
-                size: file.size,
-                duration: recording.duration
-            };
 
             onChange([...attachments, newAttachment]);
             resetRecording();
             setShowAudioRecorder(false);
-        } catch (error) {
-            console.error('Upload error:', error);
+        } catch {
             alert('Erro ao fazer upload do áudio');
         } finally {
             setIsUploading(false);
@@ -306,6 +270,9 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
     return (
         <div className="space-y-4">
+            <p className="rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs leading-relaxed text-amber-100" role="note">
+                {ATTACHMENT_READ_ONLY_MESSAGE}
+            </p>
             {/* Upload Buttons */}
             <div className="flex flex-wrap gap-3">
                 <button
@@ -355,7 +322,7 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
                 <input
                     ref={documentInputRef}
                     type="file"
-                    accept=".pdf,.txt,.md,.markdown,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,text/*,application/pdf"
+                    accept={DOCUMENT_FILE_ACCEPT_NO_MEDIA}
                     multiple
                     onChange={handleDocumentSelect}
                     className="hidden"

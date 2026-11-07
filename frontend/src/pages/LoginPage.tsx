@@ -4,6 +4,9 @@ import { ArrowRight, Brain, KeyRound, LogIn, Sparkles, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { LandingBackground } from '../components/landing/LandingBackground';
 import { AuthPage } from '../components/landing/AuthPage';
+import { PublicSiteFooter } from '../components/PublicSiteFooter';
+import { LanguagePicker } from '../components/LanguagePicker';
+import { useTranslation } from '../utils/translations';
 
 type AuthMode = 'login' | 'register' | 'zeroKnowledge';
 type LoginView = 'hero' | 'auth';
@@ -25,7 +28,9 @@ const itemVariants = {
 const LoginHero: React.FC<{
   onAuth: (mode: AuthMode) => void;
   onAbout: () => void;
-}> = ({ onAuth, onAbout }) => (
+}> = ({ onAuth, onAbout }) => {
+  const { t } = useTranslation();
+  return (
   <motion.div
     key="login-hero"
     initial={{ opacity: 0 }}
@@ -46,25 +51,26 @@ const LoginHero: React.FC<{
       </div>
 
       <nav className="flex items-center gap-2">
+        <LanguagePicker compact className="hidden sm:flex" />
         <button
           type="button"
           onClick={onAbout}
           className="hidden rounded-lg px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:block"
         >
-          Sobre
+          {t('about')}
         </button>
         <Link
           to="/pricing"
           className="hidden rounded-lg px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:block"
         >
-          Planos
+          {t('plans')}
         </Link>
         <button
           onClick={() => onAuth('login')}
           className="mnem-btn-ghost px-5 py-2 text-sm hover:bg-white/5"
           style={{ padding: '0.4rem 1.15rem' }}
         >
-          Entrar
+          {t('enter')}
         </button>
       </nav>
     </header>
@@ -79,10 +85,10 @@ const LoginHero: React.FC<{
         <motion.div variants={itemVariants} className="mb-8 flex flex-wrap items-center justify-center gap-2">
           <span className="mnem-badge group cursor-default">
             <Sparkles className="h-3 w-3 group-hover:animate-spin-slow" />
-            Cognitive Universe Engine
+            {t('loginBadge')}
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1.5 text-[0.72rem] font-medium tracking-wide text-cyan-100">
-            Founder Preview · grátis
+            {t('founderPreviewFree')}
           </span>
         </motion.div>
 
@@ -90,18 +96,16 @@ const LoginHero: React.FC<{
           variants={itemVariants}
           className="mb-6 text-[clamp(3.25rem,7.2vw,8rem)] font-bold leading-[1.08] tracking-tight text-white md:mb-8"
         >
-          Entra no teu
+          {t('loginHeroH1a')}
           <br />
-          <span className="mnem-gradient-text">universo mental</span>
+          <span className="mnem-gradient-text">{t('loginHeroH1b')}</span>
         </motion.h1>
 
         <motion.p
           variants={itemVariants}
           className="mx-auto mb-12 max-w-3xl text-lg leading-relaxed text-slate-300 md:mb-20 md:text-[1.75rem] md:leading-[1.55]"
         >
-          Guarda pensamentos, liga ideias e explora a tua memória{' '}
-          <br className="hidden sm:block" />
-          num espaço vivo e privado.
+          {t('loginHeroLead')}
         </motion.p>
 
         <motion.div variants={itemVariants} className="flex flex-col items-center justify-center gap-4 sm:flex-row">
@@ -111,7 +115,7 @@ const LoginHero: React.FC<{
             className="mnem-btn-primary group"
           >
             <Sparkles className="h-4 w-4" />
-            Começar grátis
+            {t('startFree')}
             <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
           </button>
 
@@ -121,7 +125,7 @@ const LoginHero: React.FC<{
             className="mnem-btn-ghost group flex items-center gap-2 bg-cyan-500/5 text-cyan-100"
           >
             <KeyRound className="h-4 w-4 text-cyan-300" />
-            Zero-Knowledge
+            {t('zk')}
           </button>
 
           <button
@@ -130,15 +134,20 @@ const LoginHero: React.FC<{
             className="flex items-center gap-2 px-4 py-3 text-sm font-medium text-slate-400 transition-colors hover:text-slate-100"
           >
             <LogIn className="h-4 w-4" />
-            Entrar
+            {t('enter')}
           </button>
         </motion.div>
       </motion.div>
     </main>
-  </motion.div>
-);
 
-const AboutPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => (
+    <PublicSiteFooter className="relative z-10 pb-10" />
+  </motion.div>
+  );
+};
+
+const AboutPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { t } = useTranslation();
+  return (
   <motion.div
     initial={{ opacity: 0 }}
     animate={{ opacity: 1 }}
@@ -162,7 +171,7 @@ const AboutPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => (
         type="button"
         onClick={onClose}
         className="absolute right-4 top-4 rounded-full p-2 text-slate-400 transition hover:bg-white/10 hover:text-white"
-        aria-label="Fechar sobre"
+        aria-label={t('closeAbout')}
       >
         <X className="h-4 w-4" />
       </button>
@@ -170,29 +179,29 @@ const AboutPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => (
         <div className="rounded-xl border border-violet-400/20 bg-violet-400/10 p-2">
           <Brain className="h-5 w-5 text-violet-300" />
         </div>
-        <h2 id="about-mnemosyne-title" className="text-xl font-semibold">Sobre o Mnemosyne</h2>
+        <h2 id="about-mnemosyne-title" className="text-xl font-semibold">{t('aboutTitle')}</h2>
       </div>
       <p className="text-sm leading-6 text-slate-300">
-        O Mnemosyne é um espaço privado para guardar pensamentos, ligar ideias e navegar a tua memória como um universo cognitivo.
-        Nesta fase <strong className="text-white">Founder Preview</strong>, o núcleo está gratuito.
+        {t('aboutBody')}
       </p>
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-          <p className="text-xs font-semibold uppercase tracking-widest text-cyan-200">Zero-Knowledge</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-cyan-200">{t('aboutZkTitle')}</p>
           <p className="mt-2 text-sm text-slate-300">
-            A frase de 12 palavras fica na sessão (não no servidor). Embeddings e insights correm no teu dispositivo.
+            {t('aboutZkBody')}
           </p>
         </div>
         <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-          <p className="text-xs font-semibold uppercase tracking-widest text-violet-200">Honesto</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-violet-200">{t('aboutHonestTitle')}</p>
           <p className="mt-2 text-sm text-slate-300">
-            Conta e sync usam Firebase. Metadados de conta ≠ leitura do teu cofre cognitivo.
+            {t('aboutHonestBody')}
           </p>
         </div>
       </div>
     </motion.div>
   </motion.div>
-);
+  );
+};
 
 interface LoginPageProps {
   onMnemonicComplete?: (mnemonic: string[]) => void;

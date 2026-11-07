@@ -1,7 +1,9 @@
 <!doctype html>
-<html lang="pt">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="referrer" content="no-referrer" />
+    <script src="/clip-ingress.js"></script>
     <link rel="icon" type="image/png" href="/icon-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     
@@ -17,6 +19,18 @@
     <meta name="apple-mobile-web-app-title" content="Mnemosyne" />
     
     <title>Mnemosyne - Seu Biógrafo de Conhecimento</title>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('mnemosyne-universe-preferences');
+          if (!raw) return;
+          var parsed = JSON.parse(raw);
+          var lang = parsed && parsed.state && parsed.state.language;
+          var map = { 'pt-pt': 'pt-PT', 'pt-br': 'pt-BR', en: 'en', fr: 'fr' };
+          if (lang && map[lang]) document.documentElement.lang = map[lang];
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

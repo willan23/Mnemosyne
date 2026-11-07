@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Seguranca - Mnemosyne</title>
+  <meta name="description" content="Esquema criptografico do Mnemosyne: BIP-39, AES-GCM, embeddings em claro, sync ECDH." />
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #050816; color: #e5e7eb; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 20% 0%, rgba(99,102,241,0.22), transparent 34rem), #050816; }
+    main { max-width: 920px; margin: 0 auto; padding: 48px 20px 72px; }
+    article { border: 1px solid rgba(255,255,255,0.11); border-radius: 20px; background: rgba(255,255,255,0.045); padding: clamp(24px, 4vw, 44px); }
+    h1 { color: #fff; }
+    h2 { color: #a5b4fc; margin-top: 1.6rem; }
+    a { color: #a5b4fc; }
+    code { background: rgba(0,0,0,0.4); padding: 0.1em 0.4em; border-radius: 4px; font-size: 0.9em; }
+    .muted { color: #94a3b8; font-size: 0.9rem; }
+    footer { margin-top: 2rem; text-align: center; color: #64748b; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+      <p class="muted">Mnemosyne · atualizado 24 de setembro de 2026</p>
+      <h1>Como a cifra funciona</h1>
+      <p>Descricao honesta do esquema. Nao e auditoria de terceiros e nao afirma anonimato total.</p>
+      <h2>BIP-39</h2>
+      <p>Mnemónica de 12 palavras gerada no dispositivo. Nao e enviada ao servidor. Deriva AES-GCM-256 via PBKDF2-SHA-256 (250 000 iteracoes).</p>
+      <h2>Memorias: enc:{v, iv, ct}</h2>
+      <p>Texto e titulo das novas memorias pessoais saem cifrados. O Firestore guarda o envelope AES-GCM. Documentos legados em claro existem ate migrarem no cliente com a chave do proprietario.</p>
+      <h2>Trade-off: embeddings em claro</h2>
+      <p>Embeddings, tags, categoria, conexoes e posicoes ficam em claro para pesquisa e grafo. Nao sao o texto original, mas tambem nao sao um segredo criptografico.</p>
+      <h2>Anexos e URLs de download</h2>
+      <p>Anexos carregados pelo fluxo antigo foram enviados como bytes originais ao Firebase Storage, sem a cifra E2EE do texto e titulo das memorias. O bucket atual de anexos esta em us-central1 (EUA). Novos uploads estao suspensos no lancamento pessoal.</p>
+      <p>Alguns anexos existentes guardam URLs de download com token no documento. Quem obtiver esse URL pode abrir o ficheiro enquanto o token for valido, mesmo sem entrar na conta. A leitura via SDK continua limitada ao proprietario pelas regras Storage.</p>
+      <h2>Mobile sync ECDH</h2>
+      <p>Emparelhamento desktop-Android usa ECDH P-256 e AES-GCM no payload. O Firestore transporta envelopes, nao plaintext.</p>
+      <h2>API e MCP</h2>
+      <p>REST e MCP autenticam com keys Bearer e estao em modo de leitura e pesquisa neste lancamento. O backend nao tem a mnemónica e nao decifra o cofre.</p>
+      <p>Politica de privacidade: <a href="/privacy">/privacy</a>.</p>
+    </article>
+    <footer>
+      <a href="/privacy">Privacidade</a> ·
+      <a href="/security">Seguranca</a> ·
+      <a href="/changelog">Changelog</a> ·
+      <a href="/download">Download</a>
+    </footer>
+  </main>
+</body>
+</html>

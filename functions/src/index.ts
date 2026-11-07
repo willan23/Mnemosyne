@@ -1,75 +1,33 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
-import { OwnerAckState, tombstoneAckedByAllActiveDevices } from './mobileSyncRetention';
+export { initializeAccount } from './accountBootstrap';
+export {mutateMobilePairing,getMobilePairingMutationStatus} from './mobilePairing';
+export {acknowledgeCapsuleNotice} from './capsuleNotices';
+export {getPublicCapsule,recordCapsuleOpening,revokePublicCapsule} from './publicCapsules';
+export {mutateCapsulePublication} from './capsulePublication';
+export {getOwnedCapsules} from './capsuleOwner';
+export {lookupCommsRecipient,createCommsContactRequest,getCommsContactRequestStatus,cancelCommsContactRequest,respondCommsContactRequest} from './commsContacts';
+export {beginCommsContactRemoval,getCommsContactRemovalStatus,advanceCommsContactRemoval,cancelCommsContactRemoval} from './commsContactRemovals';
+export {createCommsDelivery,getCommsDeliveryStatus,cancelCommsDelivery,acknowledgeCommsDelivery} from './commsDelivery';
+export {listCommsPage} from './commsLists';
+export {mutateCommsP2P,getCommsP2PMutationStatus,cancelCommsP2PMutation,readCommsP2PSession} from './commsP2PSignaling';
+export {admitCommsP2PContent,getCommsP2PContentStatus,cancelCommsP2PContent,acknowledgeCommsP2PContent} from './commsP2PContent';
+export {cleanupCommsP2PExpiry} from './commsP2PCleanup';
+import { runMobileSyncRetentionPage } from './mobileSyncRetention';
+
+import { accountCreatedSessionUsage } from './memoryUsageAccounting';
+import { resetMonthlyUsagePages } from './monthlyUsageReset';
+import { recordLiveShareStatistic } from './shareStatistics';
 import { generateImageHandler, generateTextHandler, webResearchHandler } from './webApi';
+import { aiProviderSecrets, aiImageProviderSecrets } from './params';
+import { GENERATION_HTTP_POLICY } from './generationHttpPolicy';
+
 
 // Initialize Firebase Admin
-admin.initializeApp();
+if (!admin.apps.length) admin.initializeApp();
 
 const db = admin.firestore();
 const regionalFunctions = functions.region('europe-west1');
-const MOBILE_SYNC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-
-const getRuntimeConfig = (): Record<string, any> => {
-    const compatFunctions = functions as unknown as { config?: () => Record<string, any> };
-    return typeof compatFunctions.config === 'function' ? compatFunctions.config() : {};
-};
-
-const deleteRefsInBatches = async (refs: FirebaseFirestore.DocumentReference[]): Promise<void> => {
-    let batch = db.batch();
-    let operationCount = 0;
-
-    for (const ref of refs) {
-        batch.delete(ref);
-        operationCount += 1;
-
-        if (operationCount >= 450) {
-            await batch.commit();
-            batch = db.batch();
-            operationCount = 0;
-        }
-    }
-
-    if (operationCount > 0) {
-        await batch.commit();
-    }
-};
-
-const loadOwnerAckState = async (ownerUid: string): Promise<OwnerAckState> => {
-    const trustedSnapshot = await db.collection('trustedDevices')
-        .where('ownerUid', '==', ownerUid)
-        .get();
-    const activeDeviceIds = trustedSnapshot.docs
-        .map((trustedDoc) => trustedDoc.data())
-        .filter((device) => device.status === 'active' && typeof device.deviceId === 'string')
-        .map((device) => device.deviceId as string);
-
-    const envelopesSnapshot = await db.collection('mobileSyncEnvelopes')
-        .where('ownerUid', '==', ownerUid)
-        .get();
-    const pulledTombstonesByDevice = new Map<string, Set<string>>();
-
-    for (const envelopeDoc of envelopesSnapshot.docs) {
-        const envelope = envelopeDoc.data();
-        if (
-            envelope.status !== 'pulled' ||
-            envelope.direction !== 'desktop-to-mobile' ||
-            typeof envelope.deviceId !== 'string' ||
-            !Array.isArray(envelope.tombstoneIds)
-        ) {
-            continue;
-        }
-
-        const ackedIds = pulledTombstonesByDevice.get(envelope.deviceId) || new Set<string>();
-        envelope.tombstoneIds
-            .filter((memoryId): memoryId is string => typeof memoryId === 'string')
-            .forEach((memoryId) => ackedIds.add(memoryId));
-        pulledTombstonesByDevice.set(envelope.deviceId, ackedIds);
-    }
-
-    return { activeDeviceIds, pulledTombstonesByDevice };
-};
-
 // Export Stripe functions
 export {
     createCheckoutSession,
@@ -78,366 +36,152 @@ export {
     handleStripeWebhook
 } from './stripe';
 
+export { mintAttachmentReadUrl } from './attachmentAccess';
+export { beginAttachmentUpload, completeAttachmentUpload, cancelAttachmentUpload, cleanupAttachmentQuarantine, purgeUnreferencedAttachment } from './attachmentUploads';
+
+export { createApiKey, listApiKeys, revokeApiKey } from './apiKeys';
+export { setAgentAccess } from './agentAccess';
+export { previewAgentAuthorization, authorizeAgentClient, revokeAgentGrant, listAgentGrants } from './agentOAuth';
+
+export {
+    createTeam,
+    cancelTeamCreation,
+    lookupTeamInvitee,
+    inviteMember,
+    acceptInvite,
+    leaveTeam,
+    removeTeamMember,
+    requestTeamKeyRotation,
+    commitTeamKeyRotation,
+    superviseTeamKeyRotations,
+    requestScheduledTeamKeyRotations,
+    deleteTeam,
+    getTeamDeletionStatus,
+    getPendingTeamDeletions,
+    setMemberRole,
+} from './teams';
+
+export { publicApi } from './publicApi';
+
 export const webResearch = regionalFunctions
     .runWith({ timeoutSeconds: 60, memory: '512MB' })
     .https
     .onRequest(webResearchHandler);
 
-export const generateText = regionalFunctions
-    .runWith({ timeoutSeconds: 60, memory: '512MB' })
+export const generateText = functions.region('europe-west1')
+    .runWith({ timeoutSeconds: GENERATION_HTTP_POLICY.text.functionTimeoutSeconds, memory: '512MB', secrets: aiProviderSecrets })
     .https
     .onRequest(generateTextHandler);
 
-export const generateImage = regionalFunctions
-    .runWith({ timeoutSeconds: 120, memory: '512MB' })
+export const generateImage = functions.region('europe-west1')
+    .runWith({ timeoutSeconds: GENERATION_HTTP_POLICY.image.functionTimeoutSeconds, memory: '512MB', secrets: aiImageProviderSecrets })
     .https
     .onRequest(generateImageHandler);
 
-export const cleanupMobileSyncRetention = regionalFunctions.pubsub
-    .schedule('every 24 hours')
-    .timeZone('Europe/Lisbon')
-    .onRun(async () => {
-        const cutoff = Date.now() - MOBILE_SYNC_RETENTION_MS;
-        const staleEnvelopeSnapshot = await db.collection('mobileSyncEnvelopes')
-            .where('expiresAt', '<', cutoff)
-            .limit(500)
-            .get();
-        const envelopeDeletes = staleEnvelopeSnapshot.docs
-            .filter((envelopeDoc) => {
-                const envelope = envelopeDoc.data();
-                const isTerminal = envelope.status === 'pulled' || envelope.status === 'failed';
-                const staleByExpiry = typeof envelope.expiresAt === 'number' && envelope.expiresAt < cutoff;
-                const staleByPulledAt = typeof envelope.pulledAt === 'number' && envelope.pulledAt < cutoff;
-                return isTerminal && (staleByExpiry || staleByPulledAt);
-            })
-            .map((envelopeDoc) => envelopeDoc.ref);
-
-        const staleTombstoneSnapshot = await db.collection('sessions')
-            .where('deletedAt', '<', cutoff)
-            .limit(500)
-            .get();
-        const ownerAckStateCache = new Map<string, Promise<OwnerAckState>>();
-        const tombstoneDeletes: FirebaseFirestore.DocumentReference[] = [];
-        let retainedTombstones = 0;
-
-        for (const tombstoneDoc of staleTombstoneSnapshot.docs) {
-            const tombstone = tombstoneDoc.data();
-            if (
-                typeof tombstone.uid !== 'string' ||
-                (Array.isArray(tombstone.tags) && tombstone.tags.includes('sync-conflict'))
-            ) {
-                continue;
-            }
-
-            if (!ownerAckStateCache.has(tombstone.uid)) {
-                ownerAckStateCache.set(tombstone.uid, loadOwnerAckState(tombstone.uid));
-            }
-            const ackState = await ownerAckStateCache.get(tombstone.uid);
-            if (ackState && tombstoneAckedByAllActiveDevices(tombstoneDoc.id, tombstone.deletedByDeviceId, ackState)) {
-                tombstoneDeletes.push(tombstoneDoc.ref);
-            } else {
-                retainedTombstones += 1;
-            }
+export const cleanupMobileSyncRetention = regionalFunctions
+    .runWith({ timeoutSeconds: 540, memory: '512MB' })
+    .pubsub.schedule('every 24 hours').timeZone('Europe/Lisbon').onRun(async () => {
+        const startedAt = Date.now();
+        const totals = { scanned: 0, deleted: 0, retained: 0, failed: 0, tombstonesDeleted: 0 };
+        while (Date.now() - startedAt < 7 * 60 * 1000) {
+            const page = await runMobileSyncRetentionPage();
+            for (const key of ['scanned', 'deleted', 'retained', 'failed'] as const) totals[key] += page[key];
+            if (!page.more || !page.cursorAdvanced) break;
         }
-
-        await deleteRefsInBatches(envelopeDeletes);
-        await deleteRefsInBatches(tombstoneDeletes);
-        console.log(`Mobile sync retention: deleted ${envelopeDeletes.length} envelope(s), ${tombstoneDeletes.length} tombstone(s), retained ${retainedTombstones} tombstone(s).`);
+        // Receipt-backed envelope cleanup only. Memory tombstones require a separate dependency/recovery protocol.
+        console.log('Mobile sync envelope retention', totals);
         return null;
     });
-
 /**
- * Cloud Function triggered when a new session is created
- * Extracts knowledge graph and updates the session document
+ * Server-side memory usage accounting: increments users/{uid}.usage in a
+ * transaction whenever a session (memory) is created. See usage.ts for the
+ * full design. The counter feeds the free-tier limit check in firestore.rules
+ * and the usage display in the frontend (which already listens to users/{uid}).
  */
-export const processMemoryKG = functions.firestore
+export const onMemoryCreated = regionalFunctions.firestore
     .document('sessions/{sessionId}')
-    .onCreate(async (snap, context) => {
-        // [DEPRECATION NOTICE: Zero-Knowledge Architecture Migration]
-        // This cloud-based extraction has been disabled to prevent sending
-        // unencrypted user memories to OpenAI/Gemini endpoints.
-        // Extraction is now handled locally entirely in the client's browser
-        // via Xenova/transformers.js BEFORE adding the document, ensuring E2EE.
-        console.log(`🔒 Cloud extraction disabled for E2EE compliance. Client will handle extraction.`);
+    .onCreate(async (snap) => {
+        const uid = snap.data()?.uid;
+        if (typeof uid !== 'string' || !uid) return null;
+
+        if (!snap.createTime) return null;
+        await accountCreatedSessionUsage(db, snap.id, uid, Date.now(), snap.createTime);
         return null;
     });
 
 /**
- * Track share view
+ * Monthly usage reset (hygiene). Correctness does not depend on this job:
+ * both the onCreate trigger and the security rules are period-aware, so a
+ * stale counter from a previous month never blocks anyone.
  */
-export const trackShareView = functions.https.onCall(async (data: { shareId: string }) => {
-    try {
-        const shareRef = db.collection('shares').doc(data.shareId);
-        await shareRef.update({
-            views: admin.firestore.FieldValue.increment(1),
-            lastViewedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-        return { success: true };
-    } catch (error) {
-        console.error('❌ Error tracking view:', error);
-        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+export const resetMonthlyUsage = regionalFunctions
+    .runWith({ timeoutSeconds: 540 })
+    .pubsub
+    .schedule('0 3 1 * *')
+    .timeZone('UTC')
+    .onRun(async () => {
+        const result = await resetMonthlyUsagePages(db);
+        if (!result.complete) throw new Error('Monthly usage hygiene scan incomplete.');
+        console.log('Monthly usage hygiene completed.', result);
+        return null;
+    });
+
+/**
+ * Retired unbound view counter. New public openings use bounded receipts.
+ */
+export const trackShareView = regionalFunctions.https.onCall(async (data: { shareId?: unknown }, context) => {
+    if (!context.auth?.uid) {
+        throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
     }
+    return recordLiveShareStatistic(context.auth.uid, data, 'view', db);
 });
 
 /**
- * Track conversion (when someone creates account after viewing share)
+ * Retired client-asserted conversion counter; no verified attribution exists here.
  */
-export const trackConversion = functions.https.onCall(async (data: { shareId: string }) => {
-    try {
-        const shareRef = db.collection('shares').doc(data.shareId);
-        await shareRef.update({
-            conversions: admin.firestore.FieldValue.increment(1)
-        });
-        return { success: true };
-    } catch (error) {
-        console.error('❌ Error tracking conversion:', error);
-        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+export const trackConversion = regionalFunctions.https.onCall(async (data: { shareId?: unknown }, context) => {
+    if (!context.auth?.uid) {
+        throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
     }
+    return recordLiveShareStatistic(context.auth.uid, data, 'conversion', db);
 });
 
 /**
  * Trigger when a session is shared
  */
-export const onMemoryShared = functions.firestore
+export const onMemoryShared = regionalFunctions.firestore
     .document('shares/{shareId}')
     .onCreate(async (snap, context) => {
-        console.log(`📤 Memory shared: ${context.params.shareId}`);
-
-        // Could send notification, analytics, etc.
+        console.log('Memory share event recorded');
         return null;
     });
 
-/**
- * Delete user account and all associated data
- */
-/**
- * Delete user account and all associated data
- */
-export const deleteUserAccount = functions.https.onCall(async (data, context) => {
-    // Check authentication
-    if (!context.auth) {
-        throw new functions.https.HttpsError(
-            'unauthenticated',
-            'User must be authenticated to delete account'
-        );
-    }
+export { deleteUserAccount, getAccountDeletionStatus, getAccountDeletionRecoveryStatus, repairAccountDeletionAuth } from './accountDeletion';
 
-    const uid = context.auth.uid;
-    console.log(`🗑️ Deleting account for user: ${uid}`);
-
-    try {
-        const batch = admin.firestore().batch();
-        let deletedCount = 0;
-
-        // Delete all sessions
-        const sessionsSnapshot = await admin.firestore()
-            .collection('sessions')
-            .where('uid', '==', uid)
-            .get();
-
-        sessionsSnapshot.docs.forEach(doc => {
-            batch.delete(doc.ref);
-            deletedCount++;
-        });
-        console.log(`📝 Deleting ${sessionsSnapshot.size} sessions`);
-
-        // Delete all shares (need to get session IDs first)
-        if (sessionsSnapshot.size > 0) {
-            const sessionIds = sessionsSnapshot.docs.map(d => d.id);
-            // Firestore 'in' query limited to 10 items, so batch if needed
-            for (let i = 0; i < sessionIds.length; i += 10) {
-                const batchIds = sessionIds.slice(i, i + 10);
-                const sharesSnapshot = await admin.firestore()
-                    .collection('shares')
-                    .where('sessionId', 'in', batchIds)
-                    .get();
-
-                sharesSnapshot.docs.forEach(doc => {
-                    batch.delete(doc.ref);
-                    deletedCount++;
-                });
-            }
-        }
-
-        // Delete all notifications
-        const notificationsSnapshot = await admin.firestore()
-            .collection('notifications')
-            .where('uid', '==', uid)
-            .get();
-
-        notificationsSnapshot.docs.forEach(doc => {
-            batch.delete(doc.ref);
-            deletedCount++;
-        });
-        console.log(`🔔 Deleting ${notificationsSnapshot.size} notifications`);
-
-        // Delete user profile
-        const userDoc = admin.firestore().collection('users').doc(uid);
-        batch.delete(userDoc);
-        deletedCount++;
-
-        // Commit all deletions
-        await batch.commit();
-        console.log(`✅ Deleted ${deletedCount} documents from Firestore`);
-
-        // Delete Firebase Auth user
-        await admin.auth().deleteUser(uid);
-        console.log(`✅ Deleted Firebase Auth user: ${uid}`);
-
-        return {
-            success: true,
-            deletedDocuments: deletedCount,
-            message: 'Account and all data deleted successfully'
-        };
-    } catch (error) {
-        console.error('❌ Error deleting account:', error);
-        throw new functions.https.HttpsError(
-            'internal',
-            'Failed to delete account',
-            error instanceof Error ? error.message : 'Unknown error'
-        );
-    }
-});
-
-
-/**
- * Admin-only reviewer flag. This does not create Stripe subscriptions.
- */
-export const grantReviewerAccess = functions.https.onCall(async (data, context) => {
-    const { email, secret } = data;
-    const reviewerSecret = getRuntimeConfig().reviewer?.secret;
-
-    if (!reviewerSecret) {
-        throw new functions.https.HttpsError('failed-precondition', 'Reviewer access is not configured');
-    }
-
-    if (secret !== reviewerSecret) {
-        console.warn(`⛔ Unauthorized attempt to grant access to ${email}`);
-        throw new functions.https.HttpsError('permission-denied', 'Invalid secret key');
-    }
-
-    if (!email) {
-        throw new functions.https.HttpsError('invalid-argument', 'Email is required');
-    }
-
-    try {
-        console.log(`🔓 Granting reviewer flag to: ${email}`);
-        const userRecord = await admin.auth().getUserByEmail(email);
-        const uid = userRecord.uid;
-
-        await db.collection('users').doc(uid).set({
-            reviewerAccess: {
-                enabled: true,
-                grantedAt: admin.firestore.FieldValue.serverTimestamp(),
-            },
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-
-        console.log(`✅ Reviewer flag granted to ${email} (${uid})`);
-
-        return {
-            success: true,
-            message: `Reviewer flag granted to ${email}`,
-            uid: uid
-        };
-    } catch (error) {
-        console.error("❌ Error granting access:", error);
-        throw new functions.https.HttpsError('internal', error instanceof Error ? error.message : 'Unknown error');
-    }
-});
-
-/**
- * Public MCP (Model Context Protocol) & Unified API Gateway Endpoint
- * Provides standardized JSON-RPC handshake, tool schemas, and health diagnostics.
- */
-export const mcpGateway = regionalFunctions.https.onRequest((req, res) => {
-    res.set('Access-Control-Allow-Origin', '*');
-    res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-    if (req.method === 'OPTIONS') {
-        res.status(204).send('');
-        return;
-    }
-
-    const mcpTools = [
-        {
-            name: 'search_memories',
-            description: 'Searches the user\'s private 3D cognitive memory graph by semantic concept or keywords.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    query: { type: 'string', description: 'Search term or question.' },
-                    limit: { type: 'string', description: 'Max items to return.' }
-                },
-                required: ['query']
-            }
-        },
-        {
-            name: 'create_memory',
-            description: 'Creates a new memory node in the 3D cognitive universe.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    title: { type: 'string', description: 'Memory title.' },
-                    content: { type: 'string', description: 'Memory content.' }
-                },
-                required: ['content']
-            }
-        },
-        {
-            name: 'query_cognitive_graph',
-            description: 'Queries relationship links and clusters between memory nodes in 3D space.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    clusterId: { type: 'string', description: 'Cluster filter ID.' }
-                }
-            }
-        }
-    ];
-
-    if (req.path === '/health' || req.method === 'GET') {
-        res.status(200).json({
-            status: 'online',
-            service: 'Mnemosyne MCP & Unified API Gateway',
-            version: '1.0.7',
-            mcpVersion: '1.0',
-            tools: mcpTools,
-            timestamp: Date.now()
-        });
-        return;
-    }
-
-    if (req.method === 'POST') {
-        const body = req.body || {};
-        if (body.jsonrpc === '2.0') {
-            if (body.method === 'tools/list') {
-                res.status(200).json({
-                    jsonrpc: '2.0',
-                    id: body.id || 1,
-                    result: { tools: mcpTools }
-                });
-                return;
-            }
-            if (body.method === 'ping') {
-                res.status(200).json({
-                    jsonrpc: '2.0',
-                    id: body.id || 1,
-                    result: { status: 'pong' }
-                });
-                return;
-            }
-        }
-
-        res.status(200).json({
-            status: 'ok',
-            message: 'Mnemosyne MCP request received',
-            tools: mcpTools
-        });
-        return;
-    }
-
-    res.status(405).json({ error: 'Method not allowed' });
-});
-
+export { sealDesktopAuthBridge, redeemDesktopAuthBridge } from './desktopAuth';
+export { onSessionLedgerWrite, onRelationLedgerWrite } from './memoryLedger';
+export { mintEncryptedAttachmentReadUrl } from './encryptedAttachmentAccess';
+export { mutateSessionAttachments, getAttachmentMutationStatus, cancelSessionAttachmentMutation } from './attachmentMutations';
+export { getAttachmentUploadStatus, cancelUnconfirmedAttachmentUpload } from './attachmentUploadRecovery';
+export { createAttachedMemory, createPersonalMemory, getAttachedMemoryCreationStatus, cancelAttachedMemoryCreation } from './attachedMemoryCreation';
+export { createClippedMemory, getClippedMemoryStatus, cancelClippedMemory } from './clippedMemoryCreation';
+export {preparePersonalConnection, applyPersonalConnection, getPersonalConnectionStatus, cancelPersonalConnection} from './personalConnections';
+export {beginObsidianImport,applyObsidianImportBatch,getObsidianImportStatus,cancelObsidianImport,beginCapsuleImport,applyCapsuleImportBatch} from './obsidianImport';
+export {preparePersonalRevision,applyPersonalRevision,getPersonalRevisionStatus,cancelPersonalRevision} from './personalRevisions';
+export {prepareTeamRevision,applyTeamRevision,getTeamRevisionStatus,cancelTeamRevision} from './teamRevisions';
+export {prepareMemoryEdit,applyMemoryEdit,getMemoryEditStatus,cancelMemoryEdit} from './memoryEdits';
+export {getAgentMutationProposal,listAgentMutationProposals,rejectAgentMutationProposal,approveAgentMutationProposal} from './agentMutations';
+export {prepareAgentMutationReversal,applyAgentMutationReversal,getAgentMutationReversalStatus,cancelAgentMutationReversal} from './agentReversals';
+export {createTeamMemory} from './attachedMemoryCreation';
+export {prepareTeamConnection,applyTeamConnection,getTeamConnectionStatus,cancelTeamConnection} from './teamConnections';
+export {prepareSemanticClusters,applySemanticClusters,getSemanticClusterStatus,cancelSemanticClusters} from './semanticClusters';
+export {prepareSemanticRelationCandidates,prepareSemanticRelationReview,applySemanticRelations,getSemanticRelationStatus,cancelSemanticRelations} from './semanticRelations';
+export {prepareEmbeddingIndexRevision,applyEmbeddingIndexRevision,getEmbeddingIndexRevisionStatus,cancelEmbeddingIndexRevision} from './embeddingIndexRevisions';
+export {prepareSyncConflictDecision,applySyncConflictDecision,getSyncConflictDecisionStatus,cancelSyncConflictDecision} from './syncConflictResolution';
+export {preparePersonalMigration,applyPersonalMigration,getPersonalMigrationStatus,cancelPersonalMigration,getPersonalMigrationArchive} from './personalMigration';
+export {prepareTeamHistoryChange,applyTeamHistoryChange,getTeamHistoryChangeStatus,cancelTeamHistoryChange} from './teamHistoryChanges';
+export {prepareCommsIdentityRollover,applyCommsIdentityRollover,getCommsIdentityRolloverStatus,cancelCommsIdentityRollover} from './commsIdentityRollovers';
+export {publishCommsIdentityKey} from './commsIdentityPublication';
+export {beginDocumentImport,applyDocumentImportBatch,getDocumentImportStatus,cancelDocumentImport} from './documentImport';
+export { applyMobileSyncImportBatch, getMobileSyncImportStatus, prepareMobileSyncImportBatch } from './mobileSyncImport';
+export { publishMobileSyncEnvelope, getMobileSyncPublicationStatus, cancelMobileSyncPublication } from './mobileSyncPublication';

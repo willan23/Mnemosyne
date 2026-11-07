@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Brain, Compass, Orbit, Radio, Search, Sparkles, X, ArrowRight, Check } from 'lucide-react';
+import { useTranslation } from '../utils/translations';
 
 const STORAGE_KEY = 'mnemosyne.onboarding.v1.done';
 
@@ -34,64 +35,24 @@ interface Step {
   body: string;
   icon: React.ReactNode;
   cta?: string;
-  action?: 'flow' | 'search' | 'universe' | 'done';
+  action?: 'capture' | 'search' | 'universe' | 'done';
 }
 
-const STEPS: Step[] = [
-  {
-    id: 'welcome',
-    title: 'Bem-vindo ao teu universo',
-    body: 'O Mnemosyne transforma pensamentos em estrelas ligadas. Em ~30 segundos vês o essencial.',
-    icon: <Brain className="h-6 w-6 text-violet-300" />,
-    cta: 'Começar',
-  },
-  {
-    id: 'flow',
-    title: 'Flow · capturar',
-    body: 'No dock inferior, toca em Flow. Escreve livremente e Ctrl+Enter cristaliza a memória com ligações automáticas.',
-    icon: <Compass className="h-6 w-6 text-cyan-300" />,
-    cta: 'Abrir Flow',
-    action: 'flow',
-  },
-  {
-    id: 'graph',
-    title: 'Grafo · explorar',
-    body: 'Cada memória é um corpo celeste. Arrasta para rodar, scroll para zoom, clique para mergulhar. Violeta = recém-criada.',
-    icon: <Sparkles className="h-6 w-6 text-violet-300" />,
-    cta: 'Continuar',
-  },
-  {
-    id: 'search',
-    title: 'Search · encontrar',
-    body: 'Ctrl+K abre a command palette. Pesquisa memórias, abre o Universo 3D ou Comms sem sair do teclado.',
-    icon: <Search className="h-6 w-6 text-sky-300" />,
-    cta: 'Experimentar Ctrl+K',
-    action: 'search',
-  },
-  {
-    id: 'universe',
-    title: 'Universe · espaço vivo',
-    body: 'O Universo 3D é a mesma mente noutro modo: física, clusters e zoom até ao detalhe. Usa “Nova memória” no centro.',
-    icon: <Orbit className="h-6 w-6 text-indigo-300" />,
-    cta: 'Ver Universo',
-    action: 'universe',
-  },
-  {
-    id: 'comms',
-    title: 'Comms · transmitir',
-    body: 'Envia memórias cifradas a outros utilizadores. Cápsulas por link usam passphrase — nunca texto em claro na cloud.',
-    icon: <Radio className="h-6 w-6 text-indigo-200" />,
-    cta: 'Pronto',
-    action: 'done',
-  },
-];
+const STEP_ICONS = {
+  welcome: <Brain className="h-6 w-6 text-violet-300" />,
+  capture: <Compass className="h-6 w-6 text-cyan-300" />,
+  graph: <Sparkles className="h-6 w-6 text-violet-300" />,
+  search: <Search className="h-6 w-6 text-sky-300" />,
+  universe: <Orbit className="h-6 w-6 text-indigo-300" />,
+  comms: <Radio className="h-6 w-6 text-indigo-200" />,
+} as const;
 
 interface OnboardingTourProps {
   enabled: boolean;
   /** Força abertura (ex: replay nas Definições) */
   forceOpen?: boolean;
   onForceConsumed?: () => void;
-  onOpenFlow: () => void;
+  onFocusCapture: () => void;
   onOpenSearch: () => void;
   onOpenUniverse: () => void;
 }
@@ -100,12 +61,22 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({
   enabled,
   forceOpen = false,
   onForceConsumed,
-  onOpenFlow,
+  onFocusCapture,
   onOpenSearch,
   onOpenUniverse,
 }) => {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
+
+  const steps: Step[] = [
+    { id: 'welcome', title: t('onbWelcomeTitle'), body: t('onbWelcomeBody'), icon: STEP_ICONS.welcome, cta: t('onbWelcomeCta') },
+    { id: 'capture', title: t('onbCaptureTitle'), body: t('onbCaptureBody'), icon: STEP_ICONS.capture, cta: t('onbCaptureCta'), action: 'capture' },
+    { id: 'graph', title: t('onbGraphTitle'), body: t('onbGraphBody'), icon: STEP_ICONS.graph, cta: t('onbGraphCta') },
+    { id: 'search', title: t('onbSearchTitle'), body: t('onbSearchBody'), icon: STEP_ICONS.search, cta: t('onbSearchCta'), action: 'search' },
+    { id: 'universe', title: t('onbUniverseTitle'), body: t('onbUniverseBody'), icon: STEP_ICONS.universe, cta: t('onbUniverseCta'), action: 'universe' },
+    { id: 'comms', title: t('onbCommsTitle'), body: t('onbCommsBody'), icon: STEP_ICONS.comms, cta: t('onbCommsCta'), action: 'done' },
+  ];
 
   useEffect(() => {
     if (!enabled) return;
@@ -125,19 +96,19 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({
     setOpen(false);
   }, []);
 
-  const current = STEPS[step];
-  const progress = ((step + 1) / STEPS.length) * 100;
+  const current = steps[step];
+  const progress = ((step + 1) / steps.length) * 100;
 
   const next = () => {
     const action = current.action;
-    if (action === 'flow') onOpenFlow();
+    if (action === 'capture') onFocusCapture();
     if (action === 'search') onOpenSearch();
     if (action === 'universe') {
       finish();
       onOpenUniverse();
       return;
     }
-    if (action === 'done' || step >= STEPS.length - 1) {
+    if (action === 'done' || step >= steps.length - 1) {
       finish();
       return;
     }
@@ -179,7 +150,7 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({
               type="button"
               onClick={skip}
               className="absolute right-3 top-4 rounded-full p-2 text-white/35 transition hover:bg-white/10 hover:text-white"
-              aria-label="Saltar onboarding"
+              aria-label={t('onbSkipAria')}
             >
               <X className="h-4 w-4" />
             </button>
@@ -189,7 +160,7 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({
                 {current.icon}
               </div>
               <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-300/60">
-                Passo {step + 1} de {STEPS.length}
+                {t('onbStepOf', { step: step + 1, total: steps.length })}
               </p>
               <h2 id="onboarding-title" className="text-xl font-semibold text-white">
                 {current.title}
@@ -203,24 +174,24 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({
                   className="mnem-btn-primary flex-1 justify-center"
                   style={{ borderRadius: '0.875rem' }}
                 >
-                  {step >= STEPS.length - 1 ? (
+                  {step >= steps.length - 1 ? (
                     <>
-                      <Check className="h-4 w-4" /> Entrar no universo
+                      <Check className="h-4 w-4" /> {t('onbEnterUniverse')}
                     </>
                   ) : (
                     <>
-                      {current.cta || 'Seguinte'}
+                      {current.cta || t('next')}
                       <ArrowRight className="h-4 w-4" />
                     </>
                   )}
                 </button>
-                {step < STEPS.length - 1 && (
+                {step < steps.length - 1 && (
                   <button
                     type="button"
                     onClick={skip}
                     className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-400 transition hover:bg-white/5 hover:text-white"
                   >
-                    Saltar
+                    {t('skip')}
                   </button>
                 )}
               </div>

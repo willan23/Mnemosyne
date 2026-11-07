@@ -11,6 +11,7 @@ import {
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
 } from 'firebase/auth';
+import { useTranslation } from '../../utils/translations';
 
 type AuthMode = 'login' | 'register' | 'reset' | 'zeroKnowledge';
 
@@ -25,7 +26,9 @@ interface AuthPageProps {
 const TabBar: React.FC<{
   mode: AuthMode;
   onSwitch: (m: AuthMode) => void;
-}> = ({ mode, onSwitch }) => (
+}> = ({ mode, onSwitch }) => {
+  const { t } = useTranslation();
+  return (
   <div
     className="flex rounded-xl p-1 mb-7"
     style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.07)' }}
@@ -48,12 +51,13 @@ const TabBar: React.FC<{
           />
         )}
         <span className="relative z-10">
-          {tab === 'login' ? 'Entrar' : 'Criar conta'}
+          {tab === 'login' ? t('enter') : t('authCreateAccount')}
         </span>
       </button>
     ))}
   </div>
-);
+  );
+};
 
 /* ─── InputField ──────────────────────────────────────────── */
 const InputField: React.FC<{
@@ -95,13 +99,15 @@ const MnemonicField: React.FC<{
   value: string;
   onChange: (v: string) => void;
   hasError?: boolean;
-}> = ({ value, onChange, hasError }) => (
+}> = ({ value, onChange, hasError }) => {
+  const { t } = useTranslation();
+  return (
   <div className="relative">
     <div className="absolute left-3.5 top-3.5 pointer-events-none" style={{ color: 'rgba(103,232,249,0.5)' }}>
       <KeyRound className="w-4 h-4" />
     </div>
     <textarea
-      placeholder="12 palavras da tua chave soberana"
+      placeholder={t('authMnemonicPlaceholder')}
       value={value}
       onChange={e => onChange(e.target.value)}
       className="mnem-input min-h-[104px] resize-none leading-relaxed"
@@ -112,7 +118,8 @@ const MnemonicField: React.FC<{
       }}
     />
   </div>
-);
+  );
+};
 
 /* ─── Google icon SVG ─────────────────────────────────────── */
 const GoogleIcon = () => (
@@ -131,6 +138,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   onMnemonicComplete,
   onGeneratedMnemonic,
 }) => {
+  const { t } = useTranslation();
   const [mode,            setMode]            = useState<AuthMode>(initialMode);
   const [email,           setEmail]           = useState('');
   const [password,        setPassword]        = useState('');
@@ -161,18 +169,18 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     setLoading(true);
     try {
       if (mode !== 'reset' && (!email.trim() || !password)) {
-        setError('Preenche email e password.');
+        setError(t('authNeedEmailPassword'));
         return;
       }
       if (mode === 'reset' && !email.trim()) {
-        setError('Preenche o email para recuperar a password.');
+        setError(t('authNeedEmailReset'));
         return;
       }
       if (mode === 'login') {
         await signInWithEmailAndPassword(auth, email, password);
       } else if (mode === 'register') {
         if (password !== confirmPassword) {
-          setError('As passwords não coincidem.');
+          setError(t('authPasswordMismatch'));
           return;
         }
         const words = await generateMnemonic();
@@ -181,7 +189,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       } else if (mode === 'zeroKnowledge') {
         const words = mnemonic.trim().toLowerCase().split(/\s+/).filter(Boolean);
         if (!(await validateBip39Mnemonic(words))) {
-          setError('A chave Zero-Knowledge deve conter exatamente 12 palavras BIP39 válidas.');
+          setError(t('authZkInvalid'));
           return;
         }
 
@@ -190,7 +198,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         onMnemonicComplete?.(words);
       } else {
         await sendPasswordResetEmail(auth, email);
-        setSuccess('Email de recuperação enviado. Verifica a tua caixa de entrada.');
+        setSuccess(t('authResetSent'));
       }
     } catch (e) {
       setError(getAuthErrorMessage(e));
@@ -208,23 +216,23 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         completeGeneratedMnemonic(await generateMnemonic());
       }
     } catch (e) {
-      setError(getAuthErrorMessage(e, 'Erro ao entrar com Google.'));
+      setError(getAuthErrorMessage(e, t('authGoogleError')));
     } finally {
       setGoogleLoading(false);
     }
   };
 
   const TITLES: Record<AuthMode, string> = {
-    login:    'Tu não estás a entrar numa conta.',
-    register: 'Tu não estás a criar uma conta.',
-    reset:    'Recuperar password',
-    zeroKnowledge: 'Entrar com Zero-Knowledge',
+    login:    t('authLoginKicker'),
+    register: t('authRegisterKicker'),
+    reset:    t('authResetKicker'),
+    zeroKnowledge: t('authZkKicker'),
   };
   const SUBS: Record<AuthMode, string> = {
-    login:    'Estás a aceder à tua mente digital. As tuas memórias são encriptadas localmente. Só tu controlas a chave.',
-    register: 'Estás a criar a tua mente digital. As tuas memórias são encriptadas localmente. Só tu controlas a chave.',
-    reset:    'Envia-nos o teu email e tratamos do resto.',
-    zeroKnowledge: 'Autentica a tua identidade e desbloqueia a chave local apenas em memória. A seed nunca sai deste dispositivo.',
+    login:    t('authLoginLead'),
+    register: t('authRegisterLead'),
+    reset:    t('authResetLead'),
+    zeroKnowledge: t('authZkLead'),
   };
 
   return (
@@ -245,7 +253,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
             onMouseLeave={e => (e.currentTarget.style.color = 'rgba(240,240,255,0.35)')}
           >
             <ArrowLeft className="w-4 h-4 transition-transform group-hover:-translate-x-0.5" />
-            Voltar
+            {t('back')}
           </button>
           <div className="flex items-center gap-2">
             <div className="p-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
@@ -275,17 +283,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
                 <div className="space-y-3">
                   <InputField
-                    type="email" placeholder="Email" value={email}
+                    type="email" placeholder={t('authEmail')} value={email}
                     onChange={setEmail} onEnter={handleSubmit} icon={<Mail className="w-4 h-4" />}
                   />
                   {error   && <ErrorMsg msg={error} />}
                   {success && <SuccessMsg msg={success} />}
-                  <SubmitBtn loading={loading} label="Enviar email de recuperação" disabled={!!success} onClick={handleSubmit} />
+                  <SubmitBtn loading={loading} label={t('authSendReset')} disabled={!!success} onClick={handleSubmit} />
                 </div>
 
                 <div className="mt-5 text-center">
                   <button onClick={() => switchMode('login')} className="text-sm" style={{ color: '#818cf8' }}>
-                    ← Voltar ao login
+                    {t('authBackToLogin')}
                   </button>
                 </div>
               </motion.div>
@@ -330,7 +338,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   ) : (
                     <GoogleIcon />
                   )}
-                  {googleLoading ? 'A conectar…' : 'Continuar com Google'}
+                  {googleLoading ? t('authConnecting') : t('authContinueGoogle')}
                 </button>
               )}
 
@@ -338,7 +346,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               <div className="flex items-center gap-3 mb-4">
                 <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.07)' }} />
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {mode === 'zeroKnowledge' ? 'identidade + chave local' : 'ou com email'}
+                  {mode === 'zeroKnowledge' ? t('authOrZk') : t('authOrEmail')}
                 </span>
                 <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.07)' }} />
               </div>
@@ -354,14 +362,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   className="space-y-3"
                 >
                   <InputField
-                    type="email" placeholder="Email" value={email}
+                    type="email" placeholder={t('authEmail')} value={email}
                     onChange={setEmail} icon={<Mail className="w-4 h-4" />}
                     hasError={!!error}
                   />
 
                   <InputField
                     type={showPass ? 'text' : 'password'}
-                    placeholder="Password"
+                    placeholder={t('authPassword')}
                     value={password}
                     onChange={setPassword}
                     onEnter={mode === 'login' ? handleSubmit : undefined}
@@ -383,7 +391,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   {mode === 'register' && (
                     <InputField
                       type={showPass ? 'text' : 'password'}
-                      placeholder="Confirmar password"
+                      placeholder={t('authConfirmPassword')}
                       value={confirmPassword}
                       onChange={setConfirmPassword}
                       onEnter={handleSubmit}
@@ -409,10 +417,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                     onClick={handleSubmit}
                     label={
                       mode === 'login'
-                        ? 'Entrar'
+                        ? t('enter')
                         : mode === 'zeroKnowledge'
-                          ? 'Desbloquear mente'
-                          : 'Criar conta'
+                          ? t('authUnlockMind')
+                          : t('authCreateAccount')
                     }
                     icon={mode === 'zeroKnowledge' ? <KeyRound className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
                   />
@@ -428,13 +436,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       className="inline-flex items-center gap-1.5 text-xs text-cyan-300 hover:text-cyan-100 transition-colors"
                     >
                       <KeyRound className="w-3 h-3" />
-                      Entrar com Zero-Knowledge
+                      {t('authZkKicker')}
                     </button>
                     <button
                       onClick={() => switchMode('reset')}
                       className="text-xs hover:text-white/60 transition-colors"
                     >
-                      Esqueceste a password?
+                      {t('authForgotPassword')}
                     </button>
                   </>
                 )}
@@ -443,7 +451,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                     onClick={() => switchMode('login')}
                     className="text-xs hover:text-white/60 transition-colors"
                   >
-                    Voltar ao login por email
+                    {t('authBackToEmail')}
                   </button>
                 )}
               </div>
@@ -492,7 +500,9 @@ const SubmitBtn: React.FC<{
   onClick: () => void;
   label: string;
   icon?: React.ReactNode;
-}> = ({ loading, disabled, onClick, label, icon }) => (
+}> = ({ loading, disabled, onClick, label, icon }) => {
+  const { t } = useTranslation();
+  return (
   <button
     onClick={onClick}
     disabled={loading || disabled}
@@ -502,7 +512,7 @@ const SubmitBtn: React.FC<{
     {loading ? (
       <>
         <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-        A processar…
+        {t('authProcessing')}
       </>
     ) : (
       <>
@@ -511,4 +521,5 @@ const SubmitBtn: React.FC<{
       </>
     )}
   </button>
-);
+  );
+};

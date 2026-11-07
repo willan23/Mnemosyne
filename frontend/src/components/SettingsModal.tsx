@@ -1,21 +1,40 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
 import { deriveAesKeyFromMnemonic } from '../utils/crypto';
 import { auth } from '../firebase';
+import { ACCOUNT_DELETION_ENABLED, PERSONAL_REVISION_WRITES_ENABLED } from '../config/releaseGates';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Brain, Key, Eye, EyeOff, Shield, AlertTriangle, Cpu, RotateCcw, Smartphone, QrCode, Copy, UploadCloud, Download, Globe, Folder, Compass, Lock, Search, type LucideIcon } from 'lucide-react';
+import { X, Brain, Key, Eye, EyeOff, Shield, AlertTriangle, Cpu, RotateCcw, Smartphone, QrCode, Copy, UploadCloud, Download, Globe, Folder, Compass, Lock, Search, Crosshair, Keyboard, Users, type LucideIcon } from 'lucide-react';
 import {
     disableLocalPin,
     enableLocalPin,
     isLocalPinEnabled,
 } from '../utils/localPin';
+import {
+    clearWebAuthnCredential,
+    isWebAuthnAvailable,
+    readWebAuthnCredentialId,
+    registerWebAuthnGate,
+} from '../utils/webauthnVault';
 import toast from 'react-hot-toast';
 import { resetOnboarding } from './OnboardingTour';
 import { PlansModal } from './PlanosModal';
 import { SyncConflictPanel } from './SyncConflictPanel';
+import { LocalMemoryActivityPanel } from './LocalMemoryActivityPanel';
+import { SyncRecoveryActions } from './SyncRecoveryActions';
+import { syncOutboxMessage } from '../services/mobileSyncMessages';
 import { McpIntegrationPanel } from './McpIntegrationPanel';
-import { learnDocumentBatch } from '../services/learningService';
+import { ApiKeysPanel } from './ApiKeysPanel';
+import { TeamSettings } from './TeamSettings';
+import { CommsIdentityBackupPanel } from './CommsIdentityBackupPanel';
+import { AiModelPicker } from './AiModelPicker';
+import {EmailVerificationPanel} from './EmailVerificationPanel';
+import { EmbeddingReindexPanel } from './EmbeddingReindexPanel';
+import { EmbeddingPublicationPanel } from './EmbeddingPublicationPanel';
+import { importFolderMemories } from '../services/folderMemoryImport';
+import {looksLikeObsidianVault} from '../services/obsidianVaultImport';
 import { isTauriRuntime, selectAndReadTauriDirectory } from '../utils/tauriFolderImporter';
+import { formatCaptureHotkeyLabel } from '../utils/desktopCapture';
 import {
     cancelMobilePairingInvite,
     createMobilePairingInvite,
@@ -36,11 +55,22 @@ import {
 import { getOrCreateDesktopSyncIdentity } from '../services/desktopSyncIdentity';
 import type { SessionData } from '../hooks/useSessions';
 import { useUniverseStore } from '../store/universeStore';
+import { useSyncFeedback } from '../hooks/useSyncFeedback';
+import {personalMigrationWritesEnabled} from '../services/personalMigrationRecovery';
+import {hasPendingMemoryEdit} from '../services/memoryEditRecovery';
+import {removePersonalMemoriesForIdentityReset, PersonalIdentityResetError, type IdentityResetProgress} from '../services/personalIdentityReset';
 import { useTranslation } from '../utils/translations';
-import type { UniverseType } from '../types/universe';
+import { listUniverseThemes } from '../engines/universeThemes';
 import { DESKTOP_APP_DOWNLOAD_URL, MOBILE_APP_DOWNLOAD_URL, openExternalDownload } from '../config/downloads';
 import {
+    MemoryCryptoLockedError,
+    MemoryMigrationCancelledError,
+    migrateLegacyMemoriesToEncrypted,
+    type MemoryMigrationProgress,
+} from '../services/memoryCrypto';
+import {
     AI_PROVIDERS,
+    isAiProviderEnabled,
     clearProviderSecret,
     getLocalAiConfig,
     hasProviderSecret,
@@ -51,15 +81,16 @@ import {
     type LocalAiConfig,
 } from '../services/localAiConfig';
 
-type SettingsSectionId = 'identity' | 'mobile' | 'universe' | 'ai' | 'integrations' | 'privacy' | 'account';
+type SettingsSectionId = 'identity' | 'mobile' | 'universe' | 'ai' | 'integrations' | 'capture' | 'privacy' | 'teams' | 'account';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
     mnemonic: string[] | null;
     onResetKey: () => void;
-    sessions?: SessionData[];
+    sessions?: readonly SessionData[];
     onReplayOnboarding?: () => void;
+    onOpenExport?: () => void;
     /** Secção inicial (ex: 'privacy', 'ai') — deep-link da Command Palette */
     initialSection?: SettingsSectionId | string | null;
 }
@@ -70,21 +101,18 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsSectionId, string[]> = {
     identity: ['chave', 'mnemónica', 'mnemonic', 'uid', 'identidade', 'seed', 'backup'],
     mobile: ['android', 'qr', 'sync', 'mobile', 'dispositivo', 'pairing', 'telefone'],
     universe: ['universo', 'galáxia', 'tema visual', '3d', 'nebulosa', 'void'],
-    ai: ['ia', 'ai', 'ollama', 'openai', 'modelo', 'llm', 'nvidia', 'gemini', 'anthropic', 'mistral', 'permissões'],
+    ai: ['ia', 'ai', 'ollama', 'openai', 'openrouter', 'gemma', 'gratuito', 'modelo', 'llm', 'nvidia', 'gemini', 'anthropic', 'mistral', 'permissões'],
     integrations: ['importar', 'pasta', 'download', 'desktop', 'app', 'integrar', 'ficheiros'],
-    privacy: ['pin', 'privacidade', 'zero-knowledge', 'partilha', 'onboarding', 'segurança', 'idle'],
+    capture: ['captura', 'clipper', 'atalho', 'hotkey', 'extensão', 'chrome', 'edge', 'clip', 'api', 'keys', 'mcp', 'bearer'],
+    privacy: ['pin', 'privacidade', 'zero-knowledge', 'partilha', 'onboarding', 'segurança', 'idle', 'cifrar', 'encriptar', 'e2ee'],
+    teams: ['equipa', 'equipas', 'team', 'teams', 'convite', 'membros', 'e2ee', 'teamkey', 'colaborar'],
     account: ['conta', 'apagar', 'eliminar', 'danger', 'delete'],
 };
 
 const isSettingsSection = (value: string | null | undefined): value is SettingsSectionId =>
     Boolean(value && value in SETTINGS_SEARCH_INDEX);
 
-const universeTypes = [
-    { id: 'galaxia', name: 'Galáxia', universeType: 'stellar' as UniverseType, color: 'from-purple-500 to-blue-500' },
-    { id: 'sistema-solar', name: 'Sistema Solar', universeType: 'solar' as UniverseType, color: 'from-orange-400 to-yellow-500' },
-    { id: 'nebulosa', name: 'Nebulosa', universeType: 'mythic' as UniverseType, color: 'from-pink-500 to-rose-400' },
-    { id: 'buraco-negro', name: 'Buraco Negro', universeType: 'void' as UniverseType, color: 'from-gray-700 to-black' }
-];
+const universeThemes = listUniverseThemes();
 
 interface SettingsTab {
     id: SettingsSectionId;
@@ -95,23 +123,42 @@ interface SettingsTab {
 
 
 
+const btnPrimary =
+    'inline-flex items-center justify-center gap-2 rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40';
+const btnSecondary =
+    'inline-flex items-center justify-center gap-2 rounded-lg border border-white/12 bg-transparent px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40';
+const btnDanger =
+    'inline-flex items-center justify-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-sm font-medium text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40';
+const cardClass = 'rounded-xl border border-white/[0.08] bg-white/[0.03] p-4';
+const inputClass =
+    'w-full rounded-lg border border-white/10 bg-black/35 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 focus:border-white/25';
+const fieldLabelClass = 'mb-1.5 block text-xs font-medium text-slate-400';
+
 const SectionHeader: React.FC<{
     icon: LucideIcon;
     title: string;
     description: string;
 }> = ({ icon: Icon, title, description }) => (
-    <div className="flex flex-col gap-4 border-b border-white/5 pb-5 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-4">
-            <div className="rounded-2xl border border-purple-400/20 bg-purple-500/10 p-3">
-                <Icon className="h-5 w-5 text-purple-300" />
-            </div>
-            <div>
-                <h3 className="text-lg font-bold tracking-tight text-[#f8fafc]">{title}</h3>
-                <p className="mt-1 max-w-2xl text-sm leading-6 text-[#94a3b8]">{description}</p>
-            </div>
+    <div className="flex items-start gap-3 border-b border-white/[0.08] pb-4">
+        <div className="mt-0.5 rounded-lg border border-white/10 bg-white/[0.04] p-2">
+            <Icon className="h-4 w-4 text-slate-300" aria-hidden />
+        </div>
+        <div className="min-w-0">
+            <h3 className="text-base font-semibold tracking-tight text-white">{title}</h3>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">{description}</p>
         </div>
     </div>
 );
+
+const SETTINGS_FOCUSABLE =
+    'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+const collectFocusable = (root: HTMLElement | null): HTMLElement[] => {
+    if (!root) return [];
+    return Array.from(root.querySelectorAll<HTMLElement>(SETTINGS_FOCUSABLE)).filter(
+        (el) => !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true',
+    );
+};
 
 const getErrorMessage = (error: unknown, fallback: string) => (
     error instanceof Error ? error.message : fallback
@@ -124,6 +171,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onResetKey,
     sessions = [],
     onReplayOnboarding,
+    onOpenExport,
     initialSection = null,
 }) => {
     const { t, language } = useTranslation();
@@ -135,16 +183,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         { id: 'universe', label: t('tabUniverse'), description: t('tabUniverseDesc'), icon: Brain },
         { id: 'ai', label: t('tabAi'), description: t('tabAiDesc'), icon: Cpu },
         { id: 'integrations', label: t('tabIntegrations'), description: t('tabIntegrationsDesc'), icon: Download },
+        { id: 'capture', label: t('tabCapture'), description: t('tabCaptureDesc'), icon: Crosshair },
         { id: 'privacy', label: t('tabPrivacy'), description: t('tabPrivacyDesc'), icon: Shield },
+        { id: 'teams', label: t('tabTeams'), description: t('tabTeamsDesc'), icon: Users },
         { id: 'account', label: t('tabAccount'), description: t('tabAccountDesc'), icon: AlertTriangle },
     ];
 
     const [showMnemonic, setShowMnemonic] = useState(false);
+    const [identityResetBusy, setIdentityResetBusy] = useState(false);
+    const [identityResetProgress, setIdentityResetProgress] = useState<IdentityResetProgress | null>(null);
+    const identityResetBusyRef = useRef(false);
     const [shareEnabled, setShareEnabled] = useState(false);
     const [pinEnabled, setPinEnabled] = useState(() => isLocalPinEnabled());
+    const [webauthnEnabled, setWebauthnEnabled] = useState(() => Boolean(readWebAuthnCredentialId()));
     const [pinInput, setPinInput] = useState('');
     const [pinConfirm, setPinConfirm] = useState('');
     const [pinBusy, setPinBusy] = useState(false);
+    const [encMigrating, setEncMigrating] = useState(false);
+    const [encMigration, setEncMigration] = useState<MemoryMigrationProgress | null>(null);
+    const [encMigrationOutcome, setEncMigrationOutcome] = useState<'completed' | 'stopped' | 'failed' | null>(null);
+    const migrationAbortRef = useRef<AbortController | null>(null);
+
+    useEffect(() => {
+        if (!isOpen) migrationAbortRef.current?.abort();
+    }, [isOpen]);
+    const [confirmDialog, setConfirmDialog] = useState<{
+        title: string;
+        message: string;
+        confirmLabel?: string;
+        danger?: boolean;
+        requirePhrase?: string;
+        resolve: (ok: boolean) => void;
+    } | null>(null);
+    const [confirmPhrase, setConfirmPhrase] = useState('');
+    const confirmResolveRef = useRef<((ok: boolean) => void) | null>(null);
+    useEffect(() => {
+        if (!isOpen) {
+            confirmResolveRef.current?.(false);confirmResolveRef.current=null;
+            setConfirmDialog(null);setConfirmPhrase('');
+        }
+    }, [isOpen]);
+    useEffect(() => () => {confirmResolveRef.current?.(false);confirmResolveRef.current=null;}, []);
     const [planosOpen, setPlanosOpen] = useState(false);
     const [settingsQuery, setSettingsQuery] = useState('');
     const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => {
@@ -161,46 +240,54 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const [isSavingSecret, setIsSavingSecret] = useState(false);
     const [pairingInvite, setPairingInvite] = useState<Omit<MobilePairingInvite, 'privateKey'> | null>(null);
     const [pairingRecord, setPairingRecord] = useState<MobilePairingRecord | null>(null);
-    const [trustedDevices, setTrustedDevices] = useState<TrustedDevice[]>([]);
+    const [trustedDeviceRows, setTrustedDevices] = useState<TrustedDevice[]>([]);
+    const [trustedDeviceView,setTrustedDeviceView]=useState<{uid:string|null;status:'loading'|'ready'|'unavailable'}>({uid:null,status:'loading'});
+    const trustedDevices=trustedDeviceView.uid===auth.currentUser?.uid&&trustedDeviceView.status==='ready'?trustedDeviceRows:[];
     const [isCreatingPairing, setIsCreatingPairing] = useState(false);
     const [pairingError, setPairingError] = useState<string | null>(null);
     const [syncingDeviceId, setSyncingDeviceId] = useState<string | null>(null);
     const [mobileSyncMessage, setMobileSyncMessage] = useState<string | null>(null);
-    const pairingPrivateKeyRef = useRef<CryptoKey | null>(null);
+    const pairingCreationRef = useRef<object | null>(null);
     const trustedPairingIdRef = useRef<string | null>(null);
     const mnemonicPanelRef = useRef<HTMLDivElement | null>(null);
     const settingsFolderInputRef = useRef<HTMLInputElement | null>(null);
+    const folderActorRef = useRef<{uid:string;current:()=>boolean}|null>(null);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
+    const contentScrollRef = useRef<HTMLDivElement | null>(null);
+    const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+    const accountEmailOpen = useRef(isOpen); accountEmailOpen.current = isOpen;
+    const overlayRef = useRef<HTMLDivElement | null>(null);
+    const syncFeedback = useSyncFeedback(isOpen);
+    const capturePairing=syncFeedback.capture;
+    const captureDeviceAccount=syncFeedback.captureAccount;
+    useEffect(()=>{migrationAbortRef.current?.abort();setEncMigrating(false);setEncMigrationOutcome(null);setEncMigration(null);},[syncFeedback.epoch]);
+    useEffect(() => {pairingCreationRef.current=null;trustedPairingIdRef.current=null;setIsCreatingPairing(false);setPairingInvite(null);setPairingRecord(null);setSyncingDeviceId(null);setMobileSyncMessage(null);setPairingError(null);},[syncFeedback.epoch,isOpen]);
     const [isImportingFolder, setIsImportingFolder] = useState(false);
     const universeType = useUniverseStore((state) => state.universeType);
     const setGlobalUniverseType = useUniverseStore((state) => state.setUniverseType);
-    const selectedUniverse = universeTypes.find((type) => type.universeType === universeType) || universeTypes[0];
-    const selectedUniversePreset = selectedUniverse.id;
+    const selectedUniverseTheme = universeThemes.find((theme) => theme.id === universeType) || universeThemes[0];
+    const langIsEn = language === 'en' || language === 'fr';
     const selectedProvider = localAiConfig.primaryProvider;
     const activeProvider = AI_PROVIDERS.find((provider) => provider.id === selectedProvider) || AI_PROVIDERS[0];
     const activeProviderConfig = localAiConfig.providers[selectedProvider];
     const trustedActiveCount = trustedDevices.filter((device) => device.status === 'active').length;
     const activeTab = tabs.find((tab) => tab.id === activeSection) || tabs[0];
     const ActiveTabIcon = activeTab.icon;
-    const activeProviderBadge = activeProvider.label.replace(' Local', '').replace(' Backend', '');
+    const activeProviderBadge = activeProvider.label.replace(' Local', '').replace(' Backend', '') +
+        (isAiProviderEnabled(selectedProvider) ? '' : ` · ${t('settingsAiProviderUnavailable')}`);
     const tabBadges: Record<SettingsSectionId, string> = {
         identity: aesKeyReady ? 'AES' : t('badgeIdentityLocked'),
         mobile: trustedActiveCount > 0 
             ? `${trustedActiveCount} ${t('badgeMobileActive')}` 
             : `0 ${t('badgeMobilePairs')}`,
-        universe: selectedUniverse.id === 'galaxia' ? t('badgeUniverseGalaxy') :
-                  selectedUniverse.id === 'sistema-solar' ? t('badgeUniverseSolar') :
-                  selectedUniverse.id === 'nebulosa' ? t('badgeUniverseNebula') :
-                  selectedUniverse.id === 'buraco-negro' ? t('badgeUniverseVoid') : selectedUniverse.name,
+        universe: langIsEn ? selectedUniverseTheme.labelEn : selectedUniverseTheme.labelPt,
         ai: activeProviderBadge,
         integrations: t('badgeIntegrationsFree'),
+        capture: formatCaptureHotkeyLabel(),
         privacy: shareEnabled ? t('badgePrivacySharing') : t('badgePrivacyPrivate'),
+        teams: 'Read only',
         account: t('badgeAccountCritical'),
     };
-    const providerGroups = [
-        { title: 'Local e backend controlado', providers: AI_PROVIDERS.filter((provider) => provider.kind !== 'cloud') },
-        { title: 'Cloud com consentimento', providers: AI_PROVIDERS.filter((provider) => provider.kind === 'cloud') },
-    ];
-
     const selectSection = (section: SettingsSectionId) => {
         setActiveSection(section);
         try {
@@ -221,20 +308,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         } catch { /* ignore */ }
     }, [isOpen, initialSection]);
 
-    // Atalhos 1–7 para secções quando o modal está aberto
     useEffect(() => {
         if (!isOpen) return;
-        const onKey = (event: KeyboardEvent) => {
-            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
-            const idx = Number(event.key) - 1;
-            if (idx >= 0 && idx < tabs.length) {
-                event.preventDefault();
-                selectSection(tabs[idx].id);
-            }
+        contentScrollRef.current?.scrollTo({ top: 0 });
+    }, [isOpen, activeSection]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        previouslyFocusedRef.current = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        const frame = requestAnimationFrame(() => {
+            const search = dialogRef.current?.querySelector<HTMLElement>('input[type="search"]');
+            (search || dialogRef.current)?.focus();
+        });
+        return () => {
+            cancelAnimationFrame(frame);
+            previouslyFocusedRef.current?.focus?.();
         };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-    }, [isOpen, tabs]);
+    }, [isOpen]);
 
     const visibleTabs = tabs.filter((tab) => {
         const q = settingsQuery.trim().toLowerCase();
@@ -316,7 +408,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             for (const provider of AI_PROVIDERS) {
                 providers[provider.id] = {
                     ...providers[provider.id],
-                    hasSecret: provider.needsSecret ? hasProviderSecret(user.uid, provider.id) : false,
+                    hasSecret: hasProviderSecret(user.uid, provider.id),
                 };
             }
             return { ...current, providers };
@@ -327,66 +419,184 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         const user = auth.currentUser;
         if (!isOpen || !user) {
             setTrustedDevices([]);
+            setTrustedDeviceView({uid:null,status:'loading'});
             return;
         }
+        let live=true;const captured=captureDeviceAccount(user.uid),current=()=>live&&accountEmailOpen.current&&captured();setTrustedDeviceView({uid:user.uid,status:'loading'});
+        const stop=watchTrustedDevices(user.uid,devices=>{if(current()){setTrustedDevices(devices);setTrustedDeviceView({uid:user.uid,status:'ready'});}},()=>{if(current())setTrustedDeviceView({uid:user.uid,status:'unavailable'});});
+        return()=>{live=false;stop();};
+    }, [isOpen,syncFeedback.epoch,captureDeviceAccount]);
 
-        return watchTrustedDevices(user.uid, setTrustedDevices);
-    }, [isOpen]);
+    const confirmPairing = useCallback(async(record:MobilePairingRecord,external:()=>void=()=>{})=>{
+        const user=auth.currentUser;if(!user||record.ownerUid!==user.uid||trustedPairingIdRef.current===record.pairingId)return;
+        const captured=capturePairing(user.uid),current=()=>{try{external();return accountEmailOpen.current&&captured();}catch{return false;}};
+        const guard=()=>{if(!current())throw Error('Vista retirada.');};if(!current())return;trustedPairingIdRef.current=record.pairingId;
+        try{const identity=await getOrCreateDesktopSyncIdentity(user.uid,mnemonic,guard);guard();await trustAcceptedMobilePairing(user.uid,record,identity.publicKeyJwk,guard);guard();setPairingInvite(null);setPairingRecord(null);setPairingError(null);}
+        catch{if(current()){trustedPairingIdRef.current=null;setPairingError('Não foi possível confirmar o dispositivo. O pedido cifrado foi conservado; retoma a confirmação.');}}
+    },[mnemonic,capturePairing]);
+    useEffect(() => {
+        const user=auth.currentUser;if(!isOpen||!pairingInvite||!user){setPairingRecord(null);return;}
+        let live=true;const captured=capturePairing(user.uid),current=()=>live&&accountEmailOpen.current&&captured(),guard=()=>{if(!current())throw Error('Vista retirada.');};
+        const stop=watchMobilePairingInvite(pairingInvite.pairingId,record=>{if(!current())return;setPairingRecord(record);if(record&&['accepted','trusted'].includes(record.status))void confirmPairing(record,guard);},()=>{if(current())setPairingError('Não foi possível atualizar o estado do convite. A chave e o pedido foram conservados.');});
+        return()=>{live=false;stop();};
+    },[isOpen,pairingInvite,syncFeedback.epoch,capturePairing,confirmPairing]);
+
+    const askConfirm = (opts: {
+        title: string;
+        message: string;
+        confirmLabel?: string;
+        danger?: boolean;
+        requirePhrase?: string;
+    }): Promise<boolean> => {
+        setConfirmPhrase('');
+        return new Promise((resolve) => {
+            confirmResolveRef.current?.(false);
+            confirmResolveRef.current=resolve;
+            setConfirmDialog({ ...opts, resolve });
+        });
+    };
+
+    const closeConfirm = (ok: boolean) => {
+        if (!confirmDialog) return;
+        if (ok && confirmDialog.requirePhrase && confirmPhrase !== confirmDialog.requirePhrase) {
+            toast.error(`Escreve "${confirmDialog.requirePhrase}" para confirmar.`);
+            return;
+        }
+        confirmResolveRef.current=null;confirmDialog.resolve(ok);
+        setConfirmDialog(null);
+        setConfirmPhrase('');
+    };
 
     useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                if (confirmDialog) {
+                    closeConfirm(false);
+                } else {
+                    onClose();
+                }
+                return;
+            }
+            if (event.key === 'Tab') {
+                const trapRoot = confirmDialog
+                    ? overlayRef.current?.querySelector<HTMLElement>('[aria-labelledby="settings-confirm-title"]')
+                    : dialogRef.current;
+                const items = collectFocusable(trapRoot ?? null);
+                if (items.length === 0) return;
+                const first = items[0];
+                const last = items[items.length - 1];
+                const active = document.activeElement;
+                if (event.shiftKey && active === first) {
+                    event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && active === last) {
+                    event.preventDefault();
+                    first.focus();
+                } else if (trapRoot && active instanceof Node && !trapRoot.contains(active)) {
+                    event.preventDefault();
+                    (event.shiftKey ? last : first).focus();
+                }
+                return;
+            }
+            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return;
+            const idx = Number(event.key) - 1;
+            if (idx >= 0 && idx < tabs.length) {
+                event.preventDefault();
+                selectSection(tabs[idx].id);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isOpen, tabs, confirmDialog, onClose]);
+
+    const handleMigrateLegacyMemories = async () => {
         const user = auth.currentUser;
-        if (!pairingInvite || !user) {
-            setPairingRecord(null);
+        if (!user) {
+            toast.error('Inicia sessão primeiro.');
             return;
         }
-
-        return watchMobilePairingInvite(pairingInvite.pairingId, async (record) => {
-            setPairingRecord(record);
-            if (
-                record?.status === 'accepted' &&
-                pairingPrivateKeyRef.current &&
-                trustedPairingIdRef.current !== record.pairingId
-            ) {
-                trustedPairingIdRef.current = record.pairingId;
-                try {
-                    const desktopSyncIdentity = await getOrCreateDesktopSyncIdentity(user.uid, mnemonic);
-                    await trustAcceptedMobilePairing(user.uid, pairingPrivateKeyRef.current, record, desktopSyncIdentity.publicKeyJwk);
-                    pairingPrivateKeyRef.current = null;
-                } catch (error) {
-                    trustedPairingIdRef.current = null;
-                    setPairingError(error instanceof Error ? error.message : 'Não foi possível confiar neste dispositivo.');
-                }
-            }
+        const current=syncFeedback.capture(user.uid);
+        if(!current()||!personalMigrationWritesEnabled())return;
+        if (!mnemonic || mnemonic.length !== 12) {
+            toast.error('Desbloqueia a mnemónica de 12 palavras antes de cifrar memórias antigas.');
+            return;
+        }
+        const confirmed = await askConfirm({
+            title: 'Cifrar memórias antigas',
+            message: 'O texto e título de memórias pessoais antigas e das suas versões históricas serão cifrados com a mnemónica atualmente desbloqueada. Confirma que é a frase correta desta conta e que tens um export Firestore recuperável antes de continuar. Uma frase errada pode tornar os dados ilegíveis.',
+            confirmLabel: 'Cifrar memórias',
+            danger: true,
         });
-    }, [mnemonic, pairingInvite]);
-
-    const handleResetIdentity = async () => {
-        if (!confirm('⚠️ ATENÇÃO: Reiniciar a identidade significa que você NÃO poderá mais descriptografar suas memórias antigas sem o backup da chave. Tem certeza?')) {
-            return;
-        }
-
-        const deleteOldMemories = confirm('Deseja ELIMINAR todas as memórias antigas da rede?\n\n✅ SIM = Limpar tudo e começar do zero\n❌ NÃO = Manter memórias isoladas');
-
+        if (!confirmed||!current()) return;
+        setEncMigrating(true);
+        setEncMigration({ total: 0, migrated: 0, skipped: 0, failed: 0 });
+        setEncMigrationOutcome(null);
+        const controller = new AbortController();
+        migrationAbortRef.current = controller;
         try {
-            if (deleteOldMemories) {
-                const { auth, db } = await import('../firebase');
-                const { collection, getDocs, query, where, deleteDoc } = await import('firebase/firestore');
-
-                if (auth.currentUser) {
-                    const sessionsRef = collection(db, 'sessions');
-                    const q = query(sessionsRef, where('uid', '==', auth.currentUser.uid));
-                    const snapshot = await getDocs(q);
-
-                    const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
-                    await Promise.all(deletePromises);
-                }
+            const result = await migrateLegacyMemoriesToEncrypted(user.uid,progress=>{if(current())setEncMigration(progress);}, {
+                signal: controller.signal,
+            });
+            if(!current())return;
+            const summary = result.total === 0
+                ? 'Não há memórias nem versões pessoais elegíveis em texto claro para cifrar.'
+                : `Cifrados ${result.migrated} registos. ${result.skipped} ignorados ou alterados entretanto. ${result.failed} falha(s).`;
+            if (result.failed > 0) toast.error(summary);
+            else toast.success(summary);
+            setEncMigrationOutcome(result.failed > 0 ? 'failed' : 'completed');
+        } catch (error) {
+            if(!current())return;
+            if (error instanceof MemoryCryptoLockedError) {
+                toast.error(error.message);
+                setEncMigrationOutcome('failed');
+            } else if (error instanceof MemoryMigrationCancelledError) {
+                toast(error.message);
+                setEncMigrationOutcome('stopped');
+            } else {
+                toast.error('Não foi possível confirmar a migração. Recupera o pedido pendente antes de repetir.');
+                setEncMigrationOutcome('failed');
             }
+        } finally {
+            if(migrationAbortRef.current===controller)migrationAbortRef.current = null;
+            if(current())setEncMigrating(false);
+        }
+    };
 
-            onResetKey();
-            onClose();
-        } catch (error: unknown) {
-            console.error('Error during identity reset:', error);
-            alert(`❌ Erro ao reiniciar identidade: ${getErrorMessage(error, 'Erro desconhecido')}`);
+    const handleResetIdentity = async (removeMemories: boolean) => {
+        const uid=auth.currentUser?.uid;
+        if(!uid||identityResetBusyRef.current||removeMemories&&!PERSONAL_REVISION_WRITES_ENABLED)return;
+        const current=removeMemories?syncFeedback.capture(uid):syncFeedback.captureAccount(uid);
+        const guard=()=>{if(!current())throw Error('Vista retirada.');};
+        if(!current())return;
+        identityResetBusyRef.current=true;setIdentityResetBusy(true);setIdentityResetProgress(null);
+        try {
+            if(hasPendingMemoryEdit(uid)){
+                toast.error('Confirma ou cancela a alteração de memória pendente antes de reiniciar a chave.');return;
+            }
+            if(removeMemories){
+                const result=await removePersonalMemoriesForIdentityReset({uid,assertCurrent:guard,
+                    confirm:count=>askConfirm({title:'Remover memórias pessoais e reiniciar',
+                        message:`Serão removidas da vista ${count} memórias pessoais classificadas. O histórico cifrado, os ficheiros, as memórias de equipa e eventuais registos por classificar permanecem. Guarda as 12 palavras atuais para aceder aos dados antigos. Uma interrupção conserva a chave e as remoções já confirmadas.`,
+                        confirmLabel:'Remover e reiniciar',danger:true}),
+                    progress:value=>{if(current())setIdentityResetProgress(value);},
+                });
+                guard();if(result.status!=='completed')return;
+            }else{
+                const confirmed=await askConfirm({title:'Reiniciar chave neste dispositivo',
+                    message:'As memórias permanecem guardadas e exigem as 12 palavras atuais para serem abertas. Conserva esse backup, incluindo para histórico e outros dispositivos. Pretendes trocar a chave local?',
+                    confirmLabel:'Reiniciar chave',danger:true});
+                guard();if(!confirmed)return;
+            }
+            guard();if(hasPendingMemoryEdit(uid))throw Error('Alteração de memória pendente.');
+            onResetKey();onClose();
+        } catch(error:unknown) {
+            if(current())toast.error(error instanceof PersonalIdentityResetError
+                ? `${error.removed} remoções confirmadas. A operação foi interrompida e a chave foi conservada. Verifica os pedidos pendentes antes de repetir.`
+                : 'Não foi possível concluir o reinício. A chave atual foi conservada.');
+        } finally {
+            identityResetBusyRef.current=false;setIdentityResetBusy(false);
         }
     };
 
@@ -432,9 +642,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             await saveProviderSecret(user.uid, selectedProvider, secretInput, mnemonic);
             persistProviderConfig(selectedProvider, { hasSecret: true, enabled: true });
             setSecretInput('');
-            alert('API key guardada no cofre local cifrado.');
+            toast.success('API key guardada no cofre local cifrado.');
         } catch (error: unknown) {
-            alert(getErrorMessage(error, 'Não foi possível guardar a API key.'));
+            toast.error(getErrorMessage(error, 'Não foi possível guardar a API key.'));
         } finally {
             setIsSavingSecret(false);
         }
@@ -450,44 +660,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
     const handleCreateMobilePairing = async () => {
         const user = auth.currentUser;
-        if (!user) return;
+        if (!user||pairingCreationRef.current) return;
         if (!mnemonic || mnemonic.length !== 12) {
             setPairingError('Desbloqueia primeiro a mnemónica para criar um convite de emparelhamento.');
             return;
         }
 
-        setIsCreatingPairing(true);
+        const captured=syncFeedback.capture(user.uid),current=()=>accountEmailOpen.current&&captured(),guard=()=>{if(!current())throw Error('Vista retirada.');};if(!current())return;
+        const token={};pairingCreationRef.current=token;setIsCreatingPairing(true);
         setPairingError(null);
         try {
-            const invite = await createMobilePairingInvite(user.uid);
-            pairingPrivateKeyRef.current = invite.privateKey;
+            const invite = await createMobilePairingInvite(user.uid,undefined,guard);guard();
             trustedPairingIdRef.current = null;
             setPairingInvite({
                 pairingId: invite.pairingId,
                 pairingUri: invite.pairingUri,
                 qrDataUrl: invite.qrDataUrl,
                 expiresAt: invite.expiresAt,
+                creationDigest: invite.creationDigest,
             });
-        } catch (error) {
-            console.error('Unable to create mobile pairing invite:', error);
-            setPairingError(error instanceof Error ? error.message : 'Não foi possível criar o convite de emparelhamento.');
+        } catch {
+            if(current())setPairingError('Não foi possível confirmar o convite. A chave e o pedido cifrados foram conservados; volta a criar/retomar o QR.');
         } finally {
-            setIsCreatingPairing(false);
+            if(pairingCreationRef.current===token){pairingCreationRef.current=null;if(current())setIsCreatingPairing(false);}
         }
     };
 
     const handleCancelMobilePairing = async () => {
-        if (!pairingInvite) return;
+        const user=auth.currentUser;if (!pairingInvite||!user) return;
+        const captured=syncFeedback.capture(user.uid),current=()=>accountEmailOpen.current&&captured(),guard=()=>{if(!current())throw Error('Vista retirada.');};if(!current())return;
         try {
-            await cancelMobilePairingInvite(pairingInvite.pairingId);
-        } catch (error) {
-            console.warn('Unable to cancel mobile pairing invite:', error);
-        } finally {
-            pairingPrivateKeyRef.current = null;
+            await cancelMobilePairingInvite(pairingInvite.pairingId,guard);guard();
             trustedPairingIdRef.current = null;
             setPairingInvite(null);
             setPairingRecord(null);
-        }
+        } catch {if(current())setPairingError('O cancelamento ainda não foi confirmado. O pedido e a chave foram conservados. Se o dispositivo já estiver ativo, revoga-o na lista.');}
     };
 
     const handleCopyPairingPayload = async () => {
@@ -500,79 +707,91 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
 
     const handleRevokeTrustedDevice = async (deviceId: string) => {
-        if (!confirm('Revogar este dispositivo? Ele deixará de aparecer como confiável.')) return;
+        const uid=auth.currentUser?.uid;if(!uid)return;const captured=syncFeedback.captureAccount(uid),current=()=>accountEmailOpen.current&&captured(),guard=()=>{if(!current())throw Error('Vista retirada.');};if(!current())return;
+        const confirmed = await askConfirm({
+            title: 'Revogar dispositivo',
+            message: 'Este dispositivo deixará de aparecer como confiável.',
+            confirmLabel: 'Revogar',
+            danger: true,
+        });
+        if (!confirmed||!current()) return;
         try {
-            await revokeTrustedDevice(deviceId);
-        } catch (error) {
-            setPairingError(error instanceof Error ? error.message : 'Não foi possível revogar o dispositivo.');
+            await revokeTrustedDevice(deviceId,guard);
+        } catch {
+            if(current())setPairingError('Não foi possível confirmar a revogação. Atualiza a lista e repete a operação.');
         }
     };
 
     const handleQueueMobileSnapshot = async (device: TrustedDevice) => {
         const user = auth.currentUser;
         if (!user) return;
+        const feedbackCurrent = syncFeedback.capture(user.uid);
+        if (!feedbackCurrent()) { setPairingError('Desbloqueia o cofre antes de enviar memórias.'); return; }
         setSyncingDeviceId(device.deviceId);
         setMobileSyncMessage(null);
         setPairingError(null);
         try {
-            const envelopeId = await queueMobileMemorySnapshot(user.uid, device, sessions);
-            setMobileSyncMessage(`Snapshot cifrado preparado para ${device.name}. Envelope ${envelopeId.slice(0, 8)}.`);
+            const result = await queueMobileMemorySnapshot(user.uid, device, sessions);
+            if (feedbackCurrent()) setMobileSyncMessage(syncOutboxMessage(result));
         } catch (error) {
-            setPairingError(error instanceof Error ? error.message : 'Não foi possível preparar o sync cifrado.');
+            if (feedbackCurrent()) setPairingError(error instanceof Error ? error.message : 'Não foi possível preparar o sync cifrado.');
         } finally {
-            setSyncingDeviceId(null);
+            if (feedbackCurrent()) setSyncingDeviceId(null);
         }
     };
-
-    const desktopToMobileCursorKey = (deviceId: string) => `mnemosyne_sync_cursor_desktop_to_mobile_${deviceId}`;
 
     const handleQueueMobileDelta = async (device: TrustedDevice) => {
         const user = auth.currentUser;
         if (!user) return;
-        const since = Number(localStorage.getItem(desktopToMobileCursorKey(device.deviceId)) || '0');
-        const nextCursor = sessions.reduce(
-            (max, session) => Math.max(max, session.updatedAt || session.timestamp || 0),
-            since
-        );
+        const feedbackCurrent = syncFeedback.capture(user.uid);
+        if (!feedbackCurrent()) { setPairingError('Desbloqueia o cofre antes de enviar memórias.'); return; }
         setSyncingDeviceId(device.deviceId);
         setMobileSyncMessage(null);
         setPairingError(null);
         try {
-            const envelopeId = await queueDesktopMemoryDelta(user.uid, device, sessions, since);
-            localStorage.setItem(desktopToMobileCursorKey(device.deviceId), String(nextCursor));
-            setMobileSyncMessage(`Delta cifrado preparado para ${device.name}. Envelope ${envelopeId.slice(0, 8)}.`);
+            const result = await queueDesktopMemoryDelta(user.uid, device, sessions);
+            if (feedbackCurrent()) setMobileSyncMessage(syncOutboxMessage(result));
         } catch (error) {
-            setPairingError(error instanceof Error ? error.message : 'Não foi possível preparar o delta cifrado.');
+            if (feedbackCurrent()) setPairingError(error instanceof Error ? error.message : 'Não foi possível preparar o delta cifrado.');
         } finally {
-            setSyncingDeviceId(null);
+            if (feedbackCurrent()) setSyncingDeviceId(null);
         }
     };
 
     const handleImportMobileDelta = async (device: TrustedDevice) => {
         const user = auth.currentUser;
         if (!user) return;
+        const feedbackCurrent = syncFeedback.capture(user.uid);
+        if (!feedbackCurrent()) {setPairingError('Desbloqueia o cofre antes de importar memórias.');return;}
         setSyncingDeviceId(device.deviceId);
         setMobileSyncMessage(null);
         setPairingError(null);
         try {
-            const desktopSyncIdentity = await getOrCreateDesktopSyncIdentity(user.uid, mnemonic);
+            const desktopSyncIdentity = await getOrCreateDesktopSyncIdentity(user.uid, mnemonic,()=>{if(!feedbackCurrent())throw Error('Vista retirada.');});
+            if (!feedbackCurrent()) return;
             const result = await importQueuedDesktopSyncEnvelopes(
                 user.uid,
                 device.deviceId,
                 desktopSyncIdentity.privateKeyJwk
             );
+            if (!feedbackCurrent()) return;
             setMobileSyncMessage(`${result.importedMemories} memórias recebidas de ${device.name}; ${result.conflicts} conflito(s).`);
         } catch (error) {
-            setPairingError(error instanceof Error ? error.message : 'Não foi possível receber deltas mobile.');
+            if (feedbackCurrent()) setPairingError(error instanceof Error ? error.message : 'Não foi possível receber deltas mobile.');
         } finally {
-            setSyncingDeviceId(null);
+            if (feedbackCurrent()) setSyncingDeviceId(null);
         }
     };
 
     const handleCleanupMobileSync = async () => {
         const user = auth.currentUser;
         if (!user) return;
-        if (!confirm('Limpar envelopes consumidos/falhados e tombstones com mais de 30 dias?')) return;
+        const confirmed = await askConfirm({
+            title: 'Limpar artefactos de sync',
+            message: 'Limpar envelopes consumidos/falhados e tombstones com mais de 30 dias?',
+            confirmLabel: 'Limpar',
+        });
+        if (!confirmed) return;
         setPairingError(null);
         setMobileSyncMessage(null);
         try {
@@ -586,36 +805,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
 
     const handleDeleteAccount = async () => {
-        const confirmText = prompt('Digite "ELIMINAR" para confirmar a destruição permanente da sua mente digital:');
-        if (confirmText !== 'ELIMINAR') return;
+        if (!ACCOUNT_DELETION_ENABLED) { toast.error('A eliminação automática está em validação. Usa a página de eliminação para contactar o suporte.'); return; }
+        const confirmedUid = auth.currentUser?.uid;
+        if (!confirmedUid) { toast.error('Inicia sessão para eliminar a conta.'); return; }
+        const typed = await askConfirm({
+            title: 'Eliminar mente digital',
+            message: 'Vais iniciar a eliminação da tua conta e dos seus dados ativos. Escreve ELIMINAR para confirmar.',
+            confirmLabel: 'Eliminar',
+            danger: true,
+            requirePhrase: 'ELIMINAR',
+        });
+        if (!typed) return;
 
-        if (!confirm('ÚLTIMA CONFIRMAÇÃO: Todo o seu conhecimento será eliminado permanentemente. Continuar?')) return;
+        const last = await askConfirm({
+            title: 'Última confirmação',
+            message: 'Serão eliminados os teus dados ativos, anexos e equipas de que és dono, incluindo os dados guardados nessas equipas por outros membros. Os ficheiros que enviaste para equipas de outros donos também serão retirados das memórias e do histórico que os usam; o restante conteúdo desses membros será preservado. Cópias já descarregadas e backups seguem a política de retenção. Continuar?',
+            confirmLabel: 'Eliminar conta',
+            danger: true,
+        });
+        if (!last) return;
 
         try {
-            const { getFunctions, httpsCallable } = await import('firebase/functions');
-            const { default: app } = await import('../firebase');
-            const functions = getFunctions(app, 'europe-west1');
-            const deleteUserAccount = httpsCallable(functions, 'deleteUserAccount');
-
-            await deleteUserAccount();
-
-            localStorage.clear();
-            sessionStorage.clear();
+            if (auth.currentUser?.uid !== confirmedUid) throw new Error('A conta mudou durante a confirmação.');
+            const { requestAccountDeletion } = await import('../services/accountDeletion');
+            const result = await requestAccountDeletion(confirmedUid, 'start');
+            if (result.status === 'pending') {
+                toast('Eliminação em curso. Podes retomar o pedido na página de eliminação.');
+                window.location.href = '/account-deletion'; return;
+            }
 
             const { signOut } = await import('firebase/auth');
-            const { auth } = await import('../firebase');
+            if (auth.currentUser?.uid !== confirmedUid) throw new Error('A conta mudou durante a eliminação.');
             await signOut(auth);
 
-            alert('✅ Mente digital eliminada com sucesso. A regressar ao vazio.');
+            toast.success('Mente digital eliminada. A regressar ao vazio.');
             window.location.href = '/';
         } catch (error: unknown) {
-            alert(`❌ Erro ao eliminar mente digital: ${getErrorMessage(error, 'Erro desconhecido')}`);
+            toast.error(`Não foi possível concluir a eliminação: ${getErrorMessage(error, 'Erro desconhecido')}. Podes retomar na página de eliminação.`);
         }
     };
 
     const handleFolderChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = e.target.files;
         if (!files || files.length === 0) return;
+        const actor=folderActorRef.current;folderActorRef.current=null;
+        if(!actor?.current()){e.target.value='';return;}
+        const guard=()=>{if(!actor.current())throw new Error('Import context unavailable');};
 
         const fileArray = Array.from(files);
 
@@ -642,27 +877,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         });
 
         if (eligibleFiles.length === 0) {
-            alert(t('noFilesFound'));
+            toast.error(t('noFilesFound'));
             if (settingsFolderInputRef.current) settingsFolderInputRef.current.value = '';
             return;
         }
 
-        let finalFiles = eligibleFiles;
-        if (eligibleFiles.length > 20) {
-            alert(t('folderLimitWarning'));
-            finalFiles = eligibleFiles.slice(0, 20);
+        if (eligibleFiles.length > 20&&!looksLikeObsidianVault(eligibleFiles)) {
+            toast(t('folderLimitWarning'), { icon: '⚠️' });
         }
-
-        const user = auth.currentUser;
-        if (!user) return;
 
         setIsImportingFolder(true);
         try {
-            await learnDocumentBatch(user.uid, finalFiles, sessions);
-            alert(t('foldersLearnedSuccess', { count: finalFiles.length }));
-        } catch (error: unknown) {
-            console.error('Erro ao assimilar pasta:', error);
-            alert(t('foldersLearnedError'));
+            const result=await importFolderMemories(actor.uid,eligibleFiles,sessions,guard);
+            if(actor.current())toast.success(t('foldersLearnedSuccess', { count: result.imported }));
+        } catch {
+            if(actor.current())toast.error('Importação não concluída. Verifica as notas e usa a recuperação de importações ou ligações antes de repetir.');
         } finally {
             setIsImportingFolder(false);
             if (settingsFolderInputRef.current) settingsFolderInputRef.current.value = '';
@@ -670,41 +899,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
 
     const triggerFolderImport = async () => {
+        const uid=auth.currentUser?.uid;if(!uid)return;
+        const current=syncFeedback.capture(uid);if(!current())return;
+        const guard=()=>{if(!current())throw new Error('Import context unavailable');};
         if (isTauriRuntime()) {
             try {
                 const { open } = await import('@tauri-apps/plugin-dialog');
+                guard();
                 const selected = await open({
                     directory: true,
                     multiple: false,
                 });
+                guard();
                 if (!selected) return;
 
                 setIsImportingFolder(true);
-                const importedFiles = await selectAndReadTauriDirectory(selected);
+                const importedFiles = await selectAndReadTauriDirectory(selected,guard);
+                guard();
 
                 if (importedFiles.length === 0) {
-                    alert(t('noFilesFound'));
+                    toast.error(t('noFilesFound'));
                     return;
                 }
 
-                let finalFiles = importedFiles;
-                if (importedFiles.length > 20) {
-                    alert(t('folderLimitWarning'));
-                    finalFiles = importedFiles.slice(0, 20);
+                if (importedFiles.length > 20&&!looksLikeObsidianVault(importedFiles)) {
+                    toast(t('folderLimitWarning'), { icon: '⚠️' });
                 }
-
-                const user = auth.currentUser;
-                if (!user) return;
-
-                await learnDocumentBatch(user.uid, finalFiles, sessions);
-                alert(t('foldersLearnedSuccess', { count: finalFiles.length }));
-            } catch (error: unknown) {
-                console.error('Erro ao assimilar pasta via Tauri:', error);
-                alert(t('foldersLearnedError'));
+                const result=await importFolderMemories(uid,importedFiles,sessions,guard);
+                if(current())toast.success(t('foldersLearnedSuccess', { count: result.imported }));
+            } catch {
+                if(current())toast.error('Importação não concluída. Verifica as notas e usa a recuperação de importações ou ligações antes de repetir.');
             } finally {
                 setIsImportingFolder(false);
             }
         } else {
+            folderActorRef.current={uid,current};
             settingsFolderInputRef.current?.click();
         }
     };
@@ -712,91 +941,91 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     return (
         <AnimatePresence>
             {isOpen && (
-                <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto p-3 sm:items-center sm:p-5">
+                <div
+                    ref={overlayRef}
+                    className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4"
+                    onWheel={(event) => event.stopPropagation()}
+                >
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        transition={{ duration: 0.3 }}
+                        transition={{ duration: 0.2 }}
                         onClick={onClose}
-                        className="absolute inset-0 bg-[#020617]/55 backdrop-blur-md"
+                        className="absolute inset-0 bg-[#020617]/70 backdrop-blur-md"
                     />
 
                     <motion.div
-                        initial={{ scale: 0.95, opacity: 0, y: 10 }}
+                        ref={dialogRef}
+                        initial={{ scale: 0.98, opacity: 0, y: 8 }}
                         animate={{ scale: 1, opacity: 1, y: 0 }}
-                        exit={{ scale: 0.95, opacity: 0, y: 10 }}
-                        transition={{ duration: 0.3, ease: "easeOut" }}
+                        exit={{ scale: 0.98, opacity: 0, y: 8 }}
+                        transition={{ duration: 0.2, ease: 'easeOut' }}
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="settings-title"
-                        className="relative mx-auto flex h-[calc(100dvh-1.5rem)] max-h-[900px] min-h-0 w-full max-w-6xl flex-col overflow-hidden rounded-[24px]
-                                   border border-white/10 bg-[#070d1b]/90 shadow-[0_24px_90px_rgba(0,0,0,0.55),0_0_48px_rgba(139,92,246,0.14)] backdrop-blur-2xl"
+                        tabIndex={-1}
+                        className="settings-dialog relative rounded-2xl border border-white/10 bg-[#0b1220] shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
                     >
-                        <div className="flex flex-col gap-3 border-b border-white/[0.06] px-5 py-4 sm:px-6">
+                        <div className="shrink-0 border-b border-white/[0.08] px-5 py-4 sm:px-6">
                             <div className="flex items-center justify-between gap-4">
-                                <div className="flex min-w-0 items-center gap-3">
-                                    <div className="rounded-2xl border border-purple-400/20 bg-purple-500/10 p-2.5">
-                                        <Brain className="h-5 w-5 text-purple-300" />
-                                    </div>
-                                    <div className="min-w-0">
-                                        <h2 id="settings-title" className="text-lg font-bold tracking-tight text-[#f8fafc]">
-                                            Definições
-                                        </h2>
-                                        <p className="hidden truncate text-xs text-[#94a3b8] sm:block">
-                                            Centro de controlo: privacidade, universo, IA e sincronização · teclas 1–7
-                                        </p>
-                                    </div>
+                                <div className="min-w-0">
+                                    <h2 id="settings-title" className="text-base font-semibold tracking-tight text-white">
+                                        {t('settings')}
+                                    </h2>
+                                    <p className="mt-0.5 hidden truncate text-sm text-slate-400 sm:block">
+                                        {t('settingsSubtitle')}
+                                    </p>
                                 </div>
-                                <button 
-                                    onClick={onClose} 
-                                    className="rounded-full p-2 text-[#94a3b8] transition-all hover:bg-white/5 hover:text-[#e2e8f0]"
-                                    aria-label="Fechar definições"
+                                <button
+                                    type="button"
+                                    onClick={onClose}
+                                    className="rounded-lg p-2 text-slate-400 transition hover:bg-white/5 hover:text-white"
+                                    aria-label={t('settingsCloseAria')}
                                 >
-                                    <X className="h-5 w-5" />
+                                    <X className="h-4 w-4" />
                                 </button>
                             </div>
-                            <div className="relative">
-                                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                            <label className="relative mt-3 block">
+                                <span className="sr-only">Procurar em definições</span>
+                                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden />
                                 <input
                                     type="search"
                                     value={settingsQuery}
                                     onChange={(e) => setSettingsQuery(e.target.value)}
-                                    placeholder="Procurar em definições (PIN, Ollama, sync, privacidade…)"
-                                    className="w-full rounded-xl border border-white/10 bg-black/30 py-2.5 pl-10 pr-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-violet-400/40 focus:ring-2 focus:ring-violet-400/15"
+                                    placeholder={t('settingsSearchPlaceholder')}
+                                    className="w-full rounded-lg border border-white/10 bg-black/30 py-2 pl-10 pr-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-white/25"
                                 />
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
+                            </label>
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                                <span className="rounded-md border border-white/8 bg-white/[0.03] px-2 py-0.5 text-[11px] text-slate-400">
                                     {sessions.length} memórias
                                 </span>
-                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
-                                    PIN {pinEnabled ? 'ativo' : 'off'}
+                                <span className="rounded-md border border-white/8 bg-white/[0.03] px-2 py-0.5 text-[11px] text-slate-400">
+                                    PIN {pinEnabled ? 'ativo' : 'desligado'}
                                 </span>
-                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
+                                <span className="rounded-md border border-white/8 bg-white/[0.03] px-2 py-0.5 text-[11px] text-slate-400">
                                     IA · {activeProviderBadge}
                                 </span>
-                                <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[10px] text-slate-400">
-                                    Sync · {trustedActiveCount} dispositivo(s)
+                                <span className="rounded-md border border-white/8 bg-white/[0.03] px-2 py-0.5 text-[11px] text-slate-400">
+                                    Sync · {trustedActiveCount}
                                 </span>
                             </div>
                         </div>
 
-                        <div className="grid min-h-0 min-w-0 flex-1 lg:grid-cols-[280px_minmax(0,1fr)]">
-                            <aside className="hidden border-r border-white/[0.06] bg-black/10 p-4 lg:block">
-                                <div className="mb-4 rounded-2xl border border-white/5 bg-white/[0.03] p-4">
-                                    <p className="text-[10px] font-bold uppercase tracking-widest text-purple-200/70">Secção ativa</p>
-                                    <div className="mt-3 flex items-center gap-3">
-                                        <div className="rounded-xl border border-purple-400/20 bg-purple-500/10 p-2">
-                                            <ActiveTabIcon className="h-4 w-4 text-purple-300" />
-                                        </div>
+                        <div className="settings-dialog-body">
+                            <aside className="settings-sidebar border-r border-white/[0.08] bg-black/20 p-3">
+                                <div className="mb-3 border-b border-white/[0.06] px-2 pb-3">
+                                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Secção</p>
+                                    <div className="mt-2 flex items-center gap-2">
+                                        <ActiveTabIcon className="h-4 w-4 shrink-0 text-slate-300" aria-hidden />
                                         <div className="min-w-0">
-                                            <p className="truncate text-sm font-bold text-[#f8fafc]">{activeTab.label}</p>
-                                            <p className="truncate text-xs text-[#94a3b8]">{tabBadges[activeTab.id]}</p>
+                                            <p className="truncate text-sm font-medium text-white">{activeTab.label}</p>
+                                            <p className="truncate text-xs text-slate-500">{tabBadges[activeTab.id]}</p>
                                         </div>
                                     </div>
                                 </div>
-                                <nav className="space-y-1" aria-label="Secções das definições">
+                                <nav className="flex flex-1 flex-col gap-0.5" aria-label="Secções das definições">
                                     {visibleTabs.map((tab, index) => {
                                         const Icon = tab.icon;
                                         const active = activeSection === tab.id;
@@ -805,21 +1034,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                             <button
                                                 key={tab.id}
                                                 type="button"
+                                                aria-current={active ? 'page' : undefined}
                                                 onClick={() => selectSection(tab.id)}
-                                                className={`flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all ${
+                                                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
                                                     active
-                                                        ? 'border-purple-400/35 bg-purple-500/12 text-[#f8fafc] shadow-[0_0_24px_rgba(139,92,246,0.10)]'
-                                                        : 'border-transparent text-[#94a3b8] hover:border-white/10 hover:bg-white/[0.04] hover:text-[#e2e8f0]'
+                                                        ? 'bg-white/[0.08] text-white'
+                                                        : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
                                                 }`}
                                             >
-                                                <Icon className={`h-4 w-4 shrink-0 ${active ? 'text-purple-200' : 'text-[#64748b]'}`} />
+                                                <Icon className="h-4 w-4 shrink-0" aria-hidden />
                                                 <span className="min-w-0 flex-1">
-                                                    <span className="block truncate text-sm font-semibold">{tab.label}</span>
-                                                    <span className="block truncate text-[11px] text-[#64748b]">{tab.description}</span>
+                                                    <span className="block truncate text-sm font-medium">{tab.label}</span>
+                                                    <span className="block truncate text-[11px] text-slate-500">{tab.description}</span>
                                                 </span>
-                                                <span className={`shrink-0 rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-widest ${
-                                                    active ? 'bg-purple-400/15 text-purple-100' : 'bg-white/[0.04] text-[#64748b]'
-                                                }`}>
+                                                <span className="shrink-0 font-mono text-[10px] text-slate-600">
                                                     {originalIndex >= 0 ? originalIndex + 1 : index + 1}
                                                 </span>
                                             </button>
@@ -833,9 +1061,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 </nav>
                             </aside>
 
-                            <div className="flex min-h-0 min-w-0 flex-col">
-                                <div className="border-b border-white/[0.06] px-4 py-3 lg:hidden">
-                                    <div className="flex min-w-0 gap-2 overflow-x-auto pb-1 scrollbar-hide" aria-label="Secções das definições">
+                            <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+                                <div className="shrink-0 border-b border-white/[0.08] px-3 py-2 lg:hidden">
+                                    <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5 scrollbar-hide" aria-label="Secções das definições">
                                         {visibleTabs.map((tab) => {
                                             const Icon = tab.icon;
                                             const active = activeSection === tab.id;
@@ -843,14 +1071,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                 <button
                                                     key={tab.id}
                                                     type="button"
+                                                    aria-current={active ? 'page' : undefined}
                                                     onClick={() => selectSection(tab.id)}
-                                                    className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-all ${
+                                                    className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                                                         active
-                                                            ? 'border-purple-400/35 bg-purple-500/15 text-purple-100'
-                                                            : 'border-white/5 bg-white/[0.03] text-[#94a3b8]'
+                                                            ? 'border-white/20 bg-white/[0.08] text-white'
+                                                            : 'border-white/8 bg-transparent text-slate-400'
                                                     }`}
                                                 >
-                                                    <Icon className="h-3.5 w-3.5" />
+                                                    <Icon className="h-3.5 w-3.5" aria-hidden />
                                                     {tab.label}
                                                 </button>
                                             );
@@ -858,77 +1087,95 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     </div>
                                 </div>
 
-                                <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-5 sm:p-6 lg:p-8 custom-scrollbar">
+                                <div
+                                    ref={contentScrollRef}
+                                    className="settings-content flex-1 p-5 sm:p-6"
+                                >
                                     {activeSection === 'identity' && (
-                            <section className="space-y-6">
+                            <section className="space-y-5">
                                 <SectionHeader
                                     icon={Key}
-                                    title="Identidade"
-                                    description="Gere a tua chave, estado de encriptação, UID e frase de recuperação."
+                                    title={t('settingsIdentityTitle')}
+                                    description={t('settingsIdentityDesc')}
                                 />
                                 
-                                <div className="space-y-4">
-                                    <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <div className="flex items-center gap-4">
-                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500/20 to-cyan-500/20 flex items-center justify-center border border-white/5">
-                                                <Key className="w-4 h-4 text-purple-300" />
-                                            </div>
+                                <div className="space-y-3">
+                                    <div className={cardClass}>
+                                        <div className="flex items-start gap-3">
+                                            <Key className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
                                             <div>
-                                                <p className="text-sm font-bold text-[#e2e8f0]">Chave ativa</p>
-                                                <p className="text-xs text-cyan-400/80">Encriptação local ativa</p>
-                                                {aesKeyReady ? (
-                                                    <span className="text-green-400 text-xs">Chave AES derivada da mnemónica</span>
-                                                ) : (
-                                                    <span className="text-yellow-400 text-xs">A aguardar mnemónica...</span>
-                                                )}
+                                                <p className="text-sm font-medium text-white">Chave ativa</p>
+                                                <p className="mt-0.5 text-xs text-slate-400">Encriptação local AES-GCM</p>
+                                                <p className={`mt-1 text-xs ${aesKeyReady ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                                    {aesKeyReady
+                                                        ? 'Chave AES derivada da mnemónica'
+                                                        : 'A aguardar mnemónica…'}
+                                                </p>
                                             </div>
                                         </div>
                                     </div>
 
-                                    <div className="flex items-center justify-between gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
+                                    <div className={`${cardClass} flex items-center justify-between gap-4`}>
                                         <div className="min-w-0">
-                                            <p className="text-sm font-bold text-[#e2e8f0]">UID do utilizador</p>
-                                            <p className="truncate font-mono text-xs text-cyan-300/80">{auth.currentUser?.uid || 'UID indisponível'}</p>
+                                            <p className="text-sm font-medium text-white">UID do utilizador</p>
+                                            <p className="mt-0.5 truncate font-mono text-xs text-slate-400">{auth.currentUser?.uid || 'UID indisponível'}</p>
                                         </div>
                                         <button
+                                            type="button"
                                             onClick={() => {
                                                 const uid = auth.currentUser?.uid;
                                                 if (uid) navigator.clipboard.writeText(uid);
                                             }}
-                                            className="shrink-0 px-3 py-2 rounded-xl border border-cyan-500/20 bg-cyan-500/10 hover:bg-cyan-500/20 transition-all text-[10px] font-bold uppercase tracking-widest text-cyan-100"
+                                            className={btnSecondary}
                                         >
                                             Copiar UID
                                         </button>
                                     </div>
 
-                                    <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid grid-cols-2 gap-2">
                                         <button
+                                            type="button"
                                             onClick={() => setShowMnemonic(!showMnemonic)}
-                                            className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-white/10 bg-transparent hover:bg-white/5 hover:border-white/20 transition-all text-sm font-medium text-[#e2e8f0] hover:scale-[1.02]"
+                                            className={btnSecondary}
                                         >
-                                            {showMnemonic ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                            {showMnemonic ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                                             {showMnemonic ? 'Ocultar palavras' : 'Ver 12 palavras'}
                                         </button>
-                                        
                                         <button
-                                            onClick={handleResetIdentity}
-                                            className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-white/10 bg-transparent hover:bg-white/5 hover:border-white/20 transition-all text-sm font-medium text-[#e2e8f0] hover:scale-[1.02]"
+                                            type="button"
+                                            onClick={() => void handleResetIdentity(false)}
+                                            disabled={identityResetBusy}
+                                            className={btnDanger}
                                         >
-                                            <RotateCcw className="w-4 h-4" />
-                                            Reiniciar identidade
+                                            <RotateCcw className="h-4 w-4" />
+                                            Reiniciar chave local
                                         </button>
                                     </div>
+
+                                    <button type="button" onClick={() => void handleResetIdentity(true)}
+                                        disabled={identityResetBusy || !PERSONAL_REVISION_WRITES_ENABLED} className={btnDanger}>
+                                        Remover memórias pessoais e reiniciar
+                                    </button>
+                                    <p className="text-xs text-zinc-400" role="status" aria-live="polite">
+                                        {identityResetBusy && identityResetProgress
+                                            ? `${identityResetProgress.removed} de ${identityResetProgress.total} remoções confirmadas pelo servidor.`
+                                            : !PERSONAL_REVISION_WRITES_ENABLED
+                                                ? 'A remoção de memórias está em validação antes do lançamento. O reinício local conserva os dados antigos.'
+                                                : 'A remoção conserva histórico cifrado e ficheiros. Guarda as palavras atuais para os dados antigos.'}
+                                    </p>
+
+                                    <CommsIdentityBackupPanel mnemonic={mnemonic} active={isOpen&&activeSection==='identity'} />
 
                                     {showMnemonic && mnemonic && (
                                         <motion.div
                                             ref={mnemonicPanelRef}
                                             initial={{ opacity: 0, height: 0 }}
                                             animate={{ opacity: 1, height: 'auto' }}
-                                            className="grid grid-cols-3 gap-2 p-4 bg-black/30 rounded-2xl border border-white/5"
+                                            className="grid grid-cols-3 gap-2 rounded-xl border border-white/[0.08] bg-black/30 p-3"
                                         >
                                             {mnemonic.map((word, i) => (
-                                                <div key={i} className="text-xs text-purple-200/70 bg-white/5 p-2 rounded-lg text-center backdrop-blur-md">
-                                                    <span className="text-[#94a3b8] mr-2 text-[10px]">{i + 1}</span>
+                                                <div key={i} className="rounded-md bg-white/[0.04] px-2 py-1.5 text-center font-mono text-xs text-slate-200">
+                                                    <span className="mr-1.5 text-[10px] text-slate-500">{i + 1}</span>
                                                     {word}
                                                 </div>
                                             ))}
@@ -942,8 +1189,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <section className="space-y-6">
                                 <SectionHeader
                                     icon={Smartphone}
-                                    title="Mobile Sync"
-                                    description="Instala a app Android, cria convites QR e gere dispositivos confiáveis sem expor a tua semente."
+                                    title={t('settingsMobileTitle')}
+                                    description={t('settingsMobileDesc')}
                                 />
 
                                 <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-4">
@@ -958,8 +1205,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                             </div>
                                         </div>
                                         <button
+                                            type="button"
                                             onClick={() => openExternalDownload(MOBILE_APP_DOWNLOAD_URL)}
-                                            className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all text-xs font-bold uppercase tracking-widest text-emerald-100"
+                                            className={btnPrimary}
                                         >
                                             <Smartphone className="w-4 h-4" />
                                             Abrir Play Store
@@ -1001,17 +1249,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                                         {pairingInvite ? (
                                             <button
+                                                type="button"
                                                 onClick={handleCancelMobilePairing}
-                                                className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 transition-all text-xs font-bold uppercase tracking-widest text-red-200"
+                                                className={btnDanger}
                                             >
                                                 <X className="w-4 h-4" />
                                                 Cancelar
                                             </button>
                                         ) : (
                                             <button
+                                                type="button"
                                                 onClick={handleCreateMobilePairing}
                                                 disabled={isCreatingPairing || !aesKeyReady}
-                                                className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl border border-cyan-500/20 bg-cyan-500/10 hover:bg-cyan-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-xs font-bold uppercase tracking-widest text-cyan-100"
+                                                className={btnPrimary}
                                             >
                                                 <QrCode className="w-4 h-4" />
                                                 {isCreatingPairing ? 'A gerar' : 'Gerar QR'}
@@ -1025,9 +1275,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                         </div>
                                     )}
 
-                                    {pairingRecord?.status === 'accepted' && (
+                                    {pairingRecord && ['accepted','trusted'].includes(pairingRecord.status) && (
                                         <div className="rounded-xl border border-green-500/20 bg-green-500/10 px-3 py-2 text-xs text-green-200">
-                                            Dispositivo aceite. Handshake ECDH validado e adicionado aos dispositivos confiáveis.
+                                            Resposta recebida. O dispositivo só fica confiável após confirmar o handshake e a transação no servidor.
+                                            <button type="button" onClick={()=>void confirmPairing(pairingRecord)} className="mt-2 min-h-11 rounded-lg border border-white/20 px-3">Retomar confirmação</button>
                                         </div>
                                     )}
 
@@ -1048,7 +1299,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                             </div>
                                             <div className="space-y-3 min-w-0">
                                                 <p className="text-xs leading-relaxed text-[#94a3b8]">
-                                                    O QR contém apenas o convite, a chave pública efémera e o identificador da conta. A chave privada de emparelhamento fica só nesta sessão do browser.
+                                                    O QR contém apenas o convite, a chave pública efémera e o identificador da conta. A chave privada e o pedido ficam cifrados pelo cofre neste dispositivo para retoma após falha ou reload.
                                                 </p>
                                                 <div className="rounded-xl border border-white/5 bg-black/20 px-3 py-2">
                                                     <p className="truncate text-[10px] font-mono text-cyan-200/70">
@@ -1080,7 +1331,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                             </div>
                                         </div>
 
-                                        {trustedDevices.length === 0 ? (
+                                        {trustedDeviceView.uid!==auth.currentUser?.uid||trustedDeviceView.status==='loading' ? <p className="text-xs text-slate-400">A confirmar os dispositivos no servidor...</p> : trustedDeviceView.status==='unavailable' ? <p role="alert" className="text-xs text-amber-200">A lista está indisponível. Não foi confirmado que esteja vazia; volta a abrir este painel para repetir a leitura.</p> : trustedDevices.length === 0 ? (
                                             <p className="text-xs text-[#94a3b8]">Ainda não há dispositivos pareados.</p>
                                         ) : (
                                             <div className="space-y-2">
@@ -1091,6 +1342,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                             <p className="text-[10px] text-[#94a3b8]">
                                                                 {device.status === 'active' ? 'Ativo' : 'Revogado'} · {new Date(device.pairedAt).toLocaleString()}
                                                             </p>
+                                                            {auth.currentUser?.uid === device.ownerUid && (
+                                                                <SyncRecoveryActions uid={device.ownerUid} deviceId={device.deviceId} outgoing="desktop-to-mobile" />
+                                                            )}
                                                         </div>
                                                         {device.status === 'active' && (
                                                             <div className="flex shrink-0 items-center gap-2">
@@ -1144,26 +1398,76 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     description={t('universeDesc')}
                                 />
 
-                                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                                    {universeTypes.map((type) => (
-                                        <button
-                                            key={type.id}
-                                            onClick={() => setGlobalUniverseType(type.universeType)}
-                                            className={`relative group p-3 rounded-2xl border transition-all duration-300 flex flex-col items-center gap-3 hover:scale-[1.05] ${
-                                                selectedUniversePreset === type.id
-                                                    ? 'border-purple-500/50 bg-purple-500/10' 
-                                                    : 'border-white/5 bg-black/20 hover:border-white/20 hover:bg-white/5'
-                                            }`}
-                                        >
-                                            <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${type.color} opacity-80 group-hover:opacity-100 group-hover:shadow-[0_0_15px_rgba(139,92,246,0.5)] transition-all`} />
-                                            <span className="text-[10px] font-medium text-[#94a3b8] group-hover:text-[#e2e8f0]">
-                                                {type.id === 'galaxia' ? t('badgeUniverseGalaxy') :
-                                                 type.id === 'sistema-solar' ? t('badgeUniverseSolar') :
-                                                 type.id === 'nebulosa' ? t('badgeUniverseNebula') :
-                                                 type.id === 'buraco-negro' ? t('badgeUniverseVoid') : type.name}
-                                            </span>
-                                        </button>
-                                    ))}
+                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                    {universeThemes.map((theme) => {
+                                        const selected = universeType === theme.id;
+                                        return (
+                                            <button
+                                                key={theme.id}
+                                                type="button"
+                                                onClick={() => setGlobalUniverseType(theme.id)}
+                                                className={`group relative overflow-hidden rounded-2xl border p-0 text-left transition ${
+                                                    selected
+                                                        ? 'border-white/35 bg-white/[0.06] ring-1 ring-white/20'
+                                                        : 'border-white/8 bg-black/25 hover:border-white/20 hover:bg-white/[0.04]'
+                                                }`}
+                                            >
+                                                <div
+                                                    className="relative h-20 w-full overflow-hidden"
+                                                    style={{ background: theme.preview.sky }}
+                                                    aria-hidden
+                                                >
+                                                    <div
+                                                        className="absolute inset-0 opacity-80"
+                                                        style={{
+                                                            background: `radial-gradient(ellipse 80% 60% at 50% 55%, ${theme.preview.mid} 0%, transparent 70%)`,
+                                                        }}
+                                                    />
+                                                    <div
+                                                        className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-90"
+                                                        style={{
+                                                            background: `radial-gradient(circle, ${theme.preview.glow} 0%, ${theme.preview.accent} 35%, transparent 70%)`,
+                                                            boxShadow: `0 0 28px ${theme.preview.accent}66`,
+                                                        }}
+                                                    />
+                                                    {theme.backdrop.showAccretionDisk && (
+                                                        <div
+                                                            className="absolute left-1/2 top-1/2 h-3 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-70"
+                                                            style={{
+                                                                background: `linear-gradient(90deg, transparent, ${theme.preview.accent}, transparent)`,
+                                                                transform: 'translate(-50%, -50%) rotate(-12deg)',
+                                                            }}
+                                                        />
+                                                    )}
+                                                    <div
+                                                        className="absolute right-[18%] top-[28%] h-1 w-1 rounded-full"
+                                                        style={{ background: theme.preview.glow, boxShadow: `0 0 6px ${theme.preview.glow}` }}
+                                                    />
+                                                    <div
+                                                        className="absolute bottom-[30%] left-[22%] h-0.5 w-0.5 rounded-full"
+                                                        style={{ background: theme.preview.accent }}
+                                                    />
+                                                    <div
+                                                        className="absolute right-[30%] bottom-[24%] h-0.5 w-0.5 rounded-full opacity-70"
+                                                        style={{ background: theme.preview.glow }}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1 px-3.5 py-3">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="text-xs font-semibold text-[#f1f5f9]">
+                                                            {langIsEn ? theme.labelEn : theme.labelPt}
+                                                        </span>
+                                                        {selected && (
+                                                            <span className="h-1.5 w-1.5 rounded-full" style={{ background: theme.preview.accent }} />
+                                                        )}
+                                                    </div>
+                                                    <p className="text-[11px] leading-relaxed text-[#94a3b8]">
+                                                        {langIsEn ? theme.blurbEn : theme.blurbPt}
+                                                    </p>
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
                                 </div>
 
                                 <div className="border-t border-white/5 pt-6">
@@ -1211,6 +1515,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                 <span className="text-xs font-semibold">{t('languageEnglish')}</span>
                                                 {language === 'en' && <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
                                             </button>
+                                            <button
+                                                onClick={() => setLanguage('fr')}
+                                                className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
+                                                    language === 'fr'
+                                                        ? 'border-purple-500/50 bg-purple-500/10 text-purple-100'
+                                                        : 'border-white/5 bg-black/20 text-[#94a3b8] hover:border-white/20'
+                                                }`}
+                                            >
+                                                <span className="text-xs font-semibold">{t('languageFrench')}</span>
+                                                {language === 'fr' && <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />}
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -1221,66 +1536,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <section className="space-y-6">
                                 <SectionHeader
                                     icon={Cpu}
-                                    title="Inteligências"
-                                    description="Escolhe fornecedores, modelos, permissões e chaves cifradas localmente."
+                                    title={t('settingsAiTitle')}
+                                    description={t('settingsAiDesc')}
                                 />
+
+                                <EmbeddingReindexPanel key={auth.currentUser?.uid ?? 'signed-out'}
+                                    uid={auth.currentUser?.uid ?? null} sessions={sessions} />
+                                <EmbeddingPublicationPanel key={`publication:${auth.currentUser?.uid ?? 'signed-out'}`}
+                                    uid={auth.currentUser?.uid ?? null} sessions={sessions} />
 
                                 <div className="space-y-4">
                                     <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-4">
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-3">
                                                 <Cpu className="w-4 h-4 text-purple-400" />
-                                                <span className="text-sm font-medium text-[#e2e8f0]">Fornecedor primário</span>
+                                                <span className="text-sm font-medium text-[#e2e8f0]">{t('settingsAiProvider')}</span>
                                             </div>
-                                            <select
-                                                className="bg-[#0b1120] text-xs text-white border border-white/10 rounded-lg px-2 py-1 outline-none"
-                                                value={selectedProvider}
-                                                onChange={(e) => selectPrimaryProvider(e.target.value as AiProviderId)}
-                                            >
-                                                {AI_PROVIDERS.map((provider) => (
-                                                    <option key={provider.id} value={provider.id}>
-                                                        {provider.label}
-                                                    </option>
-                                                ))}
-                                            </select>
                                         </div>
 
-                                        <div className="space-y-3">
-                                            {providerGroups.map((group) => (
-                                                <div key={group.title} className="space-y-2">
-                                                    <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748b]">
-                                                        {group.title}
-                                                    </p>
-                                                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                                                        {group.providers.map((provider) => {
-                                                            const cfg = localAiConfig.providers[provider.id];
-                                                            const selected = selectedProvider === provider.id;
-                                                            return (
-                                                                <button
-                                                                    key={provider.id}
-                                                                    onClick={() => selectPrimaryProvider(provider.id)}
-                                                                    className={`rounded-xl border px-3 py-2 text-left transition-colors ${
-                                                                        selected
-                                                                            ? 'border-purple-500/50 bg-purple-500/10 text-purple-100'
-                                                                            : 'border-white/5 bg-black/20 text-[#94a3b8] hover:border-white/20'
-                                                                    }`}
-                                                                >
-                                                                    <span className="block text-[11px] font-bold">{provider.label}</span>
-                                                                    <span className="text-[9px] uppercase tracking-widest opacity-70">
-                                                                        {provider.kind}{cfg.hasSecret ? ' / key' : ''}
-                                                                    </span>
-                                                                </button>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
+                                        <AiModelPicker
+                                            selectedProvider={selectedProvider}
+                                            providers={localAiConfig.providers}
+                                            onSelectProvider={selectPrimaryProvider}
+                                            onSelectModel={(provider, model) => persistProviderConfig(provider, { model, enabled: true })}
+                                        />
 
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        {!isAiProviderEnabled(selectedProvider) && (
+                                            <p role="status" className="text-xs text-amber-200">{t('settingsAiProviderUnavailableHint')}</p>
+                                        )}
+                                        {activeProvider.kind === 'local' && <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <label className="space-y-1">
                                                 <span className="text-[10px] text-[#94a3b8] uppercase tracking-widest">
-                                                    {activeProvider.kind === 'cloud' ? 'Endpoint opcional' : 'Endpoint'}
+                                                    Endpoint
                                                 </span>
                                                 <input
                                                     value={activeProviderConfig.endpoint}
@@ -1298,9 +1585,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                     placeholder="nome exato do modelo no fornecedor"
                                                 />
                                             </label>
-                                        </div>
+                                        </div>}
 
-                                        {activeProvider.needsSecret && (
+                                        {(activeProvider.needsSecret || activeProviderConfig.hasSecret) && (
                                             <div className="space-y-2 rounded-xl border border-white/5 bg-black/20 p-3">
                                                 <div className="flex items-center justify-between gap-3">
                                                     <div>
@@ -1318,7 +1605,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                         </button>
                                                     )}
                                                 </div>
-                                                <div className="flex gap-2">
+                                                {!activeProvider.needsSecret && <p className="text-[10px] text-[#94a3b8]">{t('settingsAiLegacySecretUnused')}</p>}
+                                                {activeProvider.needsSecret && <div className="flex gap-2">
                                                     <input
                                                         type="password"
                                                         value={secretInput}
@@ -1333,7 +1621,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                     >
                                                         Guardar
                                                     </button>
-                                                </div>
+                                                </div>}
                                             </div>
                                         )}
 
@@ -1373,8 +1661,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <section className="space-y-6">
                                 <SectionHeader
                                     icon={Download}
-                                    title="Integrações & Servidor MCP"
-                                    description="Expande o Mnemosyne com Protocolo MCP para Claude, Cursor AI, APIs REST e descarrega a app desktop."
+                                    title={t('settingsIntegrationsTitle')}
+                                    description={t('settingsIntegrationsDesc')}
                                 />
                                 <div className="space-y-6">
                                     <McpIntegrationPanel />
@@ -1424,9 +1712,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                     {...{ webkitdirectory: "", directory: "", multiple: true }}
                                                 />
                                                 <button
+                                                    type="button"
                                                     onClick={triggerFolderImport}
                                                     disabled={isImportingFolder}
-                                                    className="w-full sm:w-auto flex items-center justify-center gap-2 py-2 px-4 rounded-xl border border-purple-500/20 bg-purple-500/10 hover:bg-purple-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-xs font-bold uppercase tracking-widest text-purple-100 hover:scale-[1.02]"
+                                                    className={btnPrimary}
                                                 >
                                                     <UploadCloud className="w-4 h-4" />
                                                     {t('selectFolder')}
@@ -1447,58 +1736,161 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </section>
                                     )}
 
+                                    {activeSection === 'capture' && (
+                            <section className="space-y-6">
+                                <SectionHeader
+                                    icon={Crosshair}
+                                    title={t('settingsCaptureTitle')}
+                                    description={t('settingsCaptureDesc')}
+                                />
+                                <div className="space-y-4">
+                                    <div className={`${cardClass} space-y-3`}>
+                                        <div className="flex items-start gap-3">
+                                            <Keyboard className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm font-medium text-white">Atalho desktop</p>
+                                                <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                                    {isTauriRuntime()
+                                                        ? 'Mesmo com a janela minimizada, o atalho restaura o Mnemosyne e foca a captura no Universo.'
+                                                        : 'Na app desktop Tauri este atalho é global (funciona com a janela minimizada). No browser só funciona com o separador focado.'}
+                                                </p>
+                                            </div>
+                                            <kbd className="shrink-0 rounded-md border border-white/12 bg-black/40 px-2 py-1 font-mono text-xs text-slate-200">
+                                                {formatCaptureHotkeyLabel()}
+                                            </kbd>
+                                        </div>
+                                    </div>
+
+                                    <div className={`${cardClass} space-y-3`}>
+                                        <div className="flex items-start gap-3">
+                                            <Globe className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm font-medium text-white">Clipper Chrome / Edge</p>
+                                                <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                                    Envia título, URL e seleção para a web app. A extensão não cifra — a mnemónica nunca sai do vault. Query limitada a ~1.5 KB.
+                                                </p>
+                                                <a
+                                                    href="/clipper-install.html"
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    className="mt-3 inline-flex items-center text-sm font-medium text-slate-200 underline-offset-2 hover:underline"
+                                                >
+                                                    Como instalar o clipper
+                                                </a>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <ApiKeysPanel askConfirm={askConfirm} />
+                                </div>
+                            </section>
+                                    )}
+
                                     {activeSection === 'privacy' && (
                             <section className="space-y-6">
                                 <SectionHeader
                                     icon={Shield}
-                                    title="Privacidade"
-                                    description="Controla o que sai da tua sessão e mantém o conhecimento sob a tua chave."
+                                    title={t('settingsPrivacyTitle')}
+                                    description={t('settingsPrivacyDesc')}
                                 />
+                                <LocalMemoryActivityPanel uid={auth.currentUser?.uid ?? ''} />
 
-                                <div className="space-y-4">
-                                    <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <div className="flex items-center gap-3">
-                                            <Shield className="w-4 h-4 text-green-400" />
-                                            <span className="text-sm font-medium text-green-400">Zero-Knowledge ativo</span>
+                                <div className="space-y-3">
+                                    <div className={cardClass}>
+                                        <div className="flex items-start gap-3">
+                                            <Shield className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                                            <div>
+                                                <p className="text-sm font-medium text-white">Cifra das memórias</p>
+                                                <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                                    O texto e o título das novas memórias pessoais são cifrados no dispositivo (AES-GCM).
+                                                    Memórias antigas podem continuar em claro até serem migradas abaixo. A frase de 12 palavras não é enviada ao servidor;
+                                                    embeddings, tags e outros metadados continuam em claro para pesquisa. Anexos antigos têm proteção distinta.
+                                                </p>
+                                            </div>
                                         </div>
                                     </div>
 
-                                    <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/[0.06] p-4 space-y-3">
+                                    <div className={`${cardClass} space-y-3`}>
                                         <div className="flex items-start gap-3">
-                                            <div className="rounded-xl border border-cyan-400/25 bg-cyan-500/15 p-2">
-                                                <Lock className="h-4 w-4 text-cyan-200" />
-                                            </div>
+                                            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
                                             <div className="min-w-0 flex-1">
-                                                <p className="text-sm font-semibold text-white">PIN local opcional</p>
-                                                <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                                                    Após idle lock, reabre a sessão com um PIN em vez das 12 palavras.
-                                                    O PIN fica só neste dispositivo; a mnemónica é cifrada com AES-GCM.
+                                                <p className="text-sm font-medium text-white">Cifrar memórias antigas</p>
+                                                <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                                    Memórias novas já saem cifradas. Este lote converte texto e título de memórias pessoais legadas e das suas versões históricas para o envelope AES-GCM.
+                                                    Podes interromper e retomar neste dispositivo; o contador mostra apenas a execução atual.
                                                 </p>
-                                                <p className="mt-2 text-[11px] text-cyan-100/70">
-                                                    Estado: {pinEnabled ? 'ativo neste dispositivo' : 'desligado'}
+                                                <p className="mt-2 text-xs leading-relaxed text-amber-200/90">
+                                                    Guarda e verifica uma cópia antes de continuar. O export local não inclui versões históricas nem bytes dos anexos e não substitui um export Firestore recuperável.
                                                 </p>
+                                                {encMigration && (
+                                                    <p className="mt-2 text-xs text-slate-400">
+                                                        {encMigrating ? 'A cifrar… ' : encMigrationOutcome === 'stopped'
+                                                            ? 'Interrompido: ' : encMigrationOutcome === 'failed'
+                                                                ? 'Falhou: ' : 'Concluído: '}
+                                                        {encMigration.migrated}/{encMigration.total} registos cifrados
+                                                        {encMigration.skipped ? ` · ${encMigration.skipped} ignorados ou alterados entretanto` : ''}
+                                                        {encMigration.failed ? ` · ${encMigration.failed} falha(s)` : ''}
+                                                    </p>
+                                                )}
                                             </div>
                                         </div>
-                                        <div className="grid gap-2 sm:grid-cols-2">
-                                            <input
-                                                type="password"
-                                                inputMode="numeric"
-                                                autoComplete="off"
-                                                value={pinInput}
-                                                onChange={(e) => setPinInput(e.target.value.replace(/\D/g, '').slice(0, 12))}
-                                                placeholder={pinEnabled ? 'PIN atual' : 'Novo PIN (4–12 dígitos)'}
-                                                className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400/40"
-                                            />
-                                            {!pinEnabled && (
+                                        <div className="flex flex-wrap gap-2">
+                                            {onOpenExport && (
+                                                <button type="button" disabled={encMigrating} onClick={onOpenExport} className={btnSecondary}>
+                                                    Exportar cópia local
+                                                </button>
+                                            )}
+                                            <button
+                                                type="button"
+                                                disabled={!personalMigrationWritesEnabled() || encMigrating || !mnemonic}
+                                                onClick={() => void handleMigrateLegacyMemories()}
+                                                className={btnPrimary}
+                                            >
+                                                {encMigrating ? 'A cifrar…' : 'Cifrar memórias antigas'}
+                                            </button>
+                                            {encMigrating && (
+                                                <button type="button" onClick={() => migrationAbortRef.current?.abort()} className={btnSecondary}>
+                                                    Parar migração
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className={`${cardClass} space-y-3`}>
+                                        <div>
+                                            <p className="text-sm font-medium text-white">PIN local opcional</p>
+                                            <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                                Após idle lock, reabre a sessão com um PIN em vez das 12 palavras.
+                                                O PIN fica só neste dispositivo; a mnemónica é cifrada com AES-GCM.
+                                            </p>
+                                            <p className="mt-2 text-xs text-slate-500">
+                                                Estado: {pinEnabled ? 'ativo neste dispositivo' : 'desligado'}
+                                            </p>
+                                        </div>
+                                        <div className="grid gap-3 sm:grid-cols-2">
+                                            <label className="block">
+                                                <span className={fieldLabelClass}>{pinEnabled ? 'PIN atual' : 'Novo PIN (6–12 alfanumérico)'}</span>
                                                 <input
                                                     type="password"
-                                                    inputMode="numeric"
+                                                    inputMode="text"
                                                     autoComplete="off"
-                                                    value={pinConfirm}
-                                                    onChange={(e) => setPinConfirm(e.target.value.replace(/\D/g, '').slice(0, 12))}
-                                                    placeholder="Confirmar PIN"
-                                                    className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400/40"
+                                                    value={pinInput}
+                                                    onChange={(e) => setPinInput(e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 12))}
+                                                    className={inputClass}
                                                 />
+                                            </label>
+                                            {!pinEnabled && (
+                                                <label className="block">
+                                                    <span className={fieldLabelClass}>Confirmar PIN</span>
+                                                    <input
+                                                        type="password"
+                                                        inputMode="text"
+                                                        autoComplete="off"
+                                                        value={pinConfirm}
+                                                        onChange={(e) => setPinConfirm(e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 12))}
+                                                        className={inputClass}
+                                                    />
+                                                </label>
                                             )}
                                         </div>
                                         <div className="flex flex-wrap gap-2">
@@ -1524,7 +1916,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                             setPinBusy(false);
                                                         }
                                                     }}
-                                                    className="rounded-xl border border-cyan-400/30 bg-cyan-500/15 px-4 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:opacity-40"
+                                                    className={btnPrimary}
                                                 >
                                                     {pinBusy ? 'A ativar…' : 'Ativar PIN'}
                                                 </button>
@@ -1545,7 +1937,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                             setPinBusy(false);
                                                         }
                                                     }}
-                                                    className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-100 transition hover:bg-rose-500/20 disabled:opacity-40"
+                                                    className={btnDanger}
                                                 >
                                                     {pinBusy ? 'A desativar…' : 'Desativar PIN'}
                                                 </button>
@@ -1553,31 +1945,88 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                         </div>
                                     </div>
 
-                                    <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <div className="flex items-center gap-3">
-                                            <span className="text-sm font-medium text-[#e2e8f0]">Partilha entre utilizadores</span>
+                                    <div className={`${cardClass} space-y-3`}>
+                                        <div>
+                                            <p className="text-sm font-medium text-white">WebAuthn / Windows Hello</p>
+                                            <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                                Opcional: exige biometria ou PIN do sistema antes de desbloquear o vault local.
+                                            </p>
+                                            <p className="mt-2 text-xs text-slate-500">
+                                                Estado:{' '}
+                                                {!isWebAuthnAvailable()
+                                                    ? 'indisponível neste browser'
+                                                    : webauthnEnabled
+                                                      ? 'ativo neste dispositivo'
+                                                      : 'desligado'}
+                                            </p>
                                         </div>
-                                        <button 
+                                        <div className="flex flex-wrap gap-2">
+                                            {!webauthnEnabled ? (
+                                                <button
+                                                    type="button"
+                                                    disabled={!isWebAuthnAvailable() || !auth.currentUser}
+                                                    onClick={async () => {
+                                                        try {
+                                                            const uid = auth.currentUser?.uid;
+                                                            if (!uid) {
+                                                                toast.error('Inicia sessão primeiro.');
+                                                                return;
+                                                            }
+                                                            await registerWebAuthnGate(uid, auth.currentUser?.displayName || 'Mnemosyne');
+                                                            setWebauthnEnabled(true);
+                                                            toast.success('WebAuthn ativado neste dispositivo.');
+                                                        } catch (error) {
+                                                            toast.error(getErrorMessage(error, 'Não foi possível ativar WebAuthn.'));
+                                                        }
+                                                    }}
+                                                    className={btnPrimary}
+                                                >
+                                                    Ativar WebAuthn
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        clearWebAuthnCredential();
+                                                        setWebauthnEnabled(false);
+                                                        toast.success('WebAuthn desativado.');
+                                                    }}
+                                                    className={btnDanger}
+                                                >
+                                                    Desativar WebAuthn
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className={`${cardClass} flex items-center justify-between gap-4`}>
+                                        <div>
+                                            <p className="text-sm font-medium text-white">Partilha entre utilizadores</p>
+                                            <p className="mt-0.5 text-xs text-slate-500">Permite enviar cápsulas a contactos aceites.</p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={shareEnabled}
+                                            aria-label="Partilha entre utilizadores"
                                             onClick={() => setShareEnabled(!shareEnabled)}
-                                            className={`w-10 h-5 rounded-full relative transition-colors duration-300 ${shareEnabled ? 'bg-cyan-500' : 'bg-white/10'}`}
+                                            className={`relative h-5 w-10 rounded-full transition-colors ${shareEnabled ? 'bg-white' : 'bg-white/15'}`}
                                         >
-                                            <motion.div 
-                                                className="w-4 h-4 bg-white rounded-full absolute top-0.5"
+                                            <motion.div
+                                                className={`absolute top-0.5 h-4 w-4 rounded-full ${shareEnabled ? 'bg-slate-900' : 'bg-white'}`}
                                                 animate={{ left: shareEnabled ? '22px' : '2px' }}
-                                                transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                                                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                                             />
                                         </button>
                                     </div>
 
-                                    <div className="rounded-2xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
+                                    <div className={cardClass}>
                                         <div className="flex items-start gap-3">
-                                            <div className="rounded-xl border border-violet-400/25 bg-violet-500/15 p-2">
-                                                <Compass className="h-4 w-4 text-violet-200" />
-                                            </div>
+                                            <Compass className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
                                             <div className="min-w-0 flex-1">
-                                                <p className="text-sm font-semibold text-white">Tour guiado</p>
-                                                <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                                                    Volta a ver o onboarding de ~30s (Flow, grafo, Ctrl+K, Universo, Comms).
+                                                <p className="text-sm font-medium text-white">Tour guiado</p>
+                                                <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                                    Volta a ver o onboarding de ~30s (captura no Universo, grafo, Ctrl+K, Comms).
                                                 </p>
                                                 <button
                                                     type="button"
@@ -1586,7 +2035,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                         onReplayOnboarding?.();
                                                         onClose();
                                                     }}
-                                                    className="mt-3 inline-flex items-center gap-2 rounded-xl border border-violet-400/30 bg-violet-500/15 px-4 py-2 text-xs font-semibold text-violet-100 transition hover:bg-violet-500/25"
+                                                    className={`mt-3 ${btnSecondary}`}
                                                 >
                                                     <RotateCcw className="h-3.5 w-3.5" />
                                                     Repetir onboarding
@@ -1598,21 +2047,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </section>
                                     )}
 
+                                    {activeSection === 'teams' && (
+                            <section className="space-y-6">
+                                <SectionHeader
+                                    icon={Users}
+                                    title={t('settingsTeamsTitle')}
+                                    description={t('settingsTeamsDesc')}
+                                />
+                                <TeamSettings mnemonic={mnemonic} askConfirm={askConfirm} />
+                            </section>
+                                    )}
+
                                     {activeSection === 'account' && (
                             <section className="space-y-6">
                                 <SectionHeader
                                     icon={AlertTriangle}
-                                    title="Conta"
-                                    description="Área reservada para ações permanentes. Confirma tudo com calma antes de avançar."
+                                    title={t('settingsAccountTitle')}
+                                    description={t('settingsAccountDesc')}
                                 />
+                                <EmailVerificationPanel user={auth.currentUser} active={()=>accountEmailOpen.current}/>
                                 
-                                <div className="p-5 bg-red-500/[0.03] rounded-2xl border border-red-500/10">
+                                <div className={cardClass}>
+                                    <p className="text-sm font-medium text-white">Zona crítica</p>
+                                    <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                                        Eliminar a conta é permanente. Confirma com calma.
+                                    </p>
                                     <button
+                                        type="button"
                                         onClick={handleDeleteAccount}
-                                        className="w-full py-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 font-bold text-sm hover:bg-red-500/20 hover:shadow-[0_0_20px_rgba(239,68,68,0.2)] transition-all hover:scale-[1.01]"
+                                        disabled={!ACCOUNT_DELETION_ENABLED}
+                                        className={`mt-3 ${btnDanger}`}
                                     >
                                         Eliminar conta permanentemente
                                     </button>
+                                    {!ACCOUNT_DELETION_ENABLED && <p className="mt-2 text-sm text-slate-400">A eliminação automática está em validação. Podes pedir a eliminação ao suporte na página abaixo.</p>}
+                                    <a href="/account-deletion" className="mt-3 block text-sm text-indigo-300 underline">Consultar ou retomar um pedido de eliminação</a>
                                 </div>
                             </section>
                                     )}
@@ -1623,6 +2092,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </motion.div>
                     
                     <PlansModal isOpen={planosOpen} onClose={() => setPlanosOpen(false)} />
+
+                    {confirmDialog && (
+                        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+                            <button
+                                type="button"
+                                className="absolute inset-0 bg-black/60"
+                                aria-label="Cancelar"
+                                onClick={() => closeConfirm(false)}
+                            />
+                            <div
+                                role="dialog"
+                                aria-modal="true"
+                                aria-labelledby="settings-confirm-title"
+                                className="relative w-full max-w-md rounded-2xl border border-white/15 bg-[#0b1224] p-5 shadow-2xl"
+                            >
+                                <h3 id="settings-confirm-title" className="text-base font-semibold text-white">
+                                    {confirmDialog.title}
+                                </h3>
+                                <p className="mt-2 text-sm leading-relaxed text-slate-300">{confirmDialog.message}</p>
+                                {confirmDialog.requirePhrase && (
+                                    <label className="mt-4 block">
+                                        <span className="mb-1.5 block text-xs font-medium text-slate-400">
+                                            Escreve “{confirmDialog.requirePhrase}” para confirmar
+                                        </span>
+                                        <input
+                                            type="text"
+                                            value={confirmPhrase}
+                                            onChange={(e) => setConfirmPhrase(e.target.value)}
+                                            className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-rose-400/40"
+                                        />
+                                    </label>
+                                )}
+                                <div className="mt-5 flex justify-end gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => closeConfirm(false)}
+                                        className={btnSecondary}
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => closeConfirm(true)}
+                                        className={confirmDialog.danger ? btnDanger : btnPrimary}
+                                    >
+                                        {confirmDialog.confirmLabel || 'Confirmar'}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </AnimatePresence>

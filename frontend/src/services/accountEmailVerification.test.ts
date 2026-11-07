@@ -1,0 +1,21 @@
+import {describe,expect,it,vi} from 'vitest';
+import type {User} from 'firebase/auth';
+import {AccountEmailContextChanged,sendAccountEmailVerification,refreshAccountEmailVerification,type AccountEmailVerificationDeps} from './accountEmailVerification';
+
+function fixture() {
+  const user={uid:'alice',email:'synthetic@example.invalid',emailVerified:false} as User, state={uid:'alice' as string|null}, listeners=new Set<(uid:string|null)=>void>();
+  const deps:AccountEmailVerificationDeps={uid:()=>state.uid,observe:callback=>{listeners.add(callback);return()=>listeners.delete(callback);},send:vi.fn(async()=>{}),reload:vi.fn(async()=>{}),refreshToken:vi.fn(async()=> 'Synthetic token never logged')};
+  const change=(uid:string|null)=>{state.uid=uid;listeners.forEach(callback=>callback(uid));};
+  return {user,state,deps,listeners,change};
+}
+describe('account email verification',()=>{
+  it('sends only on the captured account action and releases its observer',async()=>{const f=fixture();await sendAccountEmailVerification(f.user,()=>{},f.deps);expect(f.deps.send).toHaveBeenCalledWith(f.user);expect(f.listeners.size).toBe(0);});
+  it('refreshes Auth data and then forces a token refresh before confirming verification',async()=>{const f=fixture(),order:string[]=[];f.deps.reload=async user=>{order.push('reload');Object.assign(user,{emailVerified:true});};f.deps.refreshToken=async()=>{order.push('token');};await expect(refreshAccountEmailVerification(f.user,()=>{},f.deps)).resolves.toBe(true);expect(order).toEqual(['reload','token']);expect(f.listeners.size).toBe(0);});
+  it('returns an unverified status without fabricating a successful verification',async()=>{const f=fixture();await expect(refreshAccountEmailVerification(f.user,()=>{},f.deps)).resolves.toBe(false);});
+  it('does not resend to an already verified account',async()=>{const f=fixture();Object.assign(f.user,{emailVerified:true});await sendAccountEmailVerification(f.user,()=>{},f.deps);expect(f.deps.send).not.toHaveBeenCalled();});
+  it('refuses a missing email or a different current account before dispatch',async()=>{for(const kind of ['email','actor']){const f=fixture();if(kind==='email')Object.assign(f.user,{email:null});else f.change('bob');await expect(sendAccountEmailVerification(f.user,()=>{},f.deps)).rejects.toBeInstanceOf(AccountEmailContextChanged);expect(f.deps.send).not.toHaveBeenCalled();expect(f.listeners.size).toBe(0);}});
+  it.each(['send','refresh'] as const)('a %s request retired by account ABA cannot confirm a late result',async kind=>{const f=fixture();const retire=async()=>{f.change('bob');f.change('alice');};if(kind==='send')f.deps.send=retire;else f.deps.reload=retire;await expect(kind==='send'?sendAccountEmailVerification(f.user,()=>{},f.deps):refreshAccountEmailVerification(f.user,()=>{},f.deps)).rejects.toBeInstanceOf(AccountEmailContextChanged);expect(f.deps.refreshToken).not.toHaveBeenCalled();expect(f.listeners.size).toBe(0);});
+  it('an email change during reload refuses a token refresh for the previous address',async()=>{const f=fixture();f.deps.reload=async user=>{Object.assign(user,{email:'changed@example.invalid'});};await expect(refreshAccountEmailVerification(f.user,()=>{},f.deps)).rejects.toBeInstanceOf(AccountEmailContextChanged);expect(f.deps.refreshToken).not.toHaveBeenCalled();});
+  it('a closed caller prevents dispatch and SDK failures release the observer without claiming email delivery',async()=>{const f=fixture();await expect(sendAccountEmailVerification(f.user,()=>{throw new AccountEmailContextChanged();},f.deps)).rejects.toBeInstanceOf(AccountEmailContextChanged);expect(f.deps.send).not.toHaveBeenCalled();f.deps.send=async()=>{throw Error('Synthetic unavailable');};await expect(sendAccountEmailVerification(f.user,()=>{},f.deps)).rejects.toThrow('Synthetic unavailable');expect(f.listeners.size).toBe(0);});
+  it('a failed reload does not refresh the token or confirm the status',async()=>{const f=fixture();f.deps.reload=async()=>{throw Error('Synthetic reload failure');};await expect(refreshAccountEmailVerification(f.user,()=>{},f.deps)).rejects.toThrow();expect(f.deps.refreshToken).not.toHaveBeenCalled();expect(f.listeners.size).toBe(0);});
+});

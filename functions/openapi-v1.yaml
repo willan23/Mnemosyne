@@ -1,0 +1,536 @@
+openapi: 3.0.3
+info:
+  title: Mnemosyne Public API v1
+  version: 1.0.0
+  description: |
+    API pública de envelopes cifrados e metadados do Mnemosyne.
+
+    A API não decifra `enc: { v, iv, ct }` e não devolve `text` / `title` em claro.
+    Isto não certifica a cifra de documentos legados ainda por migrar.
+
+    No lançamento pessoal, a API e o MCP são apenas de leitura. O endpoint
+    POST de criação responde HTTP 403, inclusive para chaves antigas com scope
+    de escrita. Conteúdo em claro continua recusado pelo contrato do servidor.
+
+    ## Trade-off dos embeddings
+
+    Alguns documentos têm `embedding` (vector) **em claro**, gerado no cliente
+    para o grafo semântico. A busca `GET /search` pode fazer cosine nesses
+    vectors se o cliente enviar um vector de query (`embedding=`) e o mesmo
+    espaço `embeddingModel`. A ausência deste parâmetro identifica o espaço
+    legado `Xenova/all-MiniLM-L6-v2@legacy-main`. A string `q`
+    **não** decifra `enc`. Sem vector, a busca filtra só tags, ids e category.
+
+    Um embedding não é o texto original, mas vaza semelhança semântica.
+    Vetores de modelos diferentes nunca são comparados entre si.
+
+    ## Autenticação
+
+    Header `Authorization: Bearer mne_live_…`. A chave em claro é mostrada
+    uma vez no callable autenticado `createApiKey` (Firebase ID token,
+    região `europe-west1`). O servidor guarda só SHA-256.
+
+    Callables: `createApiKey`, `listApiKeys`, `revokeApiKey`, `setAgentAccess`.
+    O último exige Firebase Auth do próprio titular e
+    `{expectedUid, disabled, baseline: {disabled, epoch}}`, com estado confirmado
+    pelo servidor. A transação recusa um baseline antigo e incrementa a época ao parar.
+    Parar bloqueia novos pedidos com chaves longas e sessões curtas. Retomar
+    permite chaves não revogadas; sessões anteriores à paragem permanecem inválidas.
+    Leituras revalidam a credencial antes de devolver o resultado; uma resposta
+    já entregue não pode ser recolhida. O controlo está nas definições da conta.
+
+    POST /api/v1/agent/session troca uma chave longa por um token mne_agent_
+    válido por 15 minutos, apenas para leitura/pesquisa pessoal. O token não
+    pode emitir sessões novas. Revogar a chave original invalida as sessões.
+    Este endpoint não implementa OAuth/PKCE nem refresh tokens.
+
+    Para aplicações registadas existe um fluxo separado de authorization code
+    com PKCE S256 em /agent/authorize e troca em POST /api/v1/oauth/token.
+    Não requer uma chave mne_live_. Exige consentimento Firebase Auth do titular,
+    redirect HTTPS exato e aplicação habilitada no registo Admin agentClients.
+    O código dura 120 segundos e é de utilização única; o token dura 900 segundos.
+    O parâmetro opcional `vault` do pedido de autorização é `personal` (omissão)
+    ou `team:<ID exato>`. Uma autorização permite apenas esse cofre. A aplicação
+    precisa de `vaultTypes: [personal, team]` no registo para pedir equipas;
+    registos antigos permitem apenas pessoal. Preview, código, grant e token
+    ficam vinculados ao cofre e ao estado da equipa/época. Uma alteração desse
+    estado exige consentimento novo. Tokens de equipa não podem escolher outro
+    cofre por argumentos REST/MCP. Chaves permanentes mantêm âmbito pessoal.
+    Códigos de equipa usam mne_vault_code_ e tokens mne_vault_, recusados pelos
+    parsers pessoais antigos. Códigos/tokens pessoais mantêm mne_code_/mne_agent_.
+    Não existem refresh tokens, escrita aprovada, descoberta OAuth ou registo
+    dinâmico. Callables adicionais: previewAgentAuthorization, authorizeAgentClient,
+    listAgentGrants, revokeAgentGrant. Todos exigem Firebase Auth e expectedUid.
+  contact:
+    url: https://mnemosyne-one.com
+servers:
+  - url: https://mnemosyne-one.web.app
+    description: Firebase Hosting (rewrites para europe-west1)
+  - url: https://europe-west1-mnemosyne-one.cloudfunctions.net/publicApi
+    description: Cloud Function directa
+tags:
+  - name: memories
+  - name: search
+  - name: mcp
+security:
+  - ApiKeyBearer: []
+paths:
+  /api/v1/agent/changes/prepare:
+    post:
+      tags: [memories]
+      summary: Preparar o baseline de uma proposta cifrada para uma memória existente
+      description: Exige token OAuth mne_review_ com memories:write e um único cofre autorizado. Não altera a memória. Admissão permanece fechada antes da validação de lançamento.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentMemoryTarget' }
+      responses:
+        '200':
+          description: Snapshot, autor, owner e época necessários para uma proposta exata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentMemoryBaseline' }
+        '400': { description: Payload inválido }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Admissão de propostas fechada }
+  /api/v1/agent/changes/propose:
+    post:
+      tags: [memories]
+      summary: Submeter uma proposta cifrada idempotente sem a aplicar
+      description: |
+        Token mne_review_ com memories:write. Uma memória por operationId UUID v4;
+        pedido até 640 KiB, dez propostas pendentes por UID, 50 propostas/20 MiB por
+        UID/dia e 500/100 MiB por equipa/dia. O servidor valida baseline, cifra,
+        âmbito, sessão e quotas na transação. O agente não pode aprovar.
+        A aprovação pertence ao titular autenticado no cliente, depois de decifrar
+        e rever o conteúdo e os metadados. Expira com a sessão original, até 15 minutos.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentMemoryChange' }
+      responses:
+        '202':
+          description: Recibo de proposta; uma repetição exata pode devolver o resultado terminal existente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentMutationReceipt' }
+        '400': { description: Payload inválido ou campos de autorização indevidos }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: ID já usado ou baseline alterado }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { description: Admissão de propostas fechada }
+  /api/v1/agent/changes/status:
+    post:
+      tags: [memories]
+      summary: Consultar apenas o recibo da proposta da mesma sessão e digest
+      description: Exige a sessão mne_review_ original ainda válida. Não devolve o conteúdo. Funciona com admissão de novas propostas fechada. O titular conserva a consulta autenticada depois da expiração da sessão.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposalId, digest]
+              properties:
+                proposalId: { type: string, format: uuid }
+                digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+      responses:
+        '200':
+          description: Recibo autoritativo da proposta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentMutationReceipt' }
+        '400': { description: Identidade do recibo inválida }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/oauth/token:
+    post:
+      tags: [memories]
+      security: []
+      summary: Trocar código de autorização com PKCE S256 por token curto
+      description: |
+        Não exige Bearer de API. Código, aplicação, retorno e verifier devem
+        corresponder ao consentimento. Resposta no-store; limite por IP da plataforma.
+        Aplicações no browser também precisam de origem na allowlist CORS do produto.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: &agentTokenRequest
+              type: object
+              required: [grant_type, client_id, redirect_uri, code, code_verifier]
+              properties:
+                grant_type: { type: string, enum: [authorization_code] }
+                client_id: { type: string, minLength: 3, maxLength: 64 }
+                redirect_uri: { type: string, format: uri }
+                code: { type: string }
+                code_verifier: { type: string, minLength: 43, maxLength: 128 }
+          application/json:
+            schema: *agentTokenRequest
+      responses:
+        '200':
+          description: Sessão curta, sem chave permanente ou refresh token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, expires_in, scope]
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer, enum: [900] }
+                  scope: { type: string }
+        '400': { description: Código, prova PKCE ou consentimento inválido ou expirado }
+        '403': { description: Origem CORS recusada }
+        '405': { description: Só POST }
+        '429': { description: Limite de trocas excedido }
+        '503': { description: Emissão temporariamente indisponível }
+  /api/v1/agent/session:
+    post:
+      tags: [memories]
+      summary: Emitir sessão curta de agente a partir de uma chave de API
+      description: |
+        Exige Bearer mne_live_. Scopes devem ser um subconjunto dos da chave.
+        Sem scopes explícitos, herda apenas leitura/pesquisa. Resposta no-store.
+        A sessão partilha o limite de pedidos da chave original e é revalidada
+        contra essa chave e o perfil do titular em cada utilização.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scopes:
+                  type: array
+                  minItems: 1
+                  items: { type: string, enum: ['memories:read', 'memories:search'] }
+      responses:
+        '200':
+          description: Token mostrado uma vez; guardar só no cliente autorizado
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, expires_in, scopes]
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer, enum: [900] }
+                  scopes: { type: array, items: { type: string } }
+        '401': { description: Credencial ausente ou inválida }
+        '403': { description: Scopes recusados, conta indisponível ou tentativa de delegação }
+        '429': { description: Limite da chave original excedido }
+  /api/v1/memories:
+    get:
+      tags: [memories]
+      summary: Listar metadados e envelopes do cofre autorizado
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: startAfter
+          schema: { type: string }
+          description: id da última memória da página anterior
+      responses:
+        '200':
+          description: Página de memórias (sem plaintext)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryList'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [memories]
+      summary: Criação direta por agentes retirada
+      description: Responde sempre 403, incluindo quando a admissão de propostas estiver aberta. Propostas revistas não usam este endpoint.
+      responses:
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/memories/{id}:
+    get:
+      tags: [memories]
+      summary: Obter uma memória do cofre autorizado
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicMemory'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: Não encontrada ou fora do cofre autorizado
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/search:
+    get:
+      tags: [search]
+      summary: Pesquisa sem decifrar enc
+      description: |
+        `mode=cosine` se `embedding` (vector) for enviado; resultados só incluem
+        documentos do cofre autorizado com o mesmo `embeddingModel` (limit 20).
+        Os filtros q/tags/ids são aplicados antes do ranking, também com vector.
+        Sem vector, `mode=tags_ids`. A leitura de equipa examina no máximo 500
+        documentos elegíveis ou 8 MiB, em páginas de dez. List/get/search de
+        equipa limitam os objetos de memória devolvidos a 3 MiB; a lista conserva
+        o cursor para continuar. A pesquisa pode devolver menos de limit e não é
+        exaustiva. O campo tradeoff declara estes limites. Query e embeddings em
+        GET podem constar de logs de infraestrutura; este contrato não os certifica.
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: 'Filtro: #tag, tag:x, cat:nota, id:abc, ou tokens contra tags/id — nunca contra ciphertext'
+        - in: query
+          name: tags
+          schema: { type: string }
+          description: CSV de tags
+        - in: query
+          name: ids
+          schema: { type: string }
+          description: CSV de ids
+        - in: query
+          name: embedding
+          schema: { type: string }
+          description: Vector JSON `[0.1,0.2,…]` ou CSV de floats (calculado no cliente)
+        - in: query
+          name: embeddingModel
+          schema: { type: string }
+          description: Espaço do modelo; omitir apenas para vectores legados
+        - in: query
+          name: limit
+          schema: { type: integer, maximum: 20, default: 20 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/mcp:
+    get:
+      tags: [mcp]
+      summary: Health / handshake MCP
+      responses:
+        '200':
+          description: Sem Bearer devolve ok mínimo; com key inclui tools anunciadas
+    post:
+      tags: [mcp]
+      summary: JSON-RPC MCP (initialize, tools/list, tools/call, ping)
+      description: |
+        Ferramentas anunciadas: `list_memories`, `get_memory` e
+        `search_memories`. `create_memory` está bloqueada mesmo para chaves antigas.
+        Tokens de consentimento mne_review_ podem anunciar `prepare_memory_change`,
+        `propose_memory_change` e `get_memory_change`. As duas primeiras exigem
+        admissão aberta; consulta de recibos continua disponível quando estiver fechada.
+        Não existe ferramenta de aprovação ou aplicação pelo agente.
+        O titular pode reverter no cliente autenticado; o recibo original passa a
+        reverted, preservando o resultado da aplicação original. A reversão não
+        é uma ferramenta API/MCP e exige nova revisão/confirmação no cofre.
+        Mesmo contrato ZK da API REST.
+        Também servido em `/mcp` e `/api/mcp`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JsonRpcRequest'
+            examples:
+              toolsList:
+                value: { jsonrpc: '2.0', id: 1, method: tools/list }
+              toolsCall:
+                value:
+                  jsonrpc: '2.0'
+                  id: 2
+                  method: tools/call
+                  params:
+                    name: list_memories
+                    arguments: { limit: 10 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /mcp:
+    post:
+      tags: [mcp]
+      summary: Alias JSON-RPC MCP
+      responses:
+        '200':
+          description: igual a /api/v1/mcp
+  /api/mcp:
+    post:
+      tags: [mcp]
+      summary: Alias JSON-RPC MCP (compatível com clientes que usam /api/mcp)
+      responses:
+        '200':
+          description: igual a /api/v1/mcp
+components:
+  securitySchemes:
+    ApiKeyBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: mne_live_, mne_agent_, mne_vault_ ou mne_review_
+      description: Chave pessoal permanente ou token curto com o cofre autorizado
+  responses:
+    Unauthorized:
+      description: Bearer em falta, inválido ou revogado
+    Forbidden:
+      description: Scope em falta, acesso alterado, conta ou cofre indisponível
+    RateLimited:
+      description: 120 pedidos / hora / key (sliding window)
+  schemas:
+    AgentMemoryTarget:
+      type: object
+      additionalProperties: false
+      required: [sessionId, teamId]
+      properties:
+        sessionId: { type: string, minLength: 1, maxLength: 128 }
+        teamId: { type: string, nullable: true, minLength: 1, maxLength: 128 }
+    AgentMemoryBaseline:
+      type: object
+      additionalProperties: false
+      required: [kind, sessionId, teamId, authorUid, ownerUid, stateHash, stateDigest, revision, teamStateHash, epochStateHash, keyEpoch, keyId, priorKeyEpoch, priorKeyId]
+      properties:
+        kind: { type: string, enum: [personal, team] }
+        sessionId: { type: string }
+        teamId: { type: string, nullable: true }
+        authorUid: { type: string }
+        ownerUid: { type: string }
+        stateHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        stateDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        revision: { type: integer, minimum: 0 }
+        teamStateHash: { type: string, nullable: true }
+        epochStateHash: { type: string, nullable: true }
+        keyEpoch: { type: integer, nullable: true }
+        keyId: { type: string, nullable: true }
+        priorKeyEpoch: { type: integer, nullable: true }
+        priorKeyId: { type: string, nullable: true }
+    AgentMemoryChange:
+      type: object
+      additionalProperties: false
+      required: [operationId, operation, baseline, priorEnc, enc, metadata]
+      description: Um pedido edit/delete do contrato agentMutationContract; o servidor valida também a relação exata entre os campos e os limites de metadata/cifra. Não aceita plaintext nem campos de autorização.
+      properties:
+        operationId: { type: string, format: uuid }
+        operation: { type: string, enum: [edit, delete] }
+        baseline: { $ref: '#/components/schemas/AgentMemoryBaseline' }
+        priorEnc: { $ref: '#/components/schemas/EncEnvelope' }
+        enc:
+          type: object
+          nullable: true
+          description: Envelope v1 pessoal ou v2 de equipa; null apenas para delete
+          properties:
+            v: { type: integer, enum: [1, 2] }
+            iv: { type: string }
+            ct: { type: string }
+        metadata:
+          type: object
+          description: Patch estritamente limitado aos campos de metadata de memória; vazio para delete
+    AgentMutationReceipt:
+      type: object
+      additionalProperties: false
+      required: [proposalId, uid, clientId, clientName, vault, digest, sessionId, teamId, operation, status, createdAt, expiresAt, decidedAt, result]
+      properties:
+        proposalId: { type: string, format: uuid }
+        uid: { type: string }
+        clientId: { type: string }
+        clientName: { type: string }
+        vault: { type: string }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        sessionId: { type: string }
+        teamId: { type: string, nullable: true }
+        operation: { type: string, enum: [edit, delete] }
+        status: { type: string, enum: [pending, applied, rejected, expired, reverted] }
+        createdAt: { type: integer }
+        expiresAt: { type: integer }
+        decidedAt: { type: integer, nullable: true }
+        result:
+          type: object
+          nullable: true
+          description: Recibo MemoryEdit committed da aplicação original quando status é applied ou reverted; não contém conteúdo
+    EncEnvelope:
+      type: object
+      required: [v, iv, ct]
+      additionalProperties: false
+      properties:
+        v: { type: integer, enum: [1, 2], description: Pessoal v1; equipa v1 legado ou v2 }
+        iv: { type: string }
+        ct: { type: string }
+    PublicMemory:
+      type: object
+      required: [id, encrypted]
+      properties:
+        id: { type: string }
+        teamId: { type: string, description: Presente apenas em resultados de equipa }
+        keyEpoch: { type: integer, minimum: 1, description: Época do envelope de equipa }
+        keyId: { type: string, nullable: true, description: Identificador da chave; nunca contém material de chave }
+        timestamp: { type: number, nullable: true }
+        updatedAt: { type: number, nullable: true }
+        tags:
+          type: array
+          items: { type: string }
+        category: { type: string, nullable: true }
+        celestialType: { type: string, nullable: true }
+        encrypted: { type: boolean }
+        enc:
+          $ref: '#/components/schemas/EncEnvelope'
+        embedding:
+          type: array
+          items: { type: number }
+          description: Só em get/search quando existe no documento
+        embeddingModel: { type: string, description: Espaço do vector quando existe embedding }
+        score: { type: number, description: Cosine (só search mode=cosine) }
+    MemoryList:
+      type: object
+      properties:
+        memories:
+          type: array
+          items: { $ref: '#/components/schemas/PublicMemory' }
+        nextStartAfter: { type: string, nullable: true }
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/PublicMemory' }
+        mode:
+          type: string
+          enum: [cosine, tags_ids]
+        tradeoff: { type: string }
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        detail: { type: string }
+        code: { type: string }
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc: { type: string, enum: ['2.0'] }
+        id: {}
+        method: { type: string }
+        params: { type: object }
+    JsonRpcResponse:
+      type: object
+      properties:
+        jsonrpc: { type: string }
+        id: {}
+        result: {}
+        error: {}

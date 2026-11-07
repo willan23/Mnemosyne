@@ -81,6 +81,8 @@ export const MnemonicBackupModal: React.FC<MnemonicBackupModalProps> = ({ mnemon
                 {copied ? 'Chave copiada' : 'Copiar 12 palavras'}
               </button>
 
+              <p className="text-xs text-slate-400">Para recuperar mensagens Comms e chaves de equipa noutra instalação, guarda também o backup cifrado das identidades nas definições de identidade.</p>
+
               <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-300">
                 <input
                   type="checkbox"

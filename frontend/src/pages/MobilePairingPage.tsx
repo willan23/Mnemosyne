@@ -1,15 +1,18 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { Camera, CheckCircle2, DownloadCloud, KeyRound, Lock, Smartphone, UploadCloud, XCircle } from 'lucide-react';
 import { auth } from '../firebase';
 import { LoginPage } from './LoginPage';
-import { acceptMobilePairingInvite } from '../services/mobilePairing';
+import { acceptMobilePairingInvite,hasPendingMobilePairing,cancelRetainedMobilePairing } from '../services/mobilePairing';
 import { importQueuedMobileSyncEnvelopes, queueMobileMemoryDelta } from '../services/mobileSync';
 import { useSessions } from '../hooks/useSessions';
+import { useSyncFeedback } from '../hooks/useSyncFeedback';
+import { SyncRecoveryActions } from '../components/SyncRecoveryActions';
+import { syncOutboxMessage } from '../services/mobileSyncMessages';
 import {
   isNativeSecureStorage,
-  loadMobileSyncCredential,
-  saveMobileSyncCredential,
+  inspectMobileSyncCredential,
+  protectLegacyMobileSyncCredential,
   type MobileSyncCredential,
 } from '../services/mobileDeviceKeyStore';
 import { scanMobilePairingQr } from '../services/mobileQrScanner';
@@ -24,69 +27,79 @@ export const MobilePairingPage: React.FC = () => {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [legacyDigest,setLegacyDigest]=useState<string|null>(null),[hasPairingRecovery,setHasPairingRecovery]=useState(false);
+  const operation=useRef<object|null>(null);
+  const syncFeedback = useSyncFeedback();
+  const captureFeedback=syncFeedback.capture;
+  useEffect(() => {operation.current=null;setBusy(false);setStatus(null);setError(null);},[syncFeedback.epoch]);
 
   const payloadFromUrl = useMemo(() => new URLSearchParams(window.location.search).get('payload') || '', []);
   const inviteUri = manualInvite.trim() || (payloadFromUrl ? makePairingUri(payloadFromUrl) : '');
   const { allSessions } = useSessions(user, '', { dateRange: 'all', tags: [] });
 
-  useEffect(() => onAuthStateChanged(auth, setUser), []);
+  useEffect(() => onAuthStateChanged(auth, value=>{setCredential(null);setLegacyDigest(null);setUser(value);}), []);
 
   useEffect(() => {
+    let current = true;
+    setCredential(null);
+    setLegacyDigest(null);setHasPairingRecovery(user?hasPendingMobilePairing(user.uid,'mobile'):false);
     if (!user) {
-      setCredential(null);
       return;
     }
 
-    loadMobileSyncCredential(user.uid)
-      .then(setCredential)
-      .catch((storageError) => {
-        console.warn('Unable to load mobile sync credential:', storageError);
-        setCredential(null);
-      });
-  }, [user]);
+    const feedback=captureFeedback(user.uid),guard=()=>{if(!current||!feedback())throw Error('Vista retirada.');};if(!feedback())return;
+    inspectMobileSyncCredential(user.uid,guard)
+      .then(value => {if(current&&feedback()){setCredential(value?.credential??null);setLegacyDigest(value?.legacy?value.sourceDigest:null);}})
+      .catch(() => {if(current&&feedback())setCredential(null);});
+    return () => {current=false;};
+  }, [user,syncFeedback.epoch,captureFeedback]);
 
-  const handleAcceptInvite = async () => {
-    if (!user || !inviteUri) return;
+  const handleAcceptInvite = async (resume=false) => {
+    if (!user || !resume&&!inviteUri||operation.current) return;
+    const current=syncFeedback.capture(user.uid);if(!current()){setError('Desbloqueia o cofre antes de emparelhar.');return;}const guard=()=>{if(!current())throw Error('Vista retirada.');},token={};operation.current=token;
     setBusy(true);
     setError(null);
     setStatus(null);
     try {
-      const accepted = await acceptMobilePairingInvite(inviteUri, deviceName || 'Mobile');
-      const nextCredential: MobileSyncCredential = {
-        ownerUid: user.uid,
-        deviceId: accepted.deviceId,
-        pairingId: accepted.pairingId,
-        deviceName: deviceName || 'Mobile',
-        privateKeyJwk: accepted.mobilePrivateKeyJwk,
-        savedAt: Date.now(),
-      };
-      await saveMobileSyncCredential(nextCredential);
-      setCredential(nextCredential);
-      setStatus('Dispositivo pareado. A chave privada de sync ficou guardada neste dispositivo.');
-    } catch (acceptError) {
-      setError(acceptError instanceof Error ? acceptError.message : 'Não foi possível aceitar o convite.');
+      const accepted = await acceptMobilePairingInvite(resume?'':inviteUri, deviceName || 'Mobile',guard);guard();
+      setCredential(accepted);setLegacyDigest(null);
+      setStatus('Resposta confirmada e chave guardada com cifra do cofre. A confiança tem de estar confirmada no desktop antes da sincronização.');
+    } catch {
+      if(current())setError('O emparelhamento ainda não foi confirmado. A chave e o pedido cifrados foram conservados; retoma ou cancela o pedido.');
     } finally {
-      setBusy(false);
+      if(operation.current===token){operation.current=null;if(current()){setBusy(false);setHasPairingRecovery(hasPendingMobilePairing(user.uid,'mobile'));}}
     }
   };
 
   const handleScanQr = async () => {
+    if(!user||operation.current)return;const current=syncFeedback.captureAccount(user.uid),token={};if(!current())return;operation.current=token;
     setBusy(true);
     setError(null);
     setStatus(null);
     try {
       const scannedValue = await scanMobilePairingQr();
+      if(!current())return;
       setManualInvite(scannedValue);
       setStatus('QR lido. Confirma o pareamento para guardar a chave de sync neste dispositivo.');
-    } catch (scanError) {
-      setError(scanError instanceof Error ? scanError.message : 'Não foi possível ler o QR.');
+    } catch {
+      if(current())setError('Não foi possível ler o QR.');
     } finally {
-      setBusy(false);
+      if(operation.current===token){operation.current=null;if(current())setBusy(false);}
     }
+  };
+  const handlePairingMaintenance=async(mode:'cancel'|'protect')=>{
+    if(!user||operation.current)return;const current=syncFeedback.capture(user.uid);if(!current()){setError('Desbloqueia o cofre antes de continuar.');return;}
+    const guard=()=>{if(!current())throw Error('Vista retirada.');},token={};operation.current=token;setBusy(true);setError(null);setStatus(null);
+    try{if(mode==='cancel'){await cancelRetainedMobilePairing(user.uid,'mobile',guard);guard();setStatus('Cancelamento confirmado. As chaves e o pedido anterior foram conservados.');}
+      else{if(!legacyDigest)return;await protectLegacyMobileSyncCredential(user.uid,legacyDigest,guard);guard();setLegacyDigest(null);setStatus('Credencial protegida pelo cofre. O original anterior foi conservado num arquivo cifrado.');}}
+    catch{if(current())setError(mode==='cancel'?'O cancelamento ainda não foi confirmado. Se o desktop já confiou neste dispositivo, retoma a credencial ou revoga-o na lista de dispositivos. As chaves foram conservadas.':'Não foi possível confirmar a operação. A credencial, a chave e os pedidos anteriores foram conservados.');}
+    finally{if(operation.current===token){operation.current=null;if(current())setBusy(false);}}
   };
 
   const handleImportSync = async () => {
-    if (!user || !credential) return;
+    if (!user || !credential || credential.ownerUid !== user.uid) return;
+    const feedbackCurrent = syncFeedback.capture(user.uid);
+    if (!feedbackCurrent()) {setError('Desbloqueia o cofre antes de importar memórias.');return;}
     setBusy(true);
     setError(null);
     setStatus(null);
@@ -96,34 +109,29 @@ export const MobilePairingPage: React.FC = () => {
         credential.deviceId,
         credential.privateKeyJwk
       );
+      if (!feedbackCurrent()) return;
       setStatus(`${result.importedMemories} memórias importadas de ${result.pulledEnvelopes} envelope(s). ${result.conflicts} conflito(s).`);
     } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : 'Não foi possível importar envelopes cifrados.');
+      if (feedbackCurrent()) setError(syncError instanceof Error ? syncError.message : 'Não foi possível importar envelopes cifrados.');
     } finally {
-      setBusy(false);
+      if (feedbackCurrent()) setBusy(false);
     }
   };
 
-  const mobileToDesktopCursorKey = (deviceId: string): string => `mnemosyne_sync_cursor_mobile_to_desktop_${deviceId}`;
-
   const handleSendMobileDelta = async () => {
-    if (!user || !credential) return;
+    if (!user || !credential || credential.ownerUid !== user.uid) return;
+    const feedbackCurrent=syncFeedback.capture(user.uid);
+    if(!feedbackCurrent()){setError('Desbloqueia o cofre antes de enviar memórias.');return;}
     setBusy(true);
     setError(null);
     setStatus(null);
     try {
-      const since = Number(localStorage.getItem(mobileToDesktopCursorKey(credential.deviceId)) || '0');
-      const nextCursor = allSessions.reduce(
-        (max, session) => Math.max(max, session.updatedAt || session.timestamp || 0),
-        since
-      );
-      const envelopeId = await queueMobileMemoryDelta(user.uid, credential, allSessions, since);
-      localStorage.setItem(mobileToDesktopCursorKey(credential.deviceId), String(nextCursor));
-      setStatus(`Delta cifrado enviado para o desktop. Envelope ${envelopeId.slice(0, 8)}.`);
+      const result=await queueMobileMemoryDelta(user.uid,credential,allSessions);
+      if(!feedbackCurrent())return;setStatus(syncOutboxMessage(result));
     } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : 'Não foi possível enviar delta cifrado.');
+      if(feedbackCurrent())setError(syncError instanceof Error ? syncError.message : 'Não foi possível enviar delta cifrado.');
     } finally {
-      setBusy(false);
+      if(feedbackCurrent())setBusy(false);
     }
   };
 
@@ -184,13 +192,14 @@ export const MobilePairingPage: React.FC = () => {
           )}
 
           <button
-            onClick={handleAcceptInvite}
+            onClick={()=>void handleAcceptInvite()}
             disabled={busy || !inviteUri}
             className="flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-xs font-bold uppercase tracking-widest text-cyan-100 transition hover:bg-cyan-400/20 disabled:opacity-40"
           >
             <Lock className="h-4 w-4" />
             Aceitar convite
           </button>
+          {hasPairingRecovery&&<div className="space-y-2"><button type="button" disabled={busy} onClick={()=>void handleAcceptInvite(true)} className="min-h-11 w-full rounded-xl border border-white/20 px-4 py-3">Retomar último pedido cifrado</button><button type="button" disabled={busy} onClick={()=>void handlePairingMaintenance('cancel')} className="min-h-11 w-full rounded-xl border border-white/20 px-4 py-3">Cancelar pedido conservado</button></div>}
         </section>
 
         <section className="mt-4 space-y-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
@@ -198,7 +207,7 @@ export const MobilePairingPage: React.FC = () => {
             <div>
               <h2 className="text-sm font-bold uppercase tracking-widest text-slate-200">Envelopes cifrados</h2>
               <p className="mt-1 text-xs text-slate-400">
-                {credential ? `Dispositivo ${credential.deviceId.slice(0, 8)} ativo.` : 'Sem chave de sync guardada.'}
+                {credential ? `Credencial ${credential.deviceId.slice(0, 8)} guardada. O servidor verifica confiança e revogação em cada sincronização.` : 'Desbloqueia o cofre para abrir a credencial guardada.'}
               </p>
             </div>
             <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${
@@ -207,6 +216,7 @@ export const MobilePairingPage: React.FC = () => {
               {isNativeSecureStorage() ? 'nativo' : 'web dev'}
             </span>
           </div>
+          {legacyDigest&&credential&&<div className="rounded-xl border border-amber-400/30 p-3 text-sm"><p>A credencial antiga declara esta conta: {credential.deviceName} ({credential.deviceId}). Confirma a conta para a proteger com a cifra do cofre. O original será conservado num arquivo cifrado.</p><button type="button" disabled={busy} onClick={()=>void handlePairingMaintenance('protect')} className="mt-2 min-h-11 rounded-lg border border-white/20 px-3">Confirmar conta e proteger credencial antiga</button></div>}
 
           <button
             onClick={handleImportSync}
@@ -226,6 +236,10 @@ export const MobilePairingPage: React.FC = () => {
             Enviar delta
           </button>
         </section>
+
+        {credential?.ownerUid === user.uid && (
+          <SyncRecoveryActions uid={user.uid} deviceId={credential.deviceId} outgoing="mobile-to-desktop" />
+        )}
 
         {status && (
           <div className="mt-4 flex items-start gap-3 rounded-2xl border border-green-400/20 bg-green-400/10 p-4 text-sm text-green-100">

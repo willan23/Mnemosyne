@@ -73,12 +73,12 @@ Ja feito:
 - Streaming Ollama no editor de memoria.
 - Cancelamento real com `AbortController`.
 - Estado claro para conexao, stream ativo, modelo lento, cancelamento e falha.
-- Migracao de permissao antiga `cluster-only` para `allow-cloud`.
+- Migracao de permissao antiga `cluster-only` para `confirm-cloud` (alterado em 2026-09-24 para exigir consentimento por operação).
 - UI do AI Hub alinhada com `never-cloud`, `confirm-cloud`, `allow-cloud`.
 - AI Hub separa visualmente providers locais/backend de providers cloud.
 - Politica de falha da IA configuravel: guardar com aviso, confirmar antes de guardar ou bloquear gravacao.
 - Flow e editor respeitam a politica quando embeddings/backend configurado falham.
-- Testes automatizados cobrem default local-first, migracao `cluster-only` para `allow-cloud`, normalizacao de politica invalida, persistencia de configuracao e API keys cifradas pela mnemotecnica.
+- Testes automatizados cobrem default local-first, migracao `cluster-only` para `confirm-cloud`, rejeicao de politica invalida, persistencia de configuracao e API keys cifradas pela mnemotecnica.
 - Testes de politica de gravacao cobrem permissoes `never-cloud`, `confirm-cloud`, `allow-cloud` e falhas `save-with-warning`, `confirm-before-save`, `block-save`.
 
 Implementar:

@@ -1,0 +1,72 @@
+import * as admin from 'firebase-admin';
+import * as functions from 'firebase-functions/v1';
+import {createHash} from 'node:crypto';
+import {liveAccountInTransaction} from './accountAccess';
+import {consumeServerRateLimit} from './rateLimit';
+import {publicProfile} from './commsContacts';
+import {parseCommsP2PMutation,parseCommsP2PDescriptor,parseCommsP2PBinding,parseCommsP2PSession,parseCommsP2POutcome,parseCommsP2PSdp,parseCommsP2PIce,commsP2PMutationBytes,commsP2POfferBytes,COMMS_P2P_MAX_CANDIDATES,COMMS_P2P_SESSION_MS,type CommsP2PBinding,type CommsP2PMutation,type CommsP2PDescriptor,type CommsP2POutcome,type CommsP2PStatus,type CommsP2PSdp} from './commsP2PContract';
+if(!admin.apps.length)admin.initializeApp();
+export const COMMS_P2P_SIGNALING_ENABLED=false;
+export const COMMS_P2P_DAILY_LIMITS=Object.freeze({actorRequests:1000,actorBytes:8*1024*1024,projectRequests:10000,projectBytes:64*1024*1024,callerRooms:20,calleeRooms:20});
+export interface CommsP2PServerDeps {firestore:FirebaseFirestore.Firestore;auth:Pick<admin.auth.Auth,'getUser'>;now:()=>number}
+const defaults=():CommsP2PServerDeps=>({firestore:admin.firestore(),auth:admin.auth(),now:Date.now}),hash=(value:string)=>createHash('sha256').update(value).digest('hex'),fail=(code:functions.https.FunctionsErrorCode='failed-precondition')=>new functions.https.HttpsError(code,'P2P signaling unavailable');
+export const commsP2PBudgetId=(kind:string,uid:string|null,day:string)=>`${kind}_${uid===null?'project':hash(uid)}_${day}`;
+async function account(uid:string,deps:CommsP2PServerDeps){try{const user=await deps.auth.getUser(uid);if(user.uid!==uid||user.disabled)throw Error();}catch{throw fail('permission-denied');}}
+async function active(tx:FirebaseFirestore.Transaction,uid:string,deps:CommsP2PServerDeps){if(!await liveAccountInTransaction(tx,deps.firestore,uid))throw fail('permission-denied');}
+async function identityPair(tx:FirebaseFirestore.Transaction,input:CommsP2PBinding,deps:CommsP2PServerDeps){const db=deps.firestore,[a,ap,b,bp]=await tx.getAll(db.doc(`users/${input.callerUid}`),db.doc(`publicProfiles/${input.callerUid}`),db.doc(`users/${input.calleeUid}`),db.doc(`publicProfiles/${input.calleeUid}`));const caller=publicProfile(input.callerUid,a,ap),callee=publicProfile(input.calleeUid,b,bp);if(caller.fingerprint!==input.callerFingerprint||callee.fingerprint!==input.calleeFingerprint)throw fail('aborted');return caller.displayName;}
+function storedRoom(data:FirebaseFirestore.DocumentData|undefined,input:CommsP2PBinding,now:number):CommsP2PStatus {
+  if(!data)return'unknown';if(data.v!==2||data.callerId!==input.callerUid||data.calleeId!==input.calleeUid||data.callerFingerprint!==input.callerFingerprint||data.calleeFingerprint!==input.calleeFingerprint||data.offerDigest!==input.offerDigest||!['offer','active','closed'].includes(data.status)||!Number.isSafeInteger(data.createdAt)||data.createdAt<1||!Number.isSafeInteger(data.updatedAt)||data.updatedAt<data.createdAt||data.expiresAt!==data.createdAt+COMMS_P2P_SESSION_MS||!Number.isSafeInteger(data.callerCandidateCount)||data.callerCandidateCount<0||data.callerCandidateCount>64||!Number.isSafeInteger(data.calleeCandidateCount)||data.calleeCandidateCount<0||data.calleeCandidateCount>64)throw fail('permission-denied');
+  if(data.status==='closed'){if(data.offer!==undefined||data.answer!==undefined||data.callerCandidateCount!==0||data.calleeCandidateCount!==0)throw fail();return'closed';}
+  if(hash(commsP2POfferBytes(data.offer))!==input.offerDigest)throw fail();if(data.status==='active')parseCommsP2PSdp(data.answer,'answer');else if(data.answer!==undefined)throw fail();return now>=data.expiresAt?'expired':data.status;
+}
+export async function assertActiveCommsP2PSession(tx:FirebaseFirestore.Transaction,input:CommsP2PBinding,deps:CommsP2PServerDeps,now:number){await active(tx,input.callerUid,deps);await active(tx,input.calleeUid,deps);await identityPair(tx,input,deps);const room=(await tx.get(deps.firestore.doc(`p2pRooms/${input.roomId}`))).data();if(storedRoom(room,input,now)!=='active')throw fail();return room!;}
+function receipt(data:FirebaseFirestore.DocumentData,input:CommsP2PDescriptor,roomStatus:CommsP2PStatus):CommsP2POutcome {
+  const{signal:unused,...expected}=input as unknown as CommsP2PMutation;for(const[key,value]of Object.entries(expected))if(data[key]!==value)throw fail('permission-denied');if(data.v!==1||!['applied','cancelled'].includes(data.status))throw fail();return parseCommsP2POutcome({operationId:input.operationId,digest:input.digest,status:data.status,roomStatus,createdAt:data.createdAt,updatedAt:data.updatedAt},input);
+}
+async function budgets(tx:FirebaseFirestore.Transaction,input:CommsP2PDescriptor,now:number,bytes:number,creating:boolean,deps:CommsP2PServerDeps){
+  const day=new Date(now).toISOString().slice(0,10),kinds=creating?['actor','project','caller','callee']:['actor','project'];const rows=kinds.map(kind=>{const uid=kind==='project'?null:kind==='caller'?input.callerUid:kind==='callee'?input.calleeUid:input.actorUid;return{kind,uid,ref:deps.firestore.doc(`commsP2PBudgets/${commsP2PBudgetId(kind,uid,day)}`)};});
+  const snapshots=await tx.getAll(...rows.map(row=>row.ref));return rows.map((row,index)=>{const prior=snapshots[index].data(),room=row.kind==='caller'||row.kind==='callee';if(prior&&(prior.v!==1||prior.kind!==row.kind||prior.uid!==row.uid||prior.day!==day||!Number.isSafeInteger(prior.requests)||prior.requests<0||!Number.isSafeInteger(prior.bytes)||prior.bytes<0))throw fail();const requests=Number(prior?.requests??0)+1,size=Number(prior?.bytes??0)+(room?0:bytes),maxRequests=room?20:row.kind==='project'?10000:1000,maxBytes=row.kind==='project'?64*1024*1024:8*1024*1024;if(requests>maxRequests||size>maxBytes)throw fail('resource-exhausted');return{ref:row.ref,data:{v:1,kind:row.kind,uid:row.uid,day,requests,bytes:size,updatedAt:now}};});
+}
+async function children(tx:FirebaseFirestore.Transaction,ref:FirebaseFirestore.DocumentReference){const rows=await Promise.all(['callerCandidates','calleeCandidates'].map(name=>tx.get(ref.collection(name).limit(COMMS_P2P_MAX_CANDIDATES+1))));if(rows.some(row=>row.size>COMMS_P2P_MAX_CANDIDATES))throw fail();return rows.flatMap(row=>row.docs);}
+function close(tx:FirebaseFirestore.Transaction,ref:FirebaseFirestore.DocumentReference,data:FirebaseFirestore.DocumentData,now:number,rows:FirebaseFirestore.QueryDocumentSnapshot[]){tx.set(ref,{v:2,callerId:data.callerId,calleeId:data.calleeId,callerFingerprint:data.callerFingerprint,calleeFingerprint:data.calleeFingerprint,offerDigest:data.offerDigest,status:'closed',createdAt:data.createdAt,updatedAt:now,expiresAt:data.expiresAt,callerCandidateCount:0,calleeCandidateCount:0});for(const row of rows)tx.delete(row.ref);}
+export async function executeCommsP2PMutation(uid:string,value:unknown,mode:'apply'|'status'|'cancel',deps=defaults()):Promise<CommsP2POutcome>{
+  let request:CommsP2PMutation|null=null,input:CommsP2PDescriptor;try{if(mode==='apply'){request=parseCommsP2PMutation(value);const{signal,...base}=request;input={...base,digest:hash(commsP2PMutationBytes(request))};if(request.kind==='create'&&hash(commsP2POfferBytes(signal))!==input.offerDigest)throw Error();}else if(mode==='status'||mode==='cancel')input=parseCommsP2PDescriptor(value);else throw Error();}catch{throw fail('invalid-argument');}
+  if(input.actorUid!==uid)throw fail('permission-denied');await account(uid,deps);const other=uid===input.callerUid?input.calleeUid:input.callerUid;if(mode==='apply'&&input.kind!=='close')await account(other,deps);const now=deps.now();if(!Number.isSafeInteger(now)||now<1)throw fail();
+  const db=deps.firestore,ref=db.doc(`p2pRooms/${input.roomId}`),receiptRef=db.doc(`commsP2PRequests/${input.operationId}`);
+  return db.runTransaction(async tx=>{
+    await active(tx,uid,deps);const prior=await tx.get(receiptRef),room=await tx.get(ref),data=room.data(),state=storedRoom(data,input,now),revoked=(await tx.get(db.doc(`accountDeletions/${other}`))).exists;
+    const unknown:CommsP2POutcome={operationId:input.operationId,digest:input.digest,status:'unknown',roomStatus:revoked?'revoked':state,createdAt:null,updatedAt:null};const known=prior.exists?receipt(prior.data()!,input,revoked?'revoked':state):null;
+    if(mode==='status')return known??(revoked?{...unknown,status:'revoked'}:unknown);
+    if(!known&&revoked){if(mode==='apply')throw fail('permission-denied');return{...unknown,status:'revoked'};}
+    if(mode==='apply'&&known){if(known.status==='cancelled')throw fail();return known;}if(mode==='cancel'&&known?.status==='cancelled'&&(state==='closed'||state==='unknown'))return known;
+    if(data&&now<data.updatedAt||known?.updatedAt!==null&&known?.updatedAt!==undefined&&now<known.updatedAt)throw fail();
+    if(mode==='cancel'||input.kind==='close'){
+      if(!data&&input.kind!=='create'&&mode==='apply')throw fail();const nested=data&&state!=='closed'?await children(tx,ref):[];const admission=!known?await budgets(tx,input,now,0,false,deps):[];
+      const outcome={...unknown,status:mode==='cancel'?'cancelled' as const:'applied' as const,roomStatus:data?'closed' as const:'unknown' as const,createdAt:known?.createdAt??now,updatedAt:now};
+      if(data&&state!=='closed')close(tx,ref,data,now,nested);tx.set(receiptRef,{v:1,...input,status:outcome.status,createdAt:outcome.createdAt,updatedAt:now});for(const row of admission)tx.set(row.ref,row.data);return outcome;
+    }
+    if(!request)throw fail();await active(tx,other,deps);if(request.kind!=='create'&&(state==='unknown'||state==='closed'||state==='expired'))throw fail();
+    let candidateRef:FirebaseFirestore.DocumentReference|null=null,answer:CommsP2PSdp|null=null;const label=await identityPair(tx,input,deps);
+    if(request.kind==='create'){
+      if(data)throw fail('already-exists');
+    }else if(request.kind==='answer'){answer=parseCommsP2PSdp(request.signal,'answer');if(state==='active'&&JSON.stringify(answer)!==JSON.stringify(data!.answer))throw fail('aborted');}
+    else if(request.kind==='candidate'){
+      const side=uid===input.callerUid?'caller':'callee';if(side==='callee'&&state!=='active')throw fail();if(data![`${side}CandidateCount`]>=COMMS_P2P_MAX_CANDIDATES)throw fail('resource-exhausted');candidateRef=ref.collection(`${side}Candidates`).doc(input.operationId);if((await tx.get(candidateRef)).exists)throw fail('already-exists');
+    }
+    const admission=await budgets(tx,input,now,Buffer.byteLength(commsP2PMutationBytes(request),'utf8'),request.kind==='create',deps);
+    if(request.kind==='create')tx.create(ref,{v:2,callerId:input.callerUid,calleeId:input.calleeUid,callerFingerprint:input.callerFingerprint,calleeFingerprint:input.calleeFingerprint,offerDigest:input.offerDigest,callerLabel:label,status:'offer',offer:request.signal,createdAt:now,updatedAt:now,expiresAt:now+COMMS_P2P_SESSION_MS,callerCandidateCount:0,calleeCandidateCount:0});
+    else if(request.kind==='answer')tx.update(ref,{answer,status:'active',updatedAt:now});
+    else if(candidateRef){const side=uid===input.callerUid?'caller':'callee';tx.create(candidateRef,{v:2,uid,candidate:request.signal,digest:input.digest,createdAt:now});tx.update(ref,{[`${side}CandidateCount`]:data![`${side}CandidateCount`]+1,updatedAt:now});}
+    const outcome={...unknown,status:'applied' as const,roomStatus:request.kind==='create'?'offer' as const:request.kind==='answer'?'active' as const:state,createdAt:now,updatedAt:now};tx.create(receiptRef,{v:1,...input,status:'applied',createdAt:now,updatedAt:now});for(const row of admission)tx.set(row.ref,row.data);return outcome;
+  });
+}
+export async function executeReadCommsP2P(uid:string,value:unknown,deps=defaults()){
+  let input;try{input=parseCommsP2PBinding(value);}catch{throw fail('invalid-argument');}if(input.actorUid!==uid)throw fail('permission-denied');await account(uid,deps);const other=uid===input.callerUid?input.calleeUid:input.callerUid;await account(other,deps);const now=deps.now();if(!Number.isSafeInteger(now)||now<1)throw fail();
+  return deps.firestore.runTransaction(async tx=>{
+    await active(tx,uid,deps);await active(tx,other,deps);const ref=deps.firestore.doc(`p2pRooms/${input.roomId}`),data=(await tx.get(ref)).data(),status=storedRoom(data,input,now),opened=status==='offer'||status==='active';let candidates:{id:string;uid:string;candidate:ReturnType<typeof parseCommsP2PIce>}[]=[];
+    if(opened){await identityPair(tx,input,deps);const side=uid===input.callerUid?'callee':'caller',rows=await tx.get(ref.collection(`${side}Candidates`).limit(COMMS_P2P_MAX_CANDIDATES+1));if(rows.size>64||rows.size!==data![`${side}CandidateCount`])throw fail();candidates=rows.docs.map(row=>{const value=row.data();if(value.v!==2||value.uid!==other)throw fail();const candidate=parseCommsP2PIce(value.candidate),digest=hash(commsP2PMutationBytes({...input,actorUid:other,operationId:row.id,kind:'candidate',signal:candidate}));if(value.digest!==digest||!Number.isSafeInteger(value.createdAt)||value.createdAt<data!.createdAt||value.createdAt>=data!.expiresAt)throw fail();return{id:row.id,uid:other,candidate};});}
+    return parseCommsP2PSession({...input,status,createdAt:data?.createdAt??null,updatedAt:data?.updatedAt??null,expiresAt:data?.expiresAt??null,offer:opened?data!.offer:null,answer:status==='active'?data!.answer:null,candidates},input);
+  });
+}
+function callable(mode:'apply'|'status'|'cancel'|'read'){return functions.region('europe-west1').https.onCall(async(value,context)=>{const uid=context.auth?.uid;if(!uid)throw fail('unauthenticated');let actor;try{actor=(mode==='apply'?parseCommsP2PMutation(value):mode==='read'?parseCommsP2PBinding(value):parseCommsP2PDescriptor(value)).actorUid;}catch{throw fail('invalid-argument');}if(actor!==uid)throw fail('permission-denied');if(mode==='apply'&&!COMMS_P2P_SIGNALING_ENABLED)throw fail();try{if(!(await consumeServerRateLimit(`uid:${uid}`,{bucket:'comms-p2p-'+mode,max:120,windowMs:60000})).allowed||!(await consumeServerRateLimit('project:comms-p2p',{bucket:'comms-p2p-'+mode+'-project',max:1200,windowMs:60000})).allowed)throw fail('resource-exhausted');return mode==='read'?await executeReadCommsP2P(uid,value):await executeCommsP2PMutation(uid,value,mode);}catch(error){if(error instanceof functions.https.HttpsError)throw error;throw fail();}});}
+export const mutateCommsP2P=callable('apply'),getCommsP2PMutationStatus=callable('status'),cancelCommsP2PMutation=callable('cancel'),readCommsP2PSession=callable('read');

@@ -1,412 +1,101 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, Link as LinkIcon, Download, Copy, Check, Clock, Shield, Radio, AlertTriangle, QrCode } from 'lucide-react';
+import React, {useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {Link} from 'react-router-dom';
 import QRCode from 'qrcode';
-import { db, auth } from '../firebase';
-import { collection, addDoc } from 'firebase/firestore';
-import { downloadMemory } from '../utils/export';
-import { encryptSharePayload } from '../utils/encryptedShare';
-import { FAIR_USE } from '../config/fairUse';
-import { buildCapsuleDeepLink } from '../utils/deepLinks';
-import { encodeCapsulePack } from '../services/capsuleService';
-import type { SessionData } from '../hooks/useSessions';
-
-interface ShareModalProps {
-    session: SessionData | null;
-    /** Memórias ligadas / extras para pack multi-memória */
-    relatedSessions?: SessionData[];
-    onClose: () => void;
-    onOpenComms?: () => void;
+import {auth} from '../firebase';
+import {CAPSULE_PUBLICATION_ENABLED} from '../config/releaseGates';
+import {capsulePublicationService,type PreparedCapsulePublication} from '../services/capsulePublicationService';
+import {isMemoryCryptoReady} from '../services/memoryCrypto';
+import {useSyncFeedback} from '../hooks/useSyncFeedback';
+import {buildCapsuleDeepLink} from '../utils/deepLinks';
+import {downloadMemory} from '../utils/export';
+import type {SessionData} from '../hooks/useSessions';
+interface ShareModalProps {session:SessionData|null;relatedSessions?:SessionData[];onClose:()=>void;onOpenComms?:()=>void}
+function containKeys(event:React.KeyboardEvent<HTMLDialogElement>){
+  event.stopPropagation();if(event.key!=='Tab'||event.defaultPrevented||event.ctrlKey||event.metaKey||event.altKey)return;
+  const controls=Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button,input,textarea,select,a[href],[tabindex]'))
+    .filter(node=>node.tabIndex>=0&&!node.matches(':disabled')&&!node.closest('[hidden],[inert]')&&node.getClientRects().length>0&&getComputedStyle(node).visibility!=='hidden');
+  const first=controls[0],last=controls[controls.length-1],active=document.activeElement;
+  if(!first||!last){event.preventDefault();return;}
+  if(event.shiftKey?active===first||!controls.includes(active as HTMLElement):active===last||!controls.includes(active as HTMLElement)){
+    event.preventDefault();(event.shiftKey?last:first).focus();
+  }
 }
-
-export const ShareModal: React.FC<ShareModalProps> = ({
-    session,
-    relatedSessions = [],
-    onClose,
-    onOpenComms,
-}) => {
-    const [shareLink, setShareLink] = useState<string | null>(null);
-    const [isGenerating, setIsGenerating] = useState(false);
-    const [copied, setCopied] = useState(false);
-    const [expirationDays, setExpirationDays] = useState<number>(FAIR_USE.shareLinkDefaultDays);
-    const [passphrase, setPassphrase] = useState('');
-    const [error, setError] = useState<string | null>(null);
-    const [embedPassInLink, setEmbedPassInLink] = useState(false);
-    const [savedPassphrase, setSavedPassphrase] = useState('');
-    const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-    const [includeLinked, setIncludeLinked] = useState(false);
-    const [packCount, setPackCount] = useState(1);
-
-    useEffect(() => {
-        if (!shareLink) {
-            setQrDataUrl(null);
-            return;
-        }
-        let cancelled = false;
-        QRCode.toDataURL(shareLink, {
-            width: 220,
-            margin: 2,
-            color: { dark: '#e2e8f0', light: '#0b1120' },
-            errorCorrectionLevel: 'M',
-        })
-            .then((url) => {
-                if (!cancelled) setQrDataUrl(url);
-            })
-            .catch(() => {
-                if (!cancelled) setQrDataUrl(null);
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [shareLink]);
-
-    const downloadQr = () => {
-        if (!qrDataUrl) return;
-        const a = document.createElement('a');
-        a.href = qrDataUrl;
-        a.download = `mnemosyne-capsula-qr.png`;
-        a.click();
-    };
-
-    const generateEncryptedCapsule = async () => {
-        if (!session) return;
-        const user = auth.currentUser;
-        if (!user) {
-            setError('Precisas de estar autenticado para criar uma cápsula.');
-            return;
-        }
-        if (passphrase.trim().length < 8) {
-            setError('Passphrase com pelo menos 8 caracteres. Partilha-a fora do link (voz, Signal, etc.).');
-            return;
-        }
-
-        setIsGenerating(true);
-        setError(null);
-
-        try {
-            const days = Math.min(Math.max(expirationDays, 1), FAIR_USE.shareLinkMaxDays);
-            const expiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
-            const pass = passphrase.trim();
-
-            const linked = includeLinked
-                ? relatedSessions
-                    .filter((s) => s.id !== session.id && s.text?.trim())
-                    .slice(0, 12)
-                : [];
-
-            const items = [
-                {
-                    title: session.title,
-                    text: session.text,
-                    tags: session.tags,
-                },
-                ...linked.map((s) => ({
-                    title: s.title,
-                    text: s.text,
-                    tags: s.tags,
-                })),
-            ];
-
-            const plainPayload = items.length > 1
-                ? encodeCapsulePack(items)
-                : session.text;
-
-            const ciphertext = await encryptSharePayload(plainPayload, pass);
-            const itemCount = items.length;
-            setPackCount(itemCount);
-
-            const shareDoc = await addDoc(collection(db, 'shares'), {
-                sessionId: session.id,
-                encrypted: true,
-                ciphertext,
-                titleHint: (session.title || 'Memória').slice(0, 48),
-                pack: itemCount > 1,
-                itemCount,
-                createdAt: Date.now(),
-                expiresAt,
-                views: 0,
-                importCount: 0,
-                uid: user.uid,
-            });
-
-            setSavedPassphrase(pass);
-            const link = buildCapsuleDeepLink(shareDoc.id, embedPassInLink ? pass : undefined);
-            setShareLink(link);
-        } catch (e) {
-            console.error('Erro ao gerar cápsula cifrada:', e);
-            setError(e instanceof Error ? e.message : 'Erro ao gerar cápsula cifrada.');
-        } finally {
-            setIsGenerating(false);
-        }
-    };
-
-    const copyToClipboard = async (text: string) => {
-        try {
-            await navigator.clipboard.writeText(text);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        } catch (e) {
-            console.error('Erro ao copiar:', e);
-        }
-    };
-
-    return (
-        <AnimatePresence>
-            {session && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-                    <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        onClick={onClose}
-                        className="absolute inset-0 bg-black/80 backdrop-blur-md"
-                    />
-
-                    <motion.div
-                        initial={{ scale: 0.94, opacity: 0, y: 16 }}
-                        animate={{ scale: 1, opacity: 1, y: 0 }}
-                        exit={{ scale: 0.96, opacity: 0, y: 10 }}
-                        className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#07101f]/95 shadow-2xl"
-                    >
-                        <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.03] p-5">
-                            <div className="flex items-center gap-3">
-                                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-500/20">
-                                    <Shield className="h-5 w-5 text-violet-300" />
-                                </div>
-                                <div>
-                                    <h2 className="text-lg font-semibold text-white">Partilhar memória</h2>
-                                    <p className="text-[10px] uppercase tracking-widest text-slate-500">
-                                        Zero-Knowledge first
-                                    </p>
-                                </div>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={onClose}
-                                className="rounded-full p-2 text-slate-400 transition hover:bg-white/10 hover:text-white"
-                            >
-                                <X className="h-5 w-5" />
-                            </button>
-                        </div>
-
-                        <div className="space-y-4 p-5">
-                            <div className="flex gap-3 rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-100/90">
-                                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
-                                <p>
-                                    Links públicos com texto em claro foram desativados. Usa cápsula cifrada
-                                    (passphrase fora do link) ou <strong>Comms E2E</strong> para outro utilizador.
-                                </p>
-                            </div>
-
-                            {/* Comms */}
-                            {onOpenComms && (
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        onClose();
-                                        onOpenComms();
-                                    }}
-                                    className="flex w-full items-center gap-3 rounded-xl border border-indigo-400/25 bg-indigo-500/10 p-4 text-left transition hover:bg-indigo-500/15"
-                                >
-                                    <Radio className="h-5 w-5 text-indigo-300" />
-                                    <div>
-                                        <h3 className="text-sm font-semibold text-indigo-100">Enviar por Comms (E2E)</h3>
-                                        <p className="text-[11px] text-slate-400">
-                                            Destinatário Mnemosyne · envelope AES + RSA
-                                        </p>
-                                    </div>
-                                </button>
-                            )}
-
-                            {/* Encrypted capsule */}
-                            <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-4">
-                                <div className="flex items-center gap-3">
-                                    <LinkIcon className="h-5 w-5 text-violet-300" />
-                                    <div className="flex-1">
-                                        <h3 className="text-sm font-semibold text-violet-100">Cápsula cifrada (link)</h3>
-                                        <p className="text-[11px] text-slate-500">
-                                            O servidor só guarda ciphertext. A passphrase não vai no URL.
-                                        </p>
-                                    </div>
-                                </div>
-
-                                {!shareLink ? (
-                                    <>
-                                        <label className="block space-y-1.5">
-                                            <span className="text-[11px] uppercase tracking-wider text-slate-500">
-                                                Passphrase (mín. 8)
-                                            </span>
-                                            <input
-                                                type="password"
-                                                value={passphrase}
-                                                onChange={(e) => setPassphrase(e.target.value)}
-                                                placeholder="Partilha esta chave por outro canal"
-                                                className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white outline-none focus:border-violet-400/50"
-                                                autoComplete="new-password"
-                                            />
-                                        </label>
-                                        <div className="flex items-center gap-2">
-                                            <Clock className="h-4 w-4 text-slate-500" />
-                                            <span className="text-xs text-slate-400">Expira em:</span>
-                                            <select
-                                                value={expirationDays}
-                                                onChange={(e) => setExpirationDays(Number(e.target.value))}
-                                                className="rounded border border-white/10 bg-white/5 px-2 py-1 text-xs text-violet-200"
-                                            >
-                                                <option value={1}>1 dia</option>
-                                                <option value={7}>7 dias</option>
-                                                <option value={30}>30 dias</option>
-                                            </select>
-                                        </div>
-                                        {relatedSessions.filter((s) => s.id !== session.id && s.text?.trim()).length > 0 && (
-                                            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-cyan-400/15 bg-cyan-500/[0.06] p-2.5">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={includeLinked}
-                                                    onChange={(e) => setIncludeLinked(e.target.checked)}
-                                                    className="mt-0.5"
-                                                />
-                                                <span className="text-[11px] leading-relaxed text-slate-300">
-                                                    Pack multi-memória: incluir até{' '}
-                                                    {Math.min(
-                                                        12,
-                                                        relatedSessions.filter((s) => s.id !== session.id && s.text?.trim()).length,
-                                                    )}{' '}
-                                                    memória(s) ligada(s) nesta cápsula.
-                                                </span>
-                                            </label>
-                                        )}
-                                        <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-white/5 bg-black/20 p-2.5">
-                                            <input
-                                                type="checkbox"
-                                                checked={embedPassInLink}
-                                                onChange={(e) => setEmbedPassInLink(e.target.checked)}
-                                                className="mt-0.5"
-                                            />
-                                            <span className="text-[11px] leading-relaxed text-slate-400">
-                                                Incluir passphrase no fragmento do link (#k=…).
-                                                Não vai ao servidor, mas pode ficar no histórico do browser — menos seguro.
-                                            </span>
-                                        </label>
-                                        {error && (
-                                            <p className="text-xs text-rose-300">{error}</p>
-                                        )}
-                                        <button
-                                            type="button"
-                                            onClick={() => void generateEncryptedCapsule()}
-                                            disabled={isGenerating}
-                                            className="mnem-btn-primary w-full justify-center disabled:opacity-50"
-                                            style={{ borderRadius: '0.75rem' }}
-                                        >
-                                            {isGenerating ? 'A cifrar…' : 'Gerar cápsula cifrada'}
-                                        </button>
-                                    </>
-                                ) : (
-                                    <div className="space-y-2">
-                                        <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/40 p-2">
-                                            <input
-                                                type="text"
-                                                value={shareLink}
-                                                readOnly
-                                                className="min-w-0 flex-1 border-none bg-transparent text-xs text-violet-200 outline-none"
-                                            />
-                                            <button
-                                                type="button"
-                                                onClick={() => void copyToClipboard(shareLink)}
-                                                className="rounded p-2 hover:bg-white/10"
-                                            >
-                                                {copied ? (
-                                                    <Check className="h-4 w-4 text-emerald-400" />
-                                                ) : (
-                                                    <Copy className="h-4 w-4 text-slate-400" />
-                                                )}
-                                            </button>
-                                        </div>
-                                        <p className="text-[11px] leading-relaxed text-slate-500">
-                                            {packCount > 1
-                                                ? `Pack com ${packCount} memórias cifradas num só link.`
-                                                : embedPassInLink
-                                                ? 'Link com chave no fragmento. Qualquer pessoa com o URL completo pode ler.'
-                                                : 'Envia o link e a passphrase em canais separados.'}
-                                        </p>
-                                        {!embedPassInLink && savedPassphrase && (
-                                            <button
-                                                type="button"
-                                                onClick={() => void copyToClipboard(savedPassphrase)}
-                                                className="text-[11px] font-medium text-violet-300 underline-offset-2 hover:underline"
-                                            >
-                                                Copiar passphrase
-                                            </button>
-                                        )}
-
-                                        {qrDataUrl && (
-                                            <div className="mt-3 flex flex-col items-center gap-3 rounded-xl border border-white/10 bg-black/30 p-4">
-                                                <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
-                                                    <QrCode className="h-3.5 w-3.5" />
-                                                    QR da cápsula
-                                                </div>
-                                                <img
-                                                    src={qrDataUrl}
-                                                    alt="QR code da cápsula cifrada"
-                                                    className="h-[180px] w-[180px] rounded-xl border border-white/10"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={downloadQr}
-                                                    className="text-[11px] font-medium text-cyan-300 underline-offset-2 hover:underline"
-                                                >
-                                                    Descarregar QR (PNG)
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Copy local */}
-                            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] p-4">
-                                <div className="flex items-center gap-3">
-                                    <Copy className="h-5 w-5 text-purple-300" />
-                                    <div>
-                                        <h3 className="text-sm font-semibold text-purple-100">Copiar texto local</h3>
-                                        <p className="text-[11px] text-slate-500">Só no teu dispositivo</p>
-                                    </div>
-                                </div>
-                                <button
-                                    type="button"
-                                    onClick={() => void copyToClipboard(session.text)}
-                                    className="rounded-lg bg-purple-600/20 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-purple-200 hover:bg-purple-600/30"
-                                >
-                                    {copied ? 'Copiado' : 'Copiar'}
-                                </button>
-                            </div>
-
-                            {/* Export */}
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-                                <div className="mb-3 flex items-center gap-3">
-                                    <Download className="h-5 w-5 text-emerald-300" />
-                                    <div>
-                                        <h3 className="text-sm font-semibold text-emerald-100">Exportar ficheiro</h3>
-                                        <p className="text-[11px] text-slate-500">Download local</p>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-3 gap-2">
-                                    {(['txt', 'md', 'json'] as const).map((fmt) => (
-                                        <button
-                                            key={fmt}
-                                            type="button"
-                                            onClick={() => downloadMemory(session, fmt)}
-                                            className="rounded-lg bg-emerald-600/15 py-2 text-xs font-bold uppercase tracking-wide text-emerald-200 hover:bg-emerald-600/25"
-                                        >
-                                            {fmt}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                    </motion.div>
-                </div>
-            )}
-        </AnimatePresence>
-    );
-};
+export function ShareModal(props:ShareModalProps){
+  const feedback=useSyncFeedback(Boolean(props.session)),uid=auth.currentUser?.uid,session=props.session;
+  if(!uid||!session||session.encLocked||session.teamScopeAmbiguous||!isMemoryCryptoReady()||!session.teamId&&session.uid!==uid)return null;
+  const scope=JSON.stringify([uid,session.id,session.teamId??null,session.updatedAt,feedback.epoch]);
+  return <ShareDialog key={scope} {...props} session={session} capture={()=>feedback.capture(uid)}/>;
+}
+function ShareDialog({session,relatedSessions=[],onClose,onOpenComms,capture}:Omit<ShareModalProps,'session'>&{session:SessionData;capture:()=>()=>boolean}){
+  const dialog=useRef<HTMLDialogElement>(null),alive=useRef(false),busyRef=useRef(false),prepared=useRef<PreparedCapsulePublication|null>(null);
+  const presentation=useRef<{pass:string;embed:boolean}|null>(null);
+  const [busy,setBusy]=useState(false),[pending,setPending]=useState(false),[passphrase,setPassphrase]=useState(''),[days,setDays]=useState(7);
+  const [linked,setLinked]=useState(false),[embed,setEmbed]=useState(false),[link,setLink]=useState(''),[savedPass,setSavedPass]=useState('');
+  const [message,setMessage]=useState(''),[qr,setQr]=useState(''),[copied,setCopied]=useState(false);
+  const related=relatedSessions.filter(row=>row.id!==session.id&&!row.encLocked&&!row.teamScopeAmbiguous&&
+    (row.teamId??null)===(session.teamId??null)&&(session.teamId||row.uid===session.uid)&&row.text.trim()).slice(0,12);
+  useLayoutEffect(()=>{alive.current=true;const node=dialog.current;node?.showModal();return()=>{alive.current=false;prepared.current?.dispose();node?.close();};},[]);
+  useEffect(()=>{let active=true;setQr('');if(link)void QRCode.toDataURL(link,{width:220,margin:2,errorCorrectionLevel:'M'}).then(value=>{if(active)setQr(value);}).catch(()=>undefined);return()=>{active=false;};},[link]);
+  const close=()=>{alive.current=false;prepared.current?.dispose();onClose();};
+  const copy=async(value:string)=>{const current=capture();if(!alive.current||!current())return;try{await navigator.clipboard.writeText(value);if(alive.current&&current())setCopied(true);}catch{if(alive.current&&current())setMessage('Não foi possível copiar.');}};
+  const send=async(mode:'publish'|'status'|'cancel')=>{
+    if(busyRef.current)return;busyRef.current=true;setBusy(true);setMessage('');
+    const accountCurrent=capture(),current=()=>alive.current&&accountCurrent();
+    try{
+      if(!prepared.current){
+        if(mode!=='publish')return;
+        const display={pass:passphrase.trim(),embed};presentation.current=display;
+        const command=await capsulePublicationService.prepare([session,...(linked?related:[])],display.pass,days,current);
+        if(!current()){command.dispose();return;}prepared.current=command;setPending(true);
+      }
+      const result=await prepared.current.send(mode);if(!current())return;
+      if(result.status==='committed'){
+        const display=presentation.current;if(!display)return;
+        setSavedPass(display.pass);setLink(buildCapsuleDeepLink(result.publicationId,display.embed?display.pass:undefined));
+        setMessage(mode==='cancel'?'A publicação já estava confirmada. Podes retirar a cápsula na gestão.':'Cápsula confirmada.');
+      }else if(['cancelled','withdrawn','expired'].includes(result.status)){
+        setMessage(result.status==='cancelled'?'Pedido cancelado.':result.status==='withdrawn'?'A cápsula foi retirada.':'O pedido expirou. Podes iniciar uma nova cápsula.');
+        prepared.current.dispose();prepared.current=null;presentation.current=null;setPending(false);setLink('');setSavedPass('');
+      }else setMessage('Ainda não há confirmação. Podes retomar o mesmo pedido ou cancelá-lo.');
+    }catch{if(current())setMessage('Não foi possível confirmar. Retoma o mesmo pedido ou consulta a gestão de cápsulas.');}
+    finally{busyRef.current=false;if(current())setBusy(false);}
+  };
+  const button='rounded-lg border border-white/15 px-3 py-2 text-sm disabled:opacity-40';
+  return <dialog ref={dialog} aria-modal="true" aria-labelledby="capsule-dialog-title" onCancel={event=>{event.preventDefault();event.stopPropagation();close();}}
+    onKeyDown={containKeys} onClick={event=>{if(event.target===dialog.current)close();}}
+    className="fixed inset-0 m-auto max-h-[92dvh] w-[min(36rem,94vw)] overflow-y-auto rounded-2xl border border-white/15 bg-[#07101f] p-0 text-slate-100 shadow-2xl backdrop:bg-black/80">
+    <div className="space-y-5 p-6">
+      <header className="flex items-center justify-between gap-4"><h2 id="capsule-dialog-title" className="text-xl font-semibold">Partilhar memória</h2><button type="button" onClick={close} aria-label="Fechar partilha" className={button}>Fechar</button></header>
+      <p className="text-sm text-slate-300">A cápsula é uma cópia cifrada para partilha externa. Guarda a passphrase: não é possível recuperá-la. Retirar o link não apaga cópias já descarregadas ou importadas.</p>
+      {session.teamId&&<p className="text-sm text-amber-200">Esta memória pertence a uma equipa. Uma cópia partilhada fora da equipa não acompanha futuras alterações de membros ou chaves.</p>}
+      {onOpenComms&&<button type="button" className={button} onClick={()=>{close();onOpenComms();}}>Enviar por Comms E2E</button>}
+      <section aria-label="Cápsula cifrada" className="space-y-4 rounded-xl border border-white/10 p-4">
+        {!link?<>
+          {!CAPSULE_PUBLICATION_ENABLED&&<p className="text-sm text-amber-200">A criação de novos links está temporariamente indisponível. Podes gerir cápsulas existentes ou exportar a memória localmente.</p>}
+          <label className="block space-y-1"><span>Passphrase, pelo menos 8 caracteres</span><input type="password" autoComplete="new-password" maxLength={256} value={passphrase} disabled={busy||pending}
+            onChange={event=>setPassphrase(event.target.value)} className="w-full rounded-lg border border-white/15 bg-black/30 p-2"/></label>
+          <label className="flex items-center gap-3"><span>Expira em</span><select aria-label="Prazo da cápsula" value={days} disabled={busy||pending} onChange={event=>setDays(Number(event.target.value))}
+            className="rounded-lg bg-slate-800 p-2"><option value={1}>1 dia</option><option value={7}>7 dias</option><option value={30}>30 dias</option></select></label>
+          {related.length>0&&<label className="flex items-start gap-2"><input type="checkbox" checked={linked} disabled={busy||pending} onChange={event=>setLinked(event.target.checked)}/><span>Incluir {related.length} memória(s) ligada(s) do mesmo cofre.</span></label>}
+          <label className="flex items-start gap-2"><input type="checkbox" checked={embed} disabled={busy||pending} onChange={event=>setEmbed(event.target.checked)}/><span>Incluir a passphrase no fragmento do link. Qualquer pessoa com o URL completo poderá ler a cópia; o URL pode ficar no histórico do navegador.</span></label>
+          <button type="button" disabled={busy||!CAPSULE_PUBLICATION_ENABLED} onClick={()=>void send('publish')} className={button}>{busy?'A confirmar…':pending?'Retomar publicação':'Gerar cápsula cifrada'}</button>
+        </>:<>
+          <label className="block space-y-1"><span>Link da cápsula confirmada</span><input readOnly value={link} className="w-full rounded-lg bg-black/30 p-2 text-sm"/></label>
+          <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={()=>void copy(link)}>{copied?'Copiado':'Copiar link'}</button>
+            <button type="button" className={button} onClick={()=>void copy(savedPass)}>Copiar passphrase</button></div>
+          <p className="text-sm text-slate-300">{presentation.current?.embed?'O link contém a chave de leitura.':'Envia o link e a passphrase em canais separados.'}</p>
+          {qr&&<figure className="space-y-2"><img src={qr} width={180} height={180} alt="QR da cápsula cifrada"/>
+            <button type="button" className={button} onClick={()=>{if(!alive.current||!capture()())return;const anchor=document.createElement('a');anchor.href=qr;anchor.download='mnemosyne-capsula-qr.png';anchor.click();}}>Descarregar QR</button></figure>}
+        </>}
+        {pending&&!link&&<div className="flex flex-wrap gap-2"><button type="button" disabled={busy} className={button} onClick={()=>void send('status')}>Consultar confirmação</button>
+          <button type="button" disabled={busy} className={button} onClick={()=>void send('cancel')}>Cancelar pedido</button></div>}
+        {message&&<p role="status" className="text-sm text-cyan-100">{message}</p>}
+        <Link to={'/capsules'+(prepared.current?'#share='+encodeURIComponent(prepared.current.request.publicationId):'')} onClick={close} className="inline-block text-cyan-200 underline">Gerir e retirar cápsulas</Link>
+      </section>
+      <section aria-label="Exportar localmente" className="space-y-3 border-t border-white/10 pt-4"><h3 className="font-medium">Cópia local</h3><div className="flex flex-wrap gap-2">
+        <button type="button" className={button} onClick={()=>void copy(session.text)}>Copiar texto</button>
+        {(['txt','md','json'] as const).map(format=><button type="button" key={format} className={button} onClick={()=>{if(alive.current&&capture()())downloadMemory(session,format);}}>Exportar {format.toUpperCase()}</button>)}
+      </div></section>
+    </div>
+  </dialog>;
+}

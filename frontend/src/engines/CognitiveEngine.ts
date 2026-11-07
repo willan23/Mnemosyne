@@ -1,8 +1,10 @@
 import { embeddingService } from '../services/embeddingService';
+import { CURRENT_EMBEDDING_SPACE, sameEmbeddingSpace } from '../services/embeddingModel';
 import type { MemoryObject, CelestialType, CognitiveGraph, GraphEdge, GraphNode } from '../types/universe';
+import { selectSemanticWriteNeighbors, withSemanticWriteScope, type SemanticWriteOptions, type SemanticWriteSelection } from '../services/semanticWriteClient';
+import { SEMANTIC_WRITE_LIMITS, type SemanticWriteCandidate } from '../services/semanticWriteProtocol';
 
-const SIMILARITY_THRESHOLD = 0.55;
-const MAX_CONNECTIONS = 7;
+const SIMILARITY_THRESHOLD = SEMANTIC_WRITE_LIMITS.threshold;
 const WEAK_LINK_THRESHOLD = 0.32;
 const REPAIR_LINK_THRESHOLD = 0.4;
 const DUPLICATE_THRESHOLD = 0.96;
@@ -33,28 +35,38 @@ export class CognitiveEngine {
 
   async processMemory(
     text: string,
-    existingMemories: MemoryObject[]
+    existingMemories: Iterable<SemanticWriteCandidate>,
+    options: SemanticWriteOptions = {},
   ): Promise<{
     embedding: number[];
+    embeddingModel: string;
     celestialType: CelestialType;
     connections: string[];
     semanticClusterId: string;
     position: [number, number, number];
     importance: number;
   }> {
-    const embedding = await embeddingService.getEmbedding(text);
-    const celestialType = this.classifyCelestialType(text, embedding, existingMemories);
-    const { connections, importance } = await this.findConnections(embedding, existingMemories);
-    const semanticClusterId = this.deriveSemanticClusterId(text, connections, existingMemories);
-    const position = this.computeSemanticPosition(embedding, existingMemories, connections);
-
-    return { embedding, celestialType, connections, semanticClusterId, position, importance };
+    return withSemanticWriteScope(options, async scope => {
+      const embedding = await embeddingService.getEmbedding(text); scope.assertCurrent();
+      const selection = await selectSemanticWriteNeighbors(embedding, existingMemories, { ...options, ...scope });
+      scope.assertCurrent();
+      const celestialType = this.classifyCelestialType(text, selection.count);
+      const { connections, importance } = this.connectionResult(selection);
+      // Only seven selected metadata records are needed for the cluster and centroid.
+      const connected = [...selection.neighbors].sort((a, b) => a.ordinal - b.ordinal).map(({ candidate }) => {
+        const position = candidate.position ?? [0, 0, 0];
+        if (!Array.isArray(position) || position.length !== 3 || !position.every(Number.isFinite)) throw new Error('semantic_write_unavailable');
+        return { id: candidate.id, position: position as [number, number, number], semanticClusterId: candidate.semanticClusterId };
+      });
+      const semanticClusterId = this.deriveSemanticClusterId(text, connections, connected);
+      const position = this.computeSemanticPosition(embedding, connected, connections, selection.count);
+      return { embedding, embeddingModel: CURRENT_EMBEDDING_SPACE, celestialType, connections, semanticClusterId, position, importance };
+    });
   }
 
   private classifyCelestialType(
     text: string,
-    _embedding: number[],
-    existing: MemoryObject[]
+    existingCount: number,
   ): CelestialType {
     const wordCount = text.trim().split(/\s+/).length;
     const charCount = text.length;
@@ -63,9 +75,9 @@ export class CognitiveEngine {
     const isPersonal = /\b(i |my |me |myself|we |our )\b/i.test(text);
     const isFactual = /\b(is|are|was|were|will be|defined as|known as)\b/i.test(text);
     const isComplex = wordCount > 100;
-    const isPivotal = existing.length === 0 || (existing.length > 0 && charCount > 300);
+    const isPivotal = existingCount === 0 || (existingCount > 0 && charCount > 300);
 
-    if (existing.length === 0) return 'sun';
+    if (existingCount === 0) return 'sun';
     if (isPivotal && isPhilosophical) return 'sun';
     if (isComplex && isFactual) return 'nebula';
     if (hasQuestions && isPhilosophical) return 'black_hole';
@@ -77,29 +89,17 @@ export class CognitiveEngine {
 
   async findConnections(
     embedding: number[],
-    existing: MemoryObject[]
+    existing: Iterable<SemanticWriteCandidate>,
+    options: SemanticWriteOptions = {},
   ): Promise<{ connections: string[]; importance: number }> {
-    if (existing.length === 0) return { connections: [], importance: 1.0 };
+    return withSemanticWriteScope(options, async scope => this.connectionResult(
+      await selectSemanticWriteNeighbors(embedding, existing, { ...options, ...scope })));
+  }
 
-    const similarities: Array<{ id: string; similarity: number }> = [];
-
-    for (const mem of existing) {
-      if (mem.embedding && mem.embedding.length > 0) {
-        const sim = embeddingService.cosineSimilarity(embedding, mem.embedding);
-        if (sim >= SIMILARITY_THRESHOLD) {
-          similarities.push({ id: mem.id, similarity: sim });
-        }
-      }
-    }
-
-    similarities.sort((a, b) => b.similarity - a.similarity);
-    const topConnections = similarities.slice(0, MAX_CONNECTIONS);
-    const connections = topConnections.map((s) => s.id);
-
-    const avgSimilarity = connections.length > 0
-      ? topConnections.reduce((sum, s) => sum + s.similarity, 0) / topConnections.length
-      : 0;
-
+  private connectionResult({ count, neighbors }: SemanticWriteSelection) {
+    if (!count) return { connections: [], importance: 1.0 };
+    const connections = neighbors.map(row => row.candidate.id);
+    const avgSimilarity = neighbors.length ? neighbors.reduce((sum, row) => sum + row.score, 0) / neighbors.length : 0;
     const importance = Math.min(1.0, 0.3 + avgSimilarity * 0.4 + connections.length * 0.05);
 
     return { connections, importance };
@@ -108,7 +108,7 @@ export class CognitiveEngine {
   private deriveSemanticClusterId(
     text: string,
     connections: string[],
-    existing: MemoryObject[]
+    existing: Array<Pick<MemoryObject, 'id' | 'semanticClusterId'>>,
   ): string {
     if (connections.length === 0) {
       return `semantic:solo-${this.hashText(text)}`;
@@ -142,10 +142,11 @@ export class CognitiveEngine {
 
   computeSemanticPosition(
     _embedding: number[],
-    existing: MemoryObject[],
-    connections: string[]
+    existing: Array<Pick<MemoryObject, 'id' | 'position'>>,
+    connections: string[],
+    existingCount = existing.length,
   ): [number, number, number] {
-    if (existing.length === 0) {
+    if (existingCount === 0) {
       return [0, 0, 0];
     }
 
@@ -194,14 +195,15 @@ export class CognitiveEngine {
 
     const edges: GraphEdge[] = [];
     const seen = new Set<string>();
+    const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
 
     for (const mem of memories) {
       for (const connId of mem.connections) {
         const edgeKey = [mem.id, connId].sort().join('--');
         if (!seen.has(edgeKey)) {
           seen.add(edgeKey);
-          const target = memories.find((m) => m.id === connId);
-          if (target && mem.embedding.length > 0 && target.embedding.length > 0) {
+          const target = memoryById.get(connId);
+          if (target && mem.embedding.length > 0 && target.embedding.length > 0 && mem.embedding.length === target.embedding.length && sameEmbeddingSpace(mem.embeddingModel, target.embeddingModel)) {
             const similarity = embeddingService.cosineSimilarity(mem.embedding, target.embedding);
             edges.push({
               source: mem.id,
@@ -214,38 +216,41 @@ export class CognitiveEngine {
       }
     }
 
-    const clusters = this.louvainClusters(nodes, edges);
+    const clusters = this.similarityThresholdGroups(nodes, edges);
 
     return { nodes, edges, clusters };
   }
 
-  private louvainClusters(
+  private similarityThresholdGroups(
     nodes: GraphNode[],
     edges: GraphEdge[]
   ): Map<number, string[]> {
-    const communityMap = new Map<string, number>();
-    const communities = new Map<number, string[]>();
-
-    nodes.forEach((n, i) => communityMap.set(n.id, i));
+    const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+    const parent = nodes.map((_, index) => index);
+    const find = (index: number): number => {
+      while (parent[index] !== index) {
+        parent[index] = parent[parent[index]];
+        index = parent[index];
+      }
+      return index;
+    };
 
     for (const edge of edges) {
       if (edge.similarity > 0.7) {
-        const srcCommunity = communityMap.get(edge.source)!;
-        const tgtCommunity = communityMap.get(edge.target)!;
-        if (srcCommunity !== tgtCommunity) {
-          const smaller = Math.min(srcCommunity, tgtCommunity);
-          communityMap.set(edge.source, smaller);
-          communityMap.set(edge.target, smaller);
-        }
+        const source = indexById.get(edge.source);
+        const target = indexById.get(edge.target);
+        if (source !== undefined && target !== undefined) parent[find(target)] = find(source);
       }
     }
 
-    communityMap.forEach((community, nodeId) => {
-      if (!communities.has(community)) communities.set(community, []);
-      communities.get(community)!.push(nodeId);
+    const groups = new Map<number, string[]>();
+    nodes.forEach((node, index) => {
+      const group = find(index);
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group)!.push(node.id);
     });
 
-    return communities;
+    return groups;
   }
 
   computePageRank(memories: MemoryObject[]): Map<string, number> {
@@ -259,15 +264,17 @@ export class CognitiveEngine {
 
     for (let iter = 0; iter < iterations; iter++) {
       const newScores = new Map<string, number>();
-      for (const mem of memories) {
-        let incomingScore = 0;
-        for (const other of memories) {
-          if (other.connections.includes(mem.id)) {
-            const outDegree = Math.max(other.connections.length, 1);
-            incomingScore += (scores.get(other.id) || 0) / outDegree;
+      const incoming = new Map(memories.map((memory) => [memory.id, 0]));
+      for (const memory of memories) {
+        const contribution = (scores.get(memory.id) || 0) / Math.max(memory.connections.length, 1);
+        for (const targetId of new Set(memory.connections)) {
+          if (incoming.has(targetId)) {
+            incoming.set(targetId, (incoming.get(targetId) || 0) + contribution);
           }
         }
-        newScores.set(mem.id, (1 - damping) / n + damping * incomingScore);
+      }
+      for (const memory of memories) {
+        newScores.set(memory.id, (1 - damping) / n + damping * (incoming.get(memory.id) || 0));
       }
       newScores.forEach((score, id) => scores.set(id, score));
     }
@@ -299,7 +306,7 @@ export class CognitiveEngine {
       const isIsolated = existingConnections.length === 0;
       const weakLinks = existingConnections.filter((connId) => {
         const target = memoryById.get(connId);
-        if (!target || mem.embedding.length === 0 || target.embedding.length === 0) return false;
+        if (!target || mem.embedding.length === 0 || target.embedding.length === 0 || mem.embedding.length !== target.embedding.length || !sameEmbeddingSpace(mem.embeddingModel, target.embeddingModel)) return false;
         return embeddingService.cosineSimilarity(mem.embedding, target.embedding) < WEAK_LINK_THRESHOLD;
       });
       const excludedRepairIds = new Set([mem.id, ...existingConnections]);
@@ -395,7 +402,7 @@ export class CognitiveEngine {
     if (memory.embedding.length === 0) return null;
 
     const candidate = memories
-      .filter((other) => !excludedIds.has(other.id) && other.embedding.length > 0)
+      .filter((other) => !excludedIds.has(other.id) && other.embedding.length > 0 && other.embedding.length === memory.embedding.length && sameEmbeddingSpace(memory.embeddingModel, other.embeddingModel))
       .map((other) => ({
         id: other.id,
         similarity: embeddingService.cosineSimilarity(memory.embedding, other.embedding),

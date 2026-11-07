@@ -13,6 +13,7 @@ export interface StarShellOptions {
   seed: number | string;
   eccentricity?: [number, number, number];
   planeBias?: number;
+  palette?: string[];
 }
 
 export interface SpiralGalaxyOptions {
@@ -21,6 +22,9 @@ export interface SpiralGalaxyOptions {
   radius: number;
   thickness: number;
   seed: number | string;
+  coreColor?: string;
+  armColorA?: string;
+  armColorB?: string;
 }
 
 export interface RingBand {
@@ -78,16 +82,15 @@ export function createStarShell({
   seed,
   eccentricity = [1, 1, 1],
   planeBias = 0,
+  palette: paletteHex,
 }: StarShellOptions): PointCloudData {
   const random = createSeededRandom(seed);
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
-  const palette = [
-    new THREE.Color('#e8f1ff'),
-    new THREE.Color('#a8c7ff'),
-    new THREE.Color('#ffd7a1'),
-    new THREE.Color('#c9fff3'),
-  ];
+  const palette = (paletteHex && paletteHex.length > 0
+    ? paletteHex
+    : ['#e8f1ff', '#a8c7ff', '#ffd7a1', '#c9fff3']
+  ).map((hex) => new THREE.Color(hex));
 
   for (let index = 0; index < count; index += 1) {
     const theta = random() * Math.PI * 2;
@@ -117,13 +120,16 @@ export function createSpiralGalaxy({
   radius,
   thickness,
   seed,
+  coreColor = '#fff2c4',
+  armColorA = '#8ab9ff',
+  armColorB = '#b88cff',
 }: SpiralGalaxyOptions): PointCloudData {
   const random = createSeededRandom(seed);
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
-  const core = new THREE.Color('#fff2c4');
-  const armBlue = new THREE.Color('#8ab9ff');
-  const armViolet = new THREE.Color('#b88cff');
+  const core = new THREE.Color(coreColor);
+  const armBlue = new THREE.Color(armColorA);
+  const armViolet = new THREE.Color(armColorB);
 
   for (let index = 0; index < count; index += 1) {
     const arm = Math.floor(random() * arms);
@@ -150,7 +156,7 @@ export function createSpiralGalaxy({
   return { positions, colors };
 }
 
-export function createNebulaClouds(universeType: UniverseType, seed: number | string, count: number): NebulaCloud[] {
+export function createNebulaClouds(universeType: UniverseType, seed: number | string, count: number, opacityMul = 1): NebulaCloud[] {
   const random = createSeededRandom(`${seed}:${universeType}:nebula`);
   const palette = UNIVERSE_NEBULA_PALETTES[universeType];
 
@@ -173,7 +179,7 @@ export function createNebulaClouds(universeType: UniverseType, seed: number | st
         THREE.MathUtils.lerp(18, 42, random()),
       ],
       color,
-      opacity: THREE.MathUtils.lerp(0.025, 0.065, random()),
+      opacity: THREE.MathUtils.lerp(0.025, 0.065, random()) * opacityMul,
       rotation: [
         random() * Math.PI,
         random() * Math.PI,

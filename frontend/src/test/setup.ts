@@ -11,7 +11,8 @@ afterEach(() => {
 vi.mock('../firebase', () => ({
     auth: {
         currentUser: null,
-        onAuthStateChanged: vi.fn()
+        // Firebase returns an unsubscribe function; components must be able to release it on unmount.
+        onAuthStateChanged: vi.fn(() => () => undefined)
     },
     db: {},
     storage: {}

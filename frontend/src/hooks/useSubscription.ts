@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { auth, db, default as app } from '../firebase';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, type Unsubscribe } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { getEffectivePlanLimits, normalizePlanName } from '../config/planLimits';
 import { isFreeFirstMode } from '../config/monetization';
@@ -53,21 +53,20 @@ export function useSubscription() {
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        let unsubscribeDoc: (() => void) | undefined;
-
-        console.log('🚀 [useSubscription] Configurando listener');
+        let unsubscribeDoc: Unsubscribe | undefined;
 
         const unsubscribeAuth = auth.onAuthStateChanged((user) => {
-            console.log('👤 [useSubscription] Auth state changed:', user?.uid);
+            if (unsubscribeDoc) {
+                unsubscribeDoc();
+                unsubscribeDoc = undefined;
+            }
 
             if (!user) {
                 setSubscription(null);
                 setIsLoading(false);
-                if (unsubscribeDoc) unsubscribeDoc();
                 return;
             }
 
-            // Listen to user document in real-time
             const userRef = doc(db, 'users', user.uid);
 
             unsubscribeDoc = onSnapshot(userRef, (docSnap) => {
@@ -76,8 +75,6 @@ export function useSubscription() {
                     const subData = data.subscription || {};
                     const usageData = data.usage || {};
                     const tier = normalizePlanName(subData.tier || 'free');
-
-                    console.log('🔄 [useSubscription] Atualização recebida:', tier);
 
                     setSubscription({
                         tier,
@@ -91,7 +88,6 @@ export function useSubscription() {
                         }
                     });
                 } else {
-                    // Document doesn't exist yet, default to free
                     setSubscription({
                         tier: 'free',
                         status: 'active',
@@ -105,54 +101,41 @@ export function useSubscription() {
                     });
                 }
                 setIsLoading(false);
-            }, (error) => {
-                console.error('❌ [useSubscription] Listen error:', error);
+            }, () => {
                 setIsLoading(false);
             });
 
-            // Stripe remains installed but dormant during the Free-first phase.
             if (!isFreeFirstMode) {
                 try {
                     const functions = getFunctions(app, 'europe-west1');
                     const getStatus = httpsCallable(functions, 'getSubscriptionStatus');
-                    getStatus().catch((e) => console.error('⚠️ [useSubscription] Sync check failed:', e));
-                } catch (error) {
-                    console.error('⚠️ [useSubscription] Sync check initiation failed:', error);
+                    getStatus().catch(() => undefined);
+                } catch {
+                    // Sync check is optional during Free-first.
                 }
             }
         });
 
         return () => {
-            if (unsubscribeAuth) unsubscribeAuth();
-            if (unsubscribeDoc) unsubscribeDoc();
+            unsubscribeAuth();
+            unsubscribeDoc?.();
         };
     }, []);
 
-    /**
-     * Check if user can create a new memory
-     */
     const canCreateMemory = (): boolean => {
         if (!subscription) return false;
 
         const { limits, usage } = subscription;
 
-        // Unlimited for paid tiers
         if (limits.memoriesPerMonth === -1) return true;
 
-        // Check limit for free tier
         return usage.memoriesThisMonth < limits.memoriesPerMonth;
     };
 
-    /**
-     * Check if user can upload attachments
-     */
     const canUploadAttachment = (): boolean => {
         return subscription?.limits.canUploadAttachments || false;
     };
 
-    /**
-     * Check if user has storage space
-     */
     const hasStorageSpace = (fileSizeMB: number): boolean => {
         if (!subscription) return false;
 
@@ -163,22 +146,16 @@ export function useSubscription() {
         return (fileSizeMB / 1024) <= availableGB;
     };
 
-    /**
-     * Get remaining memories for this month
-     */
     const getRemainingMemories = (): number => {
         if (!subscription) return 0;
 
         const { limits, usage } = subscription;
 
-        if (limits.memoriesPerMonth === -1) return -1; // unlimited
+        if (limits.memoriesPerMonth === -1) return -1;
 
         return Math.max(0, limits.memoriesPerMonth - usage.memoriesThisMonth);
     };
 
-    /**
-     * Get storage usage percentage
-     */
     const getStorageUsagePercent = (): number => {
         if (!subscription) return 0;
 

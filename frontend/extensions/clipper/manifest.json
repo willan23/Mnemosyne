@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Mnemosyne Clipper",
+  "version": "1.1.0",
+  "description": "Captura título, URL e texto selecionado para o Mnemosyne (E2EE na web app).",
+  "action": {
+    "default_title": "Capturar para Mnemosyne",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png"
+  },
+  "permissions": ["activeTab", "scripting"]
+}

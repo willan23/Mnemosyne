@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MemoryObject } from '../types/universe';
 import { CognitiveEngine } from './CognitiveEngine';
+import { embeddingService } from '../services/embeddingService';
+import { CURRENT_EMBEDDING_SPACE } from '../services/embeddingModel';
+import { SemanticWriteWorkerMock } from '../test/semanticWriteWorkerMock';
+
+beforeEach(() => { SemanticWriteWorkerMock.instances = []; vi.stubGlobal('Worker', SemanticWriteWorkerMock); });
+afterEach(() => vi.unstubAllGlobals());
 
 const memory = (overrides: Partial<MemoryObject> & Pick<MemoryObject, 'id' | 'embedding'>): MemoryObject => ({
   text: `Memory ${overrides.id}`,
@@ -11,10 +17,47 @@ const memory = (overrides: Partial<MemoryObject> & Pick<MemoryObject, 'id' | 'em
   timestamp: 1,
   updatedAt: 1,
   uid: 'user-1',
+  embeddingModel: CURRENT_EMBEDDING_SPACE,
   ...overrides,
 });
 
 describe('CognitiveEngine autolink and graph behavior', () => {
+  it('keeps the cluster, centroid and importance while performing no candidate cosine work on the UI thread', async () => {
+    const generated = vi.spyOn(embeddingService, 'getEmbedding').mockResolvedValue([1, 0]);
+    const cosine = vi.spyOn(embeddingService, 'cosineSimilarity').mockImplementation(() => { throw Error('UI cosine forbidden'); });
+    const jitter = vi.spyOn(Math, 'random').mockReturnValue(.5);
+    try {
+      const result = await new CognitiveEngine().processMemory('A synthetic thought', [
+        memory({ id: 'first', embedding: [.8, .2], position: [2, 4, 6], semanticClusterId: 'cluster-a' }),
+        memory({ id: 'strong', embedding: [1, 0], position: [6, 8, 10], semanticClusterId: 'cluster-b' }),
+        memory({ id: 'other', embedding: [0, 1], position: [100, 100, 100] }),
+      ]);
+      expect(result.connections).toEqual(['strong', 'first']); expect(result.position).toEqual([4, 6, 8]);
+      expect(result.semanticClusterId).toBe('cluster-a'); expect(result.celestialType).toBe('star');
+      expect(cosine).not.toHaveBeenCalled(); expect(SemanticWriteWorkerMock.instances[0].terminate).toHaveBeenCalledOnce();
+    } finally { generated.mockRestore(); cosine.mockRestore(); jitter.mockRestore(); }
+  });
+  it('preserves the distinction between an empty scope and a populated scope with no compatible vectors', async () => {
+    const generated = vi.spyOn(embeddingService, 'getEmbedding').mockResolvedValue([1, 0]), jitter = vi.spyOn(Math, 'random').mockReturnValue(.5);
+    try {
+      const engine = new CognitiveEngine();
+      expect(await engine.processMemory('Synthetic', [])).toMatchObject({ celestialType: 'sun', importance: 1, position: [0, 0, 0] });
+      const unrelated = await engine.processMemory('Synthetic', [memory({ id: 'legacy', embedding: [1, 0], embeddingModel: undefined })]);
+      expect(unrelated).toMatchObject({ celestialType: 'star', importance: .3, connections: [] });
+      expect(unrelated.position).not.toEqual([0, 0, 0]); expect(SemanticWriteWorkerMock.instances).toHaveLength(0);
+    } finally { generated.mockRestore(); jitter.mockRestore(); }
+  });
+  it('marks new memory vectors with the default multilingual space and never autolinks unmarked legacy vectors', async () => {
+    const generated = vi.spyOn(embeddingService, 'getEmbedding').mockResolvedValue([1,0,0]);
+    try {
+      expect(embeddingService.space).toBe(CURRENT_EMBEDDING_SPACE);
+      const result = await new CognitiveEngine().processMemory('Synthetic new multilingual memory', [
+        memory({id:'current',embedding:[1,0,0]}),memory({id:'legacy',embedding:[1,0,0],embeddingModel:undefined}),
+      ]);
+      expect(result.embeddingModel).toBe(CURRENT_EMBEDDING_SPACE);
+      expect(result.connections).toEqual(['current']);
+    } finally { generated.mockRestore(); }
+  });
   it('finds only semantically similar memories and orders strongest links first', async () => {
     const engine = new CognitiveEngine();
     const result = await engine.findConnections([1, 0, 0], [
@@ -55,6 +98,36 @@ describe('CognitiveEngine autolink and graph behavior', () => {
     expect(graph.edges[0].similarity).toBeGreaterThan(0.9);
   });
 
+  it('does not link equally sized vectors from different embedding spaces', async () => {
+    const engine = new CognitiveEngine();
+    const result = await engine.findConnections([1, 0], [
+      memory({ id: 'legacy', embedding: [1, 0], embeddingModel: undefined }),
+      memory({ id: 'current', embedding: [1, 0] }),
+      memory({ id: 'future', embedding: [1, 0], embeddingModel: 'future-model@revision-1' }),
+    ]);
+
+    expect(result.connections).toEqual(['current']);
+    const graph = engine.buildCognitiveGraph([
+      memory({ id: 'legacy', embedding: [1, 0], connections: ['future'] }),
+      memory({ id: 'future', embedding: [1, 0], embeddingModel: 'future-model@revision-1' }),
+    ]);
+    expect(graph.edges).toEqual([]);
+  });
+
+  it('groups transitive high-similarity links regardless of edge order', () => {
+    const engine = new CognitiveEngine();
+    const graph = engine.buildCognitiveGraph([
+      memory({ id: 'b', embedding: [1, 0], connections: ['c'] }),
+      memory({ id: 'c', embedding: [1, 0] }),
+      memory({ id: 'a', embedding: [1, 0], connections: ['b'] }),
+      memory({ id: 'separate', embedding: [0, 1] }),
+    ]);
+
+    const groups = [...graph.clusters.values()].map((ids) => [...ids].sort());
+    expect(groups).toContainEqual(['a', 'b', 'c']);
+    expect(groups).toContainEqual(['separate']);
+  });
+
   it('computes PageRank from incoming declared connections', () => {
     const engine = new CognitiveEngine();
     const scores = engine.computePageRank([
@@ -65,6 +138,17 @@ describe('CognitiveEngine autolink and graph behavior', () => {
 
     expect(scores.get('hub')).toBeGreaterThan(scores.get('a') || 0);
     expect(scores.get('hub')).toBeGreaterThan(scores.get('b') || 0);
+  });
+
+  it('counts repeated links once while retaining their original out-degree', () => {
+    const engine = new CognitiveEngine();
+    const scores = engine.computePageRank([
+      memory({ id: 'a', embedding: [1], connections: [] }),
+      memory({ id: 'b', embedding: [1], connections: ['a', 'a', 'missing'] }),
+    ]);
+
+    expect(scores.get('b')).toBeCloseTo(0.075, 5);
+    expect(scores.get('a')).toBeCloseTo(0.09625, 5);
   });
 
   it('detects isolated old memories and broken links', () => {

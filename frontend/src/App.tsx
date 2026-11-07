@@ -1,45 +1,69 @@
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, Navigate, useLocation } from 'react-router-dom';
 import { AuthModal } from './components/AuthModal';
 import { MnemonicBackupModal } from './components/MnemonicBackupModal';
-import { MemoryGraph } from './components/MemoryGraph';
 import { SettingsModal } from './components/SettingsModal';
-import { MemoryEditorModal } from './components/MemoryEditorModal';
-import { OrphanedMemoriesWarning } from './components/OrphanedMemoriesWarning';
+import { OnboardingTour } from './components/OnboardingTour';
 import { ShareView } from './pages/ShareView';
+import {CapsuleManagerPage} from './pages/CapsuleManagerPage';
 import { PricingPage } from './pages/PricingPage';
 import { CheckoutSuccess } from './pages/CheckoutSuccess';
 import { CheckoutCancel } from './pages/CheckoutCancel';
 import { PrivacyPage } from './pages/PrivacyPage';
 import { AccountDeletionPage } from './pages/AccountDeletionPage';
-import { UniversePage } from './pages/UniversePage';
 import { LoginPage } from './pages/LoginPage';
+import DesktopAuthPage from './pages/DesktopAuthPage';
+import AgentAuthorizationPage from './pages/AgentAuthorizationPage';
 import { MobilePairingPage } from './pages/MobilePairingPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
+import { DownloadPage } from './pages/DownloadPage';
+import { SecurityPage } from './pages/SecurityPage';
+import { ChangelogPage } from './pages/ChangelogPage';
+import { StatusPage } from './pages/StatusPage';
+import { EnterprisePage } from './pages/EnterprisePage';
 import { LandingBackground } from './components/landing/LandingBackground';
-import type { FilterOptions, SessionData } from './hooks/useSessions';
-import { Search, Compass, Activity, Brain, Globe, LogOut, Settings, Sparkles } from 'lucide-react';
-import { db, auth } from './firebase';
-import { getRedirectResult, onAuthStateChanged, signOut, type User } from 'firebase/auth';
+import type { FilterOptions } from './hooks/useSessions';
+import { Search, Activity, Brain, Globe, List, Table2, ClipboardList, LogOut, Settings, Sparkles, Archive, FolderOpen, Rocket, PenLine } from 'lucide-react';
+import { auth } from './firebase';
+import { getRedirectResult, signOut } from 'firebase/auth';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
-import toast, { Toaster } from 'react-hot-toast';
+import toast from 'react-hot-toast';
 
 import { useSessions } from './hooks/useSessions';
-import { useGraphData } from './hooks/useGraphData';
+import { useAccountSession } from './hooks/useAccountSession';
+import { onMemoryCryptoChanged } from './services/memoryCrypto';
 import { useSemanticClusterBackfill } from './hooks/useSemanticClusterBackfill';
+import { useSemanticConnectionBackfill } from './hooks/useSemanticConnectionBackfill';
+import { useClipCapture } from './hooks/useClipCapture';
+import {useSyncFeedback} from './hooks/useSyncFeedback';
+import { useSubscription } from './hooks/useSubscription';
 import { useUI } from './contexts/UIContext';
 import { CommandPalette } from './components/CommandPalette';
 import { CognitiveInput } from './components/CognitiveInput';
 import { NotificationSystem } from './components/NotificationSystem';
 import { TransmissionPanel, type TransmissionDraft } from './components/TransmissionPanel';
-import { encodeCapsulePack } from './services/capsuleService';
-import { InsightsPanel } from './components/InsightsPanel';
 import { WebResearchPanel } from './components/WebResearchPanel';
 import { Radio } from 'lucide-react';
 import { publishCommsIdentity } from './services/commsIdentity';
 import { isNewAuthUser } from './services/authFlow';
 import { collectDroppedFiles, learnDocumentBatch } from './services/learningService';
+import { DOCUMENT_FILE_ACCEPT } from './utils/fileTypes';
+import {
+  importObsidianVault,
+  looksLikeObsidianVault,
+} from './services/obsidianVaultImport';
+import { assimilateStarterFounder } from './services/starterUniverse';
+import { StudyModePanel } from './components/StudyModePanel';
+import {MemoryEditRecoveryPanel} from './components/MemoryEditRecoveryPanel';
+import { AttachedMemoryRecoveryPanel } from './components/AttachedMemoryRecoveryPanel';
+import {TeamConnectionRecoveryPanel} from './components/TeamConnectionRecoveryPanel';
+import {SemanticClusterRecoveryPanel} from './components/SemanticClusterRecoveryPanel';
+import {SemanticRelationRecoveryPanel} from './components/SemanticRelationRecoveryPanel';
+import {SyncConflictRecoveryPanel} from './components/SyncConflictRecoveryPanel';
+import {PersonalMigrationRecoveryPanel} from './components/PersonalMigrationRecoveryPanel';
+import {TeamHistoryChangeRecoveryPanel} from './components/TeamHistoryChangeRecoveryPanel';
+import { ReviewInboxPanel } from './components/ReviewInboxPanel';
 import { generateMnemonic } from './utils/crypto';
 import {
   readSessionMnemonic,
@@ -49,68 +73,136 @@ import {
   scrubLegacyKeyMaterial,
 } from './utils/sessionMnemonic';
 import { isLocalPinEnabled } from './utils/localPin';
+import { setMemoryCryptoMnemonic } from './services/memoryCrypto';
 import { isFreeFirstMode, monetizationCopy } from './config/monetization';
-import { embeddingService } from './services/embeddingService';
-import { OnboardingTour } from './components/OnboardingTour';
+import { embeddingService, resetEmbeddingServices } from './services/embeddingService';
 import { readMemoryIdFromSearch, stripMemoryFromUrl } from './utils/deepLinks';
+import {
+  CAPTURE_ACTIVE_EVENT,
+  CAPTURE_IDLE_EVENT,
+  dispatchOpenCapture,
+  isCaptureHotkeyEvent,
+  listenDesktopCaptureHotkey,
+} from './utils/desktopCapture';
 import { PinUnlockModal } from './components/PinUnlockModal';
 import { CognitivePulsePanel } from './components/CognitivePulsePanel';
 import { shouldShowPulseToday } from './services/cognitivePulse';
 
-const AuthBootScreen: React.FC = () => (
-  <div className="relative min-h-screen overflow-hidden bg-[#020617] text-white">
-    <LandingBackground />
-    <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
-      <div className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm text-slate-300 backdrop-blur-xl">
-        <Brain className="h-4 w-4 text-violet-300" />
-        <span>A restaurar sessão...</span>
+import { Universe3D } from './components/universe/Universe3D';
+import { UniverseHUD } from './components/universe/UniverseHUD';
+import { MemoryListView } from './components/universe/MemoryListView';
+import { CognitiveSidebar, type SidebarTab } from './components/CognitiveSidebar';
+import { SovereignExportModal } from './components/SovereignExportModal';
+import { useUniverseStore } from './store/universeStore';
+import { useUniverseMemories } from './hooks/useUniverseMemories';
+import { cognitiveEngine } from './engines/CognitiveEngine';
+import { useDocumentLang, useTranslation } from './utils/translations';
+
+const ClipRedirect: React.FC = () => {
+  return <Navigate to="/" replace />;
+};
+
+const AuthBootScreen: React.FC<{ failed: boolean; onRetry: () => void }> = ({ failed, onRetry }) => {
+  const { t } = useTranslation();
+  return (
+    <div className="relative min-h-screen overflow-hidden bg-[#020617] text-white">
+      <LandingBackground />
+      <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+        <div className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm text-slate-300 backdrop-blur-xl">
+          <Brain className="h-4 w-4 text-violet-300" />
+          <span>{failed ? 'Não foi possível preparar a conta. Verifica a ligação e tenta novamente.' : t('restoringSession')}</span>
+          {failed && <>
+            <button type="button" onClick={onRetry} className="underline">Tentar novamente</button>
+            <button type="button" onClick={() => void signOut(auth)} className="underline">Sair</button>
+          </>}
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 const App: React.FC = () => {
+  useDocumentLang();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const [currentUser, setCurrentUser] = useState<User | null>(() => auth.currentUser);
-  const [isAuthReady, setIsAuthReady] = useState<boolean>(() => Boolean(auth.currentUser));
+  const { user: currentUser, ready: isAuthReady, failed: accountInitFailed, retry: retryAccountInit } = useAccountSession(() => {
+    resetEmbeddingServices();
+    setSearchQuery('');
+  });
   const [isRedirectReady, setIsRedirectReady] = useState(false);
   const [mnemonic, setMnemonic] = useState<string[] | null>(() => readSessionMnemonic());
   const [generatedMnemonicToShow, setGeneratedMnemonicToShow] = useState<string[] | null>(null);
   const isAuthenticated = Boolean(currentUser);
 
-  // States para UI Data
-  const [editingSession, setEditingSession] = useState<SessionData | null>(null);
-
-  // OS Navigation (Tabs/Modes)
-  const [activeMode, setActiveMode] = useState<'flow' | 'insights'>('flow');
-  const [isFlowComposerOpen, setIsFlowComposerOpen] = useState(false);
+  // OS Navigation (Universo & Sidebar)
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('memory');
+  const [memoryView, setMemoryView] = useState<'universe' | 'list' | 'table'>('universe');
+  const [isReviewInboxOpen, setIsReviewInboxOpen] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [focusedMemoryId, setFocusedMemoryId] = useState<string | null>(null);
   const [filters] = useState<FilterOptions>({
     dateRange: 'all',
     tags: [],
     category: undefined
   });
 
-  const [showOrphanedWarning, setShowOrphanedWarning] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [replayOnboarding, setReplayOnboarding] = useState(false);
   const [showMnemonicAuth, setShowMnemonicAuth] = useState(false);
   const [isTransmissionOpen, setIsTransmissionOpen] = useState(false);
   const [transmissionDraft, setTransmissionDraft] = useState<TransmissionDraft | null>(null);
+  const [transmissionTab, setTransmissionTab] = useState<'compose' | 'contacts' | 'inbox' | 'sent' | 'identity'>('compose');
   const [isWebResearchOpen, setIsWebResearchOpen] = useState(false);
   const [webResearchQuery, setWebResearchQuery] = useState('');
-  const [forceOnboarding, setForceOnboarding] = useState(false);
   const [preferPinUnlock, setPreferPinUnlock] = useState(() => isLocalPinEnabled());
   const [isPulseOpen, setIsPulseOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<string | null>(null);
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const [exportForMigration, setExportForMigration] = useState(false);
+  const [isCaptureOpen, setIsCaptureOpen] = useState(false);
+
+  const focusUniverseCapture = useCallback(() => {
+    dispatchOpenCapture();
+  }, []);
+
+  useEffect(() => {
+    const onActive = () => setIsCaptureOpen(true);
+    const onIdle = () => setIsCaptureOpen(false);
+    window.addEventListener(CAPTURE_ACTIVE_EVENT, onActive);
+    window.addEventListener(CAPTURE_IDLE_EVENT, onIdle);
+    return () => {
+      window.removeEventListener(CAPTURE_ACTIVE_EVENT, onActive);
+      window.removeEventListener(CAPTURE_IDLE_EVENT, onIdle);
+    };
+  }, []);
+
+  // Universe 3D integration
+  const { selectedMemoryId, selectMemory, setEmbeddingReady, memories: universeMemories } = useUniverseStore();
+  const { saveMemory, deleteMemory, legacyPlaintextCount } = useUniverseMemories(isAuthenticated);
+  const { canCreateMemory, isLoading: isSubscriptionLoading } = useSubscription();
 
   // States do Global Store (UI Context)
   const {
     isSettingsOpen, setIsSettingsOpen,
     openCommandPalette
   } = useUI();
+
+  // Initialize cognitiveEngine for universe embeddings
+  useEffect(() => {
+    cognitiveEngine.initialize()
+      .then(() => setEmbeddingReady(true))
+      .catch((err) => console.warn('CognitiveEngine init non-blocking:', err));
+  }, [setEmbeddingReady]);
+
+  // Sync selectedMemoryId -> open sidebar
+  useEffect(() => {
+    if (selectedMemoryId) {
+      setIsSidebarOpen(true);
+      setSidebarTab('memory');
+    }
+  }, [selectedMemoryId]);
 
   const handleKeyComplete = useCallback((newMnemonic: string[]) => {
     saveSessionMnemonic(newMnemonic);
@@ -127,37 +219,40 @@ const App: React.FC = () => {
   const handleResetKey = useCallback(() => {
     clearSessionMnemonic();
     setMnemonic(null);
+    setSearchQuery('');
     setGeneratedMnemonicToShow(null);
   }, []);
+
+  // Sincroniza a chave de cifra das memórias com a mnemónica ativa
+  useEffect(() => {
+    setMemoryCryptoMnemonic(mnemonic);
+  }, [mnemonic]);
 
   // Scrub legacy plaintext keys + idle lock for mnemonic
   useEffect(() => {
     scrubLegacyKeyMaterial();
     return startMnemonicIdleGuard(() => {
       setMnemonic(null);
+      setSearchQuery('');
       const pinReady = isLocalPinEnabled();
       setPreferPinUnlock(pinReady);
-      toast(
-        pinReady
-          ? 'Sessão cognitiva bloqueada. Desbloqueia com o PIN local ou a frase de 12 palavras.'
-          : 'Sessão cognitiva bloqueada por inatividade. Desbloqueia com a frase de 12 palavras.',
-        {
+      toast(pinReady ? t('appIdleLockPin') : t('appIdleLock'), {
           icon: '🔒',
           duration: 5000,
         }
       );
     });
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const onWarn = (event: Event) => {
       const remaining = (event as CustomEvent<{ remainingMs: number }>).detail?.remainingMs ?? 0;
       const mins = Math.max(1, Math.round(remaining / 60_000));
-      toast(`Sessão bloqueia em ~${mins} min por inatividade.`, { icon: '⏳', duration: 4000 });
+      toast(t('appIdleWarn', { mins }), { icon: '⏳', duration: 4000 });
     };
     window.addEventListener('mnemosyne:session-idle-warn', onWarn);
     return () => window.removeEventListener('mnemosyne:session-idle-warn', onWarn);
-  }, []);
+  }, [t]);
 
   // Warm embeddings model in background after unlock (non-blocking)
   useEffect(() => {
@@ -168,32 +263,62 @@ const App: React.FC = () => {
     return () => window.clearTimeout(t);
   }, [mnemonic]);
 
-  // Deep-link: /?memory=<id> foca a memória no grafo
+  // Deep-link: /?memory=<id> foca a memória no 3D
   useEffect(() => {
     if (!isAuthenticated || !mnemonic) return;
     if (location.pathname !== '/') return;
     const memoryId = readMemoryIdFromSearch(location.search);
     if (!memoryId) return;
-    setFocusedMemoryId(memoryId);
-    setActiveMode('flow');
-    setIsFlowComposerOpen(false);
-    // Strip query after apply so refresh doesn't re-loop; keep history clean
+    selectMemory(memoryId);
+    setIsSidebarOpen(true);
+    setSidebarTab('memory');
     const t = window.setTimeout(() => stripMemoryFromUrl(), 800);
     return () => window.clearTimeout(t);
-  }, [isAuthenticated, mnemonic, location.pathname, location.search]);
+  }, [isAuthenticated, mnemonic, location.pathname, location.search, selectMemory]);
 
-  // Custom Hooks substituindo lógica pesada
-  // O hook useSessions agora gerencia todo o estado de dados e filtros
+  // Hook gerenciador de sessões
   const {
     sessions,
     allSessions,
-    filteredSessions,
-    orphanedCount
+    searchResults,
+    legacyPersonalCount: legacySessionCount,
   } = useSessions(currentUser, searchQuery, filters);
+  const legacyPersonalCount = legacyPlaintextCount + legacySessionCount;
 
-  // Hook específico para transformar sessões em dados de grafo
-  const graphData = useGraphData(sessions);
-  useSemanticClusterBackfill(currentUser, sessions, isAuthenticated);
+  useSemanticClusterBackfill(currentUser, allSessions, isAuthenticated && Boolean(mnemonic));
+  useSemanticConnectionBackfill(currentUser, allSessions, isAuthenticated && Boolean(mnemonic));
+
+  const handleMemoryCreated = useCallback((memoryId: string) => {
+    selectMemory(memoryId);
+    setIsSidebarOpen(true);
+    setSidebarTab('memory');
+  }, [selectMemory]);
+
+  useClipCapture({
+    isAuthenticated,
+    mnemonicReady: Boolean(mnemonic),
+    uid: currentUser?.uid,
+    subscriptionReady: !isSubscriptionLoading,
+    canCreateMemory: canCreateMemory(),
+    onMemoryCreated: handleMemoryCreated,
+  });
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!isCaptureHotkeyEvent(event)) return;
+      event.preventDefault();
+      focusUniverseCapture();
+    };
+    window.addEventListener('keydown', onKey);
+    let unlisten: (() => void) | undefined;
+    void listenDesktopCaptureHotkey(() => focusUniverseCapture()).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      unlisten?.();
+    };
+  }, [focusUniverseCapture]);
 
   // Cognitive Pulse — ritual diário após desbloquear (uma vez por dia)
   useEffect(() => {
@@ -206,27 +331,14 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!currentUser || !mnemonic || mnemonic.length !== 12) return;
-    publishCommsIdentity(currentUser, mnemonic).catch((error) => {
-      console.warn('Unable to publish Comms identity:', error);
+    let active=true;
+    publishCommsIdentity(currentUser, mnemonic,()=>{if(!active)throw new Error('Identity context changed');}).catch(() => {
+      if(active)console.warn('Unable to publish Comms identity.');
     });
+    return()=>{active=false;};
   }, [currentUser, mnemonic]);
 
-  // Auth state listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      (user) => {
-        setCurrentUser(user);
-        setIsAuthReady(true);
-      },
-      (error) => {
-        console.error('Erro ao restaurar sessão:', error);
-        setCurrentUser(null);
-        setIsAuthReady(true);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
+  useEffect(() => onMemoryCryptoChanged(resetEmbeddingServices), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -276,9 +388,6 @@ const App: React.FC = () => {
     };
   }, [navigate]);
 
-  // A mnemônica não vai para localStorage nem para o servidor. Mantemos apenas
-  // um desbloqueio por aba/sessão para não pedir 12 palavras a cada navegação.
-
   // Mostrar AuthModal para mnemônica quando autenticado mas sem chave
   useEffect(() => {
     if (isAuthenticated && !mnemonic) {
@@ -288,50 +397,22 @@ const App: React.FC = () => {
     }
   }, [isAuthenticated, mnemonic]);
 
-  // Monitorar warning de orfãos vindo do hook
-  useEffect(() => {
-    if (orphanedCount > 0 && !mnemonic) {
-      setShowOrphanedWarning(true);
-    } else {
-      setShowOrphanedWarning(false);
-    }
-  }, [orphanedCount, mnemonic]);
-
   const handleLogout = async () => {
     try {
       await signOut(auth);
       handleResetKey();
-      setCurrentUser(null);
       navigate('/');
     } catch (error) {
       console.error('Erro ao fazer logout:', error);
     }
   };
 
-  const handleCleanOrphanedMemories = async () => {
-    if (!confirm('⚠️ ATENÇÃO: Isso eliminará TODAS as suas memórias antigas. Continuar?')) return;
-
-    try {
-      if (!auth.currentUser) return;
-
-      const { collection, query, where, getDocs, deleteDoc } = await import('firebase/firestore');
-      const sessionsRef = collection(db, 'sessions');
-      const q = query(sessionsRef, where('uid', '==', auth.currentUser.uid));
-      const snapshot = await getDocs(q);
-
-      await Promise.all(snapshot.docs.map(doc => deleteDoc(doc.ref)));
-
-      alert(`✅ ${snapshot.docs.length} memórias eliminadas.`);
-      setShowOrphanedWarning(false);
-    } catch (error) {
-      const err = error as { message?: string };
-      console.error('Error cleaning orphaned memories:', error);
-      alert(`Erro: ${err.message || 'Erro desconhecido'}`);
-    }
-  };
-
-  const openTransmission = (draft: TransmissionDraft | null = null) => {
+  const openTransmission = (
+    draft: TransmissionDraft | null = null,
+    tab: 'compose' | 'contacts' | 'inbox' | 'sent' | 'identity' = 'compose',
+  ) => {
     setTransmissionDraft(draft);
+    setTransmissionTab(tab);
     setIsTransmissionOpen(true);
   };
 
@@ -340,51 +421,197 @@ const App: React.FC = () => {
     setIsWebResearchOpen(true);
   };
 
+  const [isBootstrappingUniverse, setIsBootstrappingUniverse] = useState(false);
+  const vaultInputRef = React.useRef<HTMLInputElement>(null);
+  const {capture:captureImportFeedback}=useSyncFeedback();
+  const vaultActorRef=useRef<{uid:string;current:()=>boolean}|null>(null);
+
+  const runObsidianImport = useCallback(async (files: File[],captured?:{uid:string;current:()=>boolean}) => {
+    if (!auth.currentUser) return;
+    if (!mnemonic) {
+      toast.error(t('appNeedMind'));
+      return;
+    }
+    const actor=captured?.uid??auth.currentUser.uid;const current=captured?.current??captureImportFeedback(actor);if(!current())return;
+    const toastId = toast.loading(t('appVaultLoading'));
+    try {
+      const result = await importObsidianVault(
+        actor,
+        files,
+        allSessions,
+        {assertCurrent:()=>{if(!current())throw new Error('Import context unavailable');}},
+      );
+      if(!current())return;
+      toast.success(
+        t('appVaultDone', {
+          count: result.imported,
+          links: result.linked,
+          stats: result.statsLabel,
+        }),
+        { id: toastId },
+      );
+      if (result.memoryIds[0]) {
+        selectMemory(result.memoryIds[0]);
+        setIsSidebarOpen(true);
+        setSidebarTab('memory');
+      }
+    } catch {
+      if(current())toast.error('Importação não concluída. Usa a recuperação de importações para retomar o plano cifrado ou cancelar os passos restantes.', { id: toastId });
+    }finally{if(!current())toast.dismiss(toastId);}
+  }, [allSessions, mnemonic, selectMemory, t,captureImportFeedback]);
+
+  const runVaultOrDocumentImport = useCallback(async (files: File[],captured?:{uid:string;current:()=>boolean}) => {
+    if (!auth.currentUser) return;
+    if (!mnemonic) {
+      toast.error(t('appNeedMind'));
+      return;
+    }
+    if (files.length === 0) {
+      toast.error(t('noFilesFound'));
+      return;
+    }
+    const actor=captured?.uid??auth.currentUser.uid;const current=captured?.current??captureImportFeedback(actor);if(!current())return;
+    if (looksLikeObsidianVault(files)) {
+      await runObsidianImport(files,{uid:actor,current});
+      return;
+    }
+    const toastId = toast.loading(t('organizingFolders'));
+    try {
+      const result = await learnDocumentBatch(actor, files, allSessions,{assertCurrent:()=>{if(!current())throw new Error('Import context unavailable');}});
+      if(!current())return;
+      toast.success(t('foldersLearnedSuccess', { count: result.imported }), { id: toastId });
+      if (result.hubId) {
+        selectMemory(result.hubId);
+        setIsSidebarOpen(true);
+        setSidebarTab('memory');
+      }
+    } catch {
+      if(current())toast.error('Importação não concluída. Verifica as notas e a recuperação de ligações antes de repetir.', { id: toastId });
+    }finally{if(!current())toast.dismiss(toastId);}
+  }, [allSessions, mnemonic, runObsidianImport, selectMemory, t,captureImportFeedback]);
+
+  const handleAssimilateStarter = useCallback(async () => {
+    if (!auth.currentUser || !mnemonic) {
+      toast.error(t('appNeedMind'));
+      return;
+    }
+    if (isBootstrappingUniverse) return;
+    const actor=auth.currentUser.uid;const current=captureImportFeedback(actor);if(!current())return;
+    setIsBootstrappingUniverse(true);
+    const toastId = toast.loading(t('appStarterLoading', { done: 0, total: '?' }));
+    try {
+      const result = await assimilateStarterFounder(
+        actor,
+        allSessions,
+        {
+          assertCurrent:()=>{if(!current())throw new Error('Import context unavailable');},
+          onProgress: (done, total) => {
+            if(current())toast.loading(t('appStarterLoading', { done, total }), { id: toastId });
+          },
+        },
+      );
+      if(!current())return;
+      toast.success(
+        t('appStarterDone', { count: result.imported, links: result.linked }),
+        { id: toastId },
+      );
+      if (result.memoryIds[0]) {
+        selectMemory(result.memoryIds[0]);
+        setIsSidebarOpen(true);
+        setSidebarTab('memory');
+      }
+    } catch {
+      if(current())toast.error('Universo inicial não concluído. Usa a recuperação de importações para retomar ou cancelar os passos restantes.', { id: toastId });
+    } finally {
+      setIsBootstrappingUniverse(false);
+      if(!current())toast.dismiss(toastId);
+    }
+  }, [allSessions, isBootstrappingUniverse, mnemonic, selectMemory, t,captureImportFeedback]);
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    
-    if (!auth.currentUser) {
-      alert("Precisas de criar a tua Mente Digital antes de assimilar ficheiros.");
+
+    if (!auth.currentUser || !mnemonic) {
+      toast.error(t('appNeedMind'));
       return;
     }
-
+    const actor=auth.currentUser.uid;const current=captureImportFeedback(actor);if(!current())return;
     try {
       const files = await collectDroppedFiles(e.dataTransfer);
-      if (files.length === 0) return;
-      const importToast = toast.loading(`A organizar ${files.length} ficheiro${files.length === 1 ? '' : 's'}...`);
-      const result = await learnDocumentBatch(auth.currentUser.uid, files, allSessions);
-      toast.success(`${result.imported} documento${result.imported === 1 ? '' : 's'} aprendidos e organizados.`, { id: importToast });
-    } catch (err) {
-      console.error(err);
-      toast.error(err instanceof Error ? err.message : 'Erro ao processar ficheiros.');
+      if(!current())return;
+      if (files.length === 0) {
+        toast.error(t('noFilesFound'));
+        return;
+      }
+      await runVaultOrDocumentImport(files,{uid:actor,current});
+    } catch {
+      if(current())toast.error('Não foi possível ler a pasta selecionada.');
     }
   };
+
+  // Drop zone uses pointer-events:none until drag starts — listen on window so dragenter works.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const hasFiles = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types || []).includes('Files');
+
+    const onDragEnter = (event: DragEvent) => {
+      if (hasFiles(event)) setIsDragging(true);
+    };
+    const onDragOver = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      setIsDragging(true);
+    };
+    const onDragLeave = (event: DragEvent) => {
+      if (event.relatedTarget === null) setIsDragging(false);
+    };
+    const onDropWindow = () => setIsDragging(false);
+
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDropWindow);
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDropWindow);
+    };
+  }, [isAuthenticated]);
 
   if (!isAuthReady || !isRedirectReady) {
     return (
       <>
-        <Toaster position="top-right" />
         <NotificationSystem />
-        <AuthBootScreen />
+        <AuthBootScreen failed={accountInitFailed} onRetry={retryAccountInit} />
       </>
     );
   }
 
   return (
     <>
-      <Toaster position="top-right" />
       <NotificationSystem />
       <Routes>
         <Route path="/share/:shareId" element={<ShareView />} />
+        <Route path="/capsules" element={<CapsuleManagerPage />} />
+        <Route path="/download"      element={<DownloadPage />} />
         <Route path="/pricing"        element={<PricingPage />} />
         <Route path="/checkout/success" element={<CheckoutSuccess />} />
         <Route path="/checkout/cancel"  element={<CheckoutCancel />} />
         <Route path="/privacy"        element={<PrivacyPage />} />
+        <Route path="/security"       element={<SecurityPage />} />
+        <Route path="/enterprise"     element={<EnterprisePage />} />
+        <Route path="/changelog"      element={<ChangelogPage />} />
+        <Route path="/status"         element={<StatusPage />} />
         <Route path="/account-deletion" element={<AccountDeletionPage />} />
         <Route path="/analytics"      element={<AnalyticsPage />} />
-        <Route path="/universe"       element={<UniversePage />} />
+        <Route path="/universe"       element={<Navigate to="/" replace />} />
         <Route path="/mobile/pair"    element={<MobilePairingPage />} />
+        <Route path="/clip"           element={<ClipRedirect />} />
+        <Route path="/desktop-auth" element={<DesktopAuthPage />} />
+        <Route path="/agent/authorize" element={<AgentAuthorizationPage />} />
         <Route
           path="/login"
           element={
@@ -406,12 +633,7 @@ const App: React.FC = () => {
               onGeneratedMnemonic={handleGeneratedMnemonic}
             />
           ) : (
-            <div className="min-h-screen text-[#ededed]">
-              <div className="fixed inset-0 pointer-events-none z-0">
-                <div className="absolute top-[10%] left-[20%] w-[40vw] h-[40vw] bg-indigo-600/5 rounded-full blur-[120px]" />
-                <div className="absolute bottom-[20%] right-[10%] w-[30vw] h-[30vw] bg-purple-600/5 rounded-full blur-[100px]" />
-              </div>
-
+            <div className="relative h-screen w-full overflow-hidden bg-[#03030d] text-white">
               {!mnemonic ? (
                 <>
                   <div className="fixed inset-0 z-[-1] pointer-events-none">
@@ -445,16 +667,37 @@ const App: React.FC = () => {
                 </>
               ) : (
                 <div className="relative z-10 flex h-screen w-full flex-col overflow-hidden bg-transparent">
-                  <header className="pointer-events-none absolute left-0 top-0 z-40 flex w-full items-start justify-between gap-4 p-4 md:p-6">
+                  {/* 3D Universe Canvas as Core View */}
+                  {memoryView === 'universe' ? <Universe3D /> : (
+                    <MemoryListView memories={universeMemories} mode={memoryView}
+                      selectedMemoryId={selectedMemoryId} onSelect={selectMemory} />
+                  )}
+
+                  {/* Atmospheric Vignette + Depth */}
+                  <div
+                    className="pointer-events-none absolute inset-0 z-10"
+                    style={{
+                      background: `
+                        radial-gradient(ellipse 70% 55% at 50% 45%, transparent 30%, rgba(3,3,13,0.55) 100%),
+                        linear-gradient(180deg, rgba(3,3,13,0.72) 0%, rgba(3,3,13,0.02) 22%, rgba(3,3,13,0.02) 72%, rgba(3,3,13,0.85) 100%)
+                      `,
+                    }}
+                  />
+
+                  {/* Top Header */}
+                  <header className="pointer-events-none absolute left-0 top-0 z-40 flex w-full flex-wrap items-start justify-between gap-3 p-4 md:p-6">
                     <div className="pointer-events-auto flex items-center gap-3">
-                      <div className="flex items-center gap-2.5 rounded-2xl border border-white/10 bg-[#020617]/55 px-3 py-2 backdrop-blur-xl">
-                        <div className="rounded-lg border border-violet-400/25 bg-violet-500/15 p-1.5">
+                      <div className="flex items-center gap-2.5 rounded-2xl border border-white/10 bg-[#020617]/65 px-3.5 py-2 shadow-xl backdrop-blur-xl">
+                        <div className="rounded-lg border border-violet-400/25 bg-violet-500/15 p-1.5 shadow-[0_0_12px_rgba(139,92,246,0.3)]">
                           <Brain className="h-4 w-4 text-violet-300" />
                         </div>
                         <div className="hidden sm:block">
-                          <p className="text-sm font-semibold tracking-tight text-white">Mnemosyne</p>
+                          <p className="text-sm font-semibold tracking-tight text-white">Mnemosyne OS</p>
                           <p className="text-[10px] text-slate-400">
-                            {sessions.length} memórias · {graphData.links?.length ?? 0} ligações
+                            {t('appCelestialCount', {
+                              bodies: universeMemories.length,
+                              orbits: universeMemories.reduce((acc, m) => acc + m.connections.length, 0) / 2,
+                            })}
                           </p>
                         </div>
                       </div>
@@ -465,280 +708,403 @@ const App: React.FC = () => {
                         </span>
                       )}
                     </div>
-                    <div className="pointer-events-auto flex items-center gap-2">
+
+                    <div className="pointer-events-auto ml-auto flex flex-wrap items-center justify-end gap-2">
+                      <div role="group" aria-label={t('tabUniverse')} className="flex rounded-full border border-white/10 bg-[#020617]/75 p-1 backdrop-blur-md">
+                        {([
+                          ['universe', Globe, 'memoryViewUniverse'],
+                          ['list', List, 'memoryViewList'],
+                          ['table', Table2, 'memoryViewTable'],
+                        ] as const).map(([view, Icon, label]) => (
+                          <button key={view} type="button" onClick={() => setMemoryView(view)}
+                            aria-label={t(label)} aria-pressed={memoryView === view}
+                            title={t(label)}
+                            className={`rounded-full p-2 ${memoryView === view ? 'bg-violet-500/30 text-white' : 'text-slate-400 hover:text-white'}`}>
+                            <Icon className="h-4 w-4" />
+                          </button>
+                        ))}
+                      </div>
+                      <button type="button" onClick={() => setIsReviewInboxOpen(true)}
+                        aria-label={t('reviewInbox')} title={t('reviewInbox')}
+                        className="rounded-full border border-white/10 bg-[#020617]/75 p-2 text-slate-300 hover:text-white">
+                        <ClipboardList className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSidebarTab('insights');
+                          setIsSidebarOpen((prev) => !prev);
+                        }}
+                        className={`flex items-center gap-2 rounded-full border px-3.5 py-2 backdrop-blur-md transition-all duration-300 ${
+                          isSidebarOpen && sidebarTab === 'insights'
+                            ? 'border-cyan-400/40 bg-cyan-500/20 text-white shadow-[0_0_18px_rgba(34,211,238,0.3)]'
+                            : 'border-violet-400/20 bg-violet-500/10 text-violet-100/90 hover:bg-violet-500/20 hover:text-white'
+                        }`}
+                        title={t('appInsightsTitle')}
+                      >
+                        <Sparkles className="h-4 w-4 text-cyan-300" />
+                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">{t('appInsights')}</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => setIsPulseOpen(true)}
-                        className="flex items-center gap-2 rounded-full border border-violet-400/20 bg-violet-500/10 px-3 py-2 text-violet-100/90 backdrop-blur-md transition-all duration-300 hover:bg-violet-500/20 hover:text-white"
-                        title="Cognitive Pulse — ritual diário"
+                        className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-white/70 backdrop-blur-md transition-all duration-300 hover:bg-white/10 hover:text-white"
+                        title={t('appPulseTitle')}
                       >
                         <Activity className="h-4 w-4" />
-                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">Pulso</span>
+                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">{t('appPulse')}</span>
                       </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsExportOpen(true)}
+                        className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-white/70 backdrop-blur-md transition-all duration-300 hover:bg-white/10 hover:text-white"
+                        title={t('exportTitle')}
+                      >
+                        <Archive className="h-4 w-4" />
+                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">Export</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => setIsSettingsOpen(true)}
                         className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-white/70 backdrop-blur-md transition-all duration-300 hover:bg-white/10 hover:text-white"
-                        title="Definições"
+                        title={t('settings')}
                       >
                         <Settings className="h-4 w-4" />
-                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">Definições</span>
+                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">{t('settings')}</span>
                       </button>
+
                       <button
                         type="button"
                         onClick={handleLogout}
                         className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-white/70 backdrop-blur-md transition-all duration-300 hover:bg-white/10 hover:text-white"
-                        title="Sair (Logout)"
+                        title={t('appLogoutTitle')}
                       >
                         <LogOut className="h-4 w-4" />
-                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">Sair</span>
+                        <span className="hidden text-xs font-medium tracking-wider uppercase sm:inline">{t('appLogout')}</span>
                       </button>
                     </div>
                   </header>
 
-                  {showOrphanedWarning && (
-                    <div className="absolute top-24 left-1/2 -translate-x-1/2 z-50">
-                      <OrphanedMemoriesWarning
-                        memoriesCount={orphanedCount}
-                        onResetAndClean={handleCleanOrphanedMemories}
-                        onDismiss={() => setShowOrphanedWarning(false)}
-                      />
+                  {legacyPersonalCount > 0 && (
+                    <div role="alert" className="absolute left-4 top-20 z-40 max-w-md rounded-xl border border-amber-400/40 bg-slate-950/95 p-3 text-sm text-amber-100 shadow-xl md:left-6 md:top-24">
+                      <p>{t('appLegacyPlaintext', { count: legacyPersonalCount })}</p>
+                      <button type="button" onClick={() => { setSettingsSection('privacy'); setIsSettingsOpen(true); }} className="mt-2 font-semibold underline underline-offset-2">
+                        {t('appLegacyAction')}
+                      </button>
                     </div>
                   )}
 
-                  <main 
-                    className="flex-1 w-full h-full relative"
+                  {/* Universe HUD on top right */}
+                  {memoryView === 'universe' && <div className="pointer-events-none absolute right-3 top-[4.5rem] z-30 sm:right-5">
+                    <div className="pointer-events-auto">
+                      <UniverseHUD />
+                    </div>
+                  </div>}
+
+                  {/* Drag & Drop over 3D Space */}
+                  <div
+                    className="absolute inset-0 z-20"
                     onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                     onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
                     onDrop={handleDrop}
+                    style={{ pointerEvents: isDragging ? 'auto' : 'none' }}
                   >
                     {isDragging && (
-                      <div className="absolute inset-0 z-[100] bg-indigo-500/20 backdrop-blur-sm border-2 border-dashed border-indigo-500/50 flex flex-col items-center justify-center rounded-2xl m-4 pointer-events-none transition-all">
-                        <div className="p-4 bg-indigo-900/40 rounded-full mb-4">
-                          <Activity className="w-8 h-8 text-indigo-400 animate-pulse" />
+                      <div className="absolute inset-0 z-[100] m-4 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-indigo-400/50 bg-indigo-950/75 backdrop-blur-md">
+                        <div className="mb-4 rounded-full bg-indigo-500/20 p-4">
+                          <Activity className="h-8 w-8 animate-pulse text-indigo-300" />
                         </div>
-                        <h2 className="text-2xl font-bold text-white tracking-widest uppercase">Assimilar Ficheiros</h2>
-                        <p className="text-indigo-200/60 mt-2">Larga os documentos para criar novas memórias ou sistemas solares.</p>
+                        <h2 className="text-2xl font-bold uppercase tracking-widest text-white">{t('appDropTitle')}</h2>
+                        <p className="mt-2 text-sm text-indigo-200/70">{t('appDropBody')}</p>
                       </div>
                     )}
+                  </div>
 
-                    <div className={`absolute inset-0 transition-opacity duration-[2000ms] ${activeMode === 'insights' || !isFlowComposerOpen ? 'opacity-100 z-30' : 'opacity-40 z-0'}`}>
-                      <MemoryGraph
-                        data={graphData}
-                        sessions={sessions}
-                        searchResultNodeIds={searchQuery.trim() ? filteredSessions.map((session) => session.id) : []}
-                        focusedNodeId={focusedMemoryId}
-                        onTransmitMemory={(session, options) => {
-                          if (options?.includeLinked && session.connections?.length) {
-                            const byId = new Map(allSessions.map((s) => [s.id, s]));
-                            const linked = session.connections
-                              .map((id) => byId.get(id))
-                              .filter((s): s is typeof session => Boolean(s?.text?.trim()))
-                              .slice(0, 12);
-                            const items = [
-                              { title: session.title, text: session.text, tags: session.tags },
-                              ...linked.map((s) => ({ title: s.title, text: s.text, tags: s.tags })),
-                            ];
-                            openTransmission({
-                              memoryId: session.id,
-                              title: `Pack: ${session.title || 'Memórias'}`,
-                              text: encodeCapsulePack(items),
-                              isPack: true,
-                              packCount: items.length,
-                            });
-                            return;
-                          }
-                          openTransmission({
-                            memoryId: session.id,
-                            title: session.title,
-                            text: session.text,
-                          });
-                        }}
-                      />
+                  {/* Empty Universe Overlay */}
+                  {memoryView === 'universe' && universeMemories.length === 0 && (
+                    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-6">
+                      <div className="pointer-events-auto max-w-md rounded-3xl border border-violet-400/20 bg-[#050514]/80 px-7 py-8 text-center shadow-[0_0_60px_rgba(99,102,241,0.18)] backdrop-blur-xl">
+                        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-400/30 bg-violet-500/15">
+                          <Sparkles className="h-5 w-5 text-violet-200" />
+                        </div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-200/70">{t('appEmptyEyebrow')}</p>
+                        <h2 className="mt-2 text-lg font-semibold text-white">{t('appEmptyTitle')}</h2>
+                        <p className="mt-2 text-sm leading-relaxed text-white/50">
+                          {t('appEmptyBody')}
+                        </p>
+                        <div className="mt-5 flex flex-col gap-2">
+                          <button
+                            type="button"
+                            disabled={isBootstrappingUniverse || !mnemonic}
+                            onClick={() => void handleAssimilateStarter()}
+                            className="inline-flex items-center justify-center gap-2 rounded-full border border-violet-400/40 bg-violet-500/25 px-4 py-2.5 text-sm font-semibold text-violet-50 transition hover:bg-violet-500/35 disabled:opacity-40"
+                          >
+                            <Rocket className="h-4 w-4" />
+                            {t('appEmptyStarter')}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!mnemonic}
+                            onClick={() => {const actor=auth.currentUser?.uid;if(!actor)return;vaultActorRef.current={uid:actor,current:captureImportFeedback(actor)};if(vaultActorRef.current.current())vaultInputRef.current?.click();}}
+                            className="inline-flex items-center justify-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-white/80 transition hover:bg-white/10 disabled:opacity-40"
+                          >
+                            <FolderOpen className="h-4 w-4" />
+                            {t('appEmptyVault')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => focusUniverseCapture()}
+                            className="text-xs text-white/45 underline-offset-2 hover:text-white/70 hover:underline"
+                          >
+                            {t('appEmptyWrite')}
+                          </button>
+                        </div>
+                        <input
+                          ref={(el) => {
+                            vaultInputRef.current = el;
+                            if (el) {
+                              el.setAttribute('webkitdirectory', '');
+                              el.setAttribute('directory', '');
+                            }
+                          }}
+                          type="file"
+                          className="hidden"
+                          multiple
+                          accept={DOCUMENT_FILE_ACCEPT}
+                          onChange={(event) => {
+                            const list = event.target.files;
+                            const captured=vaultActorRef.current;vaultActorRef.current=null;
+                            if(captured&&!captured.current()){event.target.value='';return;}
+                            if (!list?.length) return;
+                            void runVaultOrDocumentImport(Array.from(list),captured??undefined);
+                            event.target.value = '';
+                          }}
+                        />
+                      </div>
                     </div>
+                  )}
 
-                    {activeMode === 'flow' && isFlowComposerOpen && (
-                      <CognitiveInput
-                        onWebResearchCommand={openWebResearch}
-                        existingMemories={allSessions}
-                        onClose={() => setIsFlowComposerOpen(false)}
-                        onMemoryCreated={(memoryId) => {
-                          setFocusedMemoryId(memoryId);
-                          setSearchQuery('');
-                        }}
-                      />
-                    )}
-                    {activeMode === 'insights' && (
-                      <InsightsPanel
-                        sessions={sessions}
-                        onMemoryClick={setEditingSession}
-                        onClose={() => setActiveMode('flow')}
-                      />
-                    )}
+                  <div className="pointer-events-auto absolute bottom-24 left-3 z-40 max-w-md">
+                    <AttachedMemoryRecoveryPanel onMemoryCreated={handleMemoryCreated} />
+                    <MemoryEditRecoveryPanel/><TeamConnectionRecoveryPanel/><SemanticClusterRecoveryPanel/><SemanticRelationRecoveryPanel/><SyncConflictRecoveryPanel/><PersonalMigrationRecoveryPanel/><TeamHistoryChangeRecoveryPanel/>
+                  </div>
+                  <StudyModePanel onSave={saveMemory} />
+                  {isReviewInboxOpen && currentUser && (
+                    <ReviewInboxPanel key={currentUser.uid} uid={currentUser.uid} memories={universeMemories}
+                      selectedMemoryId={selectedMemoryId} onOpenSource={(memoryId) => {
+                        selectMemory(memoryId);
+                        setSidebarTab('memory');
+                        setIsSidebarOpen(true);
+                      }}
+                      onClose={() => setIsReviewInboxOpen(false)} />
+                  )}
 
-                    <nav
-                      className="mnem-dock absolute bottom-6 left-1/2 z-50 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-center gap-1 overflow-x-auto p-1.5 sm:bottom-8 sm:gap-1.5 sm:p-2"
-                      aria-label="Navegação principal"
+                  {/* Cognitive Floating Input — sempre no Universo */}
+                  <CognitiveInput
+                    mnemonic={mnemonic}
+                    onWebResearchCommand={openWebResearch}
+                    existingMemories={allSessions}
+                    onMemoryCreated={handleMemoryCreated}
+                  />
+
+                  {/* Unified Cognitive Sidebar Drawer */}
+                  <CognitiveSidebar
+                    isOpen={isSidebarOpen}
+                    onClose={() => {
+                      setIsSidebarOpen(false);
+                      selectMemory(null);
+                    }}
+                    activeTab={sidebarTab}
+                    onTabChange={setSidebarTab}
+                    allSessions={allSessions}
+                    onSaveMemory={saveMemory}
+                    onDeleteMemory={deleteMemory}
+                    onOpenTransmission={openTransmission}
+                    onOpenWebResearch={openWebResearch}
+                    onOpenExport={() => setIsExportOpen(true)}
+                  />
+
+                  {/* Main Floating Dock */}
+                  <nav className="mnem-dock absolute bottom-6 left-1/2 z-30 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-center gap-1.5 overflow-x-auto p-1.5 sm:bottom-8 sm:p-2" aria-label={t('appNavMain')}>
+                    <button
+                      type="button"
+                      onClick={() => focusUniverseCapture()}
+                      className={`mnem-dock-item ${isCaptureOpen ? 'mnem-dock-item-active' : ''}`}
+                      title={t('appDockCaptureTitle')}
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveMode('flow');
-                          setIsFlowComposerOpen((open) => (activeMode === 'flow' ? !open : true));
-                        }}
-                        className={`mnem-dock-item ${activeMode === 'flow' && isFlowComposerOpen ? 'mnem-dock-item-active' : ''}`}
-                      >
-                        <Compass className="h-4 w-4" />
-                        <span>Flow</span>
-                      </button>
+                      <PenLine className="h-4 w-4 text-cyan-300" />
+                      <span>{t('tabCapture')}</span>
+                    </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveMode('insights');
-                          setIsFlowComposerOpen(false);
-                        }}
-                        className={`mnem-dock-item ${activeMode === 'insights' ? 'mnem-dock-item-active' : ''}`}
-                      >
-                        <Activity className="h-4 w-4" />
-                        <span>Insights</span>
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSidebarTab('insights');
+                        setIsSidebarOpen(true);
+                      }}
+                      className={`mnem-dock-item ${isSidebarOpen && sidebarTab === 'insights' ? 'mnem-dock-item-active' : ''}`}
+                      title={t('appInsightsTitle')}
+                    >
+                      <Sparkles className="h-4 w-4 text-violet-300" />
+                      <span>{t('appInsights')}</span>
+                    </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveMode('flow');
-                          setIsFlowComposerOpen(false);
-                          openCommandPalette();
-                        }}
-                        className="mnem-dock-item"
-                      >
-                        <Search className="h-4 w-4" />
-                        <span>Search</span>
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSidebarTab('web');
+                        setIsSidebarOpen(true);
+                      }}
+                      className={`mnem-dock-item ${isSidebarOpen && sidebarTab === 'web' ? 'mnem-dock-item-active' : ''}`}
+                      title={t('appDockWebTitle')}
+                    >
+                      <Globe className="h-4 w-4 text-sky-300" />
+                      <span>{t('btnWeb')}</span>
+                    </button>
 
-                      <span className="mx-0.5 hidden h-6 w-px bg-white/10 sm:block" aria-hidden />
+                    <button
+                      type="button"
+                      onClick={() => openTransmission(null, 'compose')}
+                      className={`mnem-dock-item ${isTransmissionOpen ? 'mnem-dock-item-active' : ''}`}
+                      title={t('appDockCommsTitle')}
+                    >
+                      <Radio className="h-4 w-4 text-fuchsia-300" />
+                      <span>Comms</span>
+                    </button>
 
-                      <button
-                        type="button"
-                        onClick={() => openWebResearch('')}
-                        className="mnem-dock-item mnem-dock-item-cyan"
-                      >
-                        <Globe className="h-4 w-4" />
-                        <span className="hidden sm:inline">Web</span>
-                        <span className="sm:hidden">Web</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => navigate('/universe')}
-                        className="mnem-dock-item"
-                      >
-                        <Sparkles className="h-4 w-4" />
-                        <span>Universe</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => openTransmission(null)}
-                        className="mnem-dock-item mnem-dock-item-indigo"
-                      >
-                        <Radio className="h-4 w-4" />
-                        <span>Comms</span>
-                      </button>
-                    </nav>
-                  </main>
-
-                  <CommandPalette
-                    memories={filteredSessions}
-                    searchQuery={searchQuery}
-                    onSearchQueryChange={(query) => {
-                      setSearchQuery(query);
-                      if (!query.trim()) setFocusedMemoryId(null);
-                    }}
-                    onMemorySelect={(memory) => {
-                      setActiveMode('flow');
-                      setIsFlowComposerOpen(false);
-                      setFocusedMemoryId(memory.id);
-                    }}
-                    onWebResearch={openWebResearch}
-                    onOpenSettings={(section) => {
-                      setSettingsSection(section || null);
-                      setIsSettingsOpen(true);
-                    }}
-                    onOpenPulse={() => setIsPulseOpen(true)}
-                    onOpenInsights={() => {
-                      setActiveMode('insights');
-                      setIsFlowComposerOpen(false);
-                    }}
-                  />
-                  <SettingsModal
-                    isOpen={isSettingsOpen}
-                    onClose={() => {
-                      setIsSettingsOpen(false);
-                      setSettingsSection(null);
-                    }}
-                    mnemonic={mnemonic}
-                    onResetKey={handleResetKey}
-                    sessions={allSessions}
-                    onReplayOnboarding={() => setForceOnboarding(true)}
-                    initialSection={settingsSection}
-                  />
-                  <CognitivePulsePanel
-                    isOpen={isPulseOpen}
-                    sessions={sessions}
-                    uid={currentUser?.uid || ''}
-                    onClose={() => setIsPulseOpen(false)}
-                    onOpenMemory={(memoryId) => {
-                      setFocusedMemoryId(memoryId);
-                      setActiveMode('flow');
-                      setIsFlowComposerOpen(false);
-                      setIsPulseOpen(false);
-                    }}
-                    onOpenInsights={() => {
-                      setActiveMode('insights');
-                      setIsFlowComposerOpen(false);
-                      setIsPulseOpen(false);
-                    }}
-                  />
-                  <MemoryEditorModal session={editingSession} allMemories={sessions} onMemoryClick={setEditingSession} onClose={() => setEditingSession(null)} />
-                  <TransmissionPanel
-                    isOpen={isTransmissionOpen}
-                    onClose={() => {
-                      setIsTransmissionOpen(false);
-                      setTransmissionDraft(null);
-                    }}
-                    mnemonic={mnemonic}
-                    initialDraft={transmissionDraft}
-                  />
-                  <WebResearchPanel
-                    isOpen={isWebResearchOpen}
-                    onClose={() => setIsWebResearchOpen(false)}
-                    sessions={sessions}
-                    initialQuery={webResearchQuery}
-                    onMemoryCreated={(memoryId) => {
-                      setFocusedMemoryId(memoryId);
-                      setSearchQuery('');
-                      setActiveMode('insights');
-                    }}
-                  />
-                  <OnboardingTour
-                    enabled={Boolean(currentUser && mnemonic)}
-                    forceOpen={forceOnboarding}
-                    onForceConsumed={() => setForceOnboarding(false)}
-                    onOpenFlow={() => {
-                      setActiveMode('flow');
-                      setIsFlowComposerOpen(true);
-                    }}
-                    onOpenSearch={() => openCommandPalette()}
-                    onOpenUniverse={() => navigate('/universe')}
-                  />
+                    <button
+                      type="button"
+                      onClick={() => openCommandPalette()}
+                      className="mnem-dock-item"
+                      title={t('appDockSearchTitle')}
+                    >
+                      <Search className="h-4 w-4 text-slate-300" />
+                      <span className="hidden sm:inline">{t('appSearch')}</span>
+                    </button>
+                  </nav>
                 </div>
               )}
             </div>
           )
         } />
       </Routes>
+
+      {/* Modais Globais */}
+      {isSettingsOpen && (
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => {
+            setIsSettingsOpen(false);
+            setSettingsSection(null);
+          }}
+          mnemonic={mnemonic}
+          onResetKey={handleResetKey}
+          sessions={allSessions}
+          onOpenExport={() => {
+            setIsSettingsOpen(false);
+            setExportForMigration(true);
+            setIsExportOpen(true);
+          }}
+          initialSection={settingsSection}
+          onReplayOnboarding={() => setReplayOnboarding(true)}
+        />
+      )}
+
+      <OnboardingTour
+        enabled={isAuthenticated && Boolean(mnemonic)}
+        forceOpen={replayOnboarding}
+        onForceConsumed={() => setReplayOnboarding(false)}
+        onFocusCapture={() => focusUniverseCapture()}
+        onOpenSearch={() => openCommandPalette()}
+        onOpenUniverse={() => {
+          setIsSidebarOpen(false);
+        }}
+      />
+
+      {isPulseOpen && currentUser && (
+        <CognitivePulsePanel
+          isOpen={isPulseOpen}
+          onClose={() => setIsPulseOpen(false)}
+          uid={currentUser.uid}
+          sessions={sessions}
+          onOpenMemory={(memoryId: string) => {
+            selectMemory(memoryId);
+            setIsSidebarOpen(true);
+            setSidebarTab('memory');
+            setIsPulseOpen(false);
+          }}
+          onOpenInsights={() => {
+            setSidebarTab('insights');
+            setIsSidebarOpen(true);
+            setIsPulseOpen(false);
+          }}
+        />
+      )}
+
+      {isWebResearchOpen && (
+        <WebResearchPanel
+          isOpen={isWebResearchOpen}
+          onClose={() => setIsWebResearchOpen(false)}
+          initialQuery={webResearchQuery}
+          sessions={allSessions}
+          onMemoryCreated={(memoryId: string) => {
+            selectMemory(memoryId);
+            setIsSidebarOpen(true);
+            setSidebarTab('memory');
+            setIsWebResearchOpen(false);
+          }}
+        />
+      )}
+
+      {isTransmissionOpen && (
+        <TransmissionPanel
+          isOpen={isTransmissionOpen}
+          onClose={() => {
+            setIsTransmissionOpen(false);
+            setTransmissionDraft(null);
+            setTransmissionTab('compose');
+          }}
+          mnemonic={mnemonic}
+          initialDraft={transmissionDraft}
+          initialTab={transmissionTab}
+        />
+      )}
+
+      <CommandPalette
+        key={`${currentUser?.uid || 'anonymous'}:${Boolean(mnemonic)}`}
+        uid={currentUser?.uid}
+        vaultUnlocked={Boolean(mnemonic)}
+        memories={sessions}
+        searchQuery={searchQuery}
+        searchResults={searchResults}
+        onSearchQueryChange={setSearchQuery}
+        onMemorySelect={(session) => {
+          selectMemory(session.id);
+          setIsSidebarOpen(true);
+          setSidebarTab('memory');
+        }}
+        onWebResearch={openWebResearch}
+        onOpenSettings={(section) => {
+          setSettingsSection(section || null);
+          setIsSettingsOpen(true);
+        }}
+        onOpenPulse={() => setIsPulseOpen(true)}
+        onOpenInsights={() => {
+          setSidebarTab('insights');
+          setIsSidebarOpen(true);
+        }}
+        onOpenExport={() => setIsExportOpen(true)}
+      />
+      <SovereignExportModal
+        isOpen={isExportOpen}
+        onClose={() => { setIsExportOpen(false); setExportForMigration(false); }}
+        memories={universeMemories}
+        vaultUnlocked={Boolean(mnemonic)}
+        encryptByDefault={exportForMigration}
+      />
       <MnemonicBackupModal
         mnemonic={generatedMnemonicToShow}
         onClose={() => setGeneratedMnemonicToShow(null)}

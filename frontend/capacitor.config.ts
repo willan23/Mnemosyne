@@ -3,6 +3,8 @@ import { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
     appId: 'com.mnemosyne.mobile',
     appName: 'Mnemosyne',
+    // Plugin arguments can contain credentials. Disable Capacitor bridge logging in every build.
+    loggingBehavior: 'none',
     webDir: 'dist',
     server: {
         androidScheme: 'https'

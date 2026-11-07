@@ -1,6 +1,16 @@
 # Mnemosyne - Documento Geral do Sistema
 
-Data de Atualização: **Julho de 2026** (v1.0.7)  
+> Continuação local de 14/10/2026: [criação e revisão recuperável de relações](RELACOES_SEMANTICAS_RECUPERAVEIS.md), com preparação da vista, Worker/algoritmo partilhado, scores verificados e confirmação do par. Diário cifrado, recibo/evento e arquivos/grafo atómicos; decisões anteriores são conservadas. Permanecem as migrações, cutover, operações cloud e critérios de qualidade/uso indicados no estado do lançamento.
+
+> Continuação local de 14/10/2026: [agrupamentos recuperáveis](AGRUPAMENTOS_RECUPERAVEIS.md), com todas as memórias elegíveis por âmbito, preparação antes do cálculo, diário IndexedDB cifrado e versões próprias confirmadas entre lotes. Contrato de metadados; conserva o conteúdo cifrado. Sugestões/revisão, migrações/cutover, operações cloud e os critérios restantes das fases continuam no estado de lançamento.
+
+> Continuação local de 14/10/2026: [ligações recíprocas recuperáveis](LIGACOES_EQUIPAS_RECUPERAVEIS.md), com par capturado antes da confirmação, diário AES, arquivos/pais/recibos atómicos e contadores partilhados. SDK normal ainda exige cutover das escritas e migrações identificadas no estado do lançamento.
+
+> Atualização local de 14/10/2026: [criação textual de equipa recuperável](CRIACAO_TEXTO_EQUIPAS_RECUPERAVEL.md), com época capturada, cifra v2, recibo/uso atómicos e recuperação de pedidos. [ESTADO_LANCAMENTO_COMPLETO.md](ESTADO_LANCAMENTO_COMPLETO.md) regista as áreas ainda exigidas antes da publicação.
+
+> Execução local em 13/10/2026: a [edição e o apagamento recuperáveis](EDICAO_MEMORIAS_RECUPERAVEL.md) usam base capturada, rascunhos cifrados e pedidos com UUID estável. Inclui memórias pessoais/de equipa, metadados, tombstones e criação ligada ao ator capturado. A [revisão aprendida de equipa](REVISAO_EQUIPAS_RECUPERAVEL.md) conserva o seu contrato próprio. O [estado do lançamento completo](ESTADO_LANCAMENTO_COMPLETO.md) é a referência para evidências e pendências atuais. Todas as fases permanecem exigidas antes do deploy completo autorizado.
+
+Data de Atualização: **1 de setembro de 2026**  
 Domínio Oficial: **[https://mnemosyne-one.com](https://mnemosyne-one.com)**  
 Aplicação de Produção: **[https://mnemosyne-one.web.app](https://mnemosyne-one.web.app)**  
 
@@ -101,7 +111,7 @@ Pacote de memoria transmitido ou preparado para partilha, preservando conteudo e
 
 ### Captura de memorias
 
-O utilizador pode criar memorias a partir de texto, escrita livre e importacao de conteudo suportado. A captura deve ser rapida, com pouca friccao e sem exigir classificacao manual.
+O utilizador pode criar memórias a partir de texto no Universo, escrita livre, clipper do browser, atalho de captura e importação de conteúdo suportado. A captura deve ser rápida, com pouca fricção e sem exigir classificação manual.
 
 Ao criar uma memoria, o sistema pode:
 
@@ -211,6 +221,10 @@ O sistema pode importar conteudo suportado e transforma-lo em memorias ou resumo
 
 Quando houver limites de formato, tamanho ou extracao, o sistema deve comunicar isso claramente.
 
+**Vault Obsidian (set 2026):** o utilizador pode importar uma pasta de vault (web ou Tauri). Notas `.md` com frontmatter e `[[wikilinks]]` viram memorias cifradas; wikilinks resolvidos tornam-se `connections` persistidas; pastas de topo A–E mapeiam para taxonomia humana (tags/`taxonomyLane`), nao para pastas no schema Firestore. Limite pragmatico: 150 notas por importacao.
+
+**Starter Founder:** pack in-app de notas reais para o first-run (empty state → ceu aceso). Conteudo editavel em `frontend/src/data/starterFounder.ts`.
+
 ### Exportacao
 
 O utilizador deve conseguir exportar memorias em formatos portaveis quando suportado.
@@ -224,10 +238,12 @@ As definicoes devem funcionar como um painel de controlo do universo pessoal.
 Areas esperadas:
 
 - identidade;
-- privacidade;
+- privacidade (PIN, cifra de memórias antigas, WebAuthn);
+- captura (hotkey, clipper, API keys);
+- equipas E2EE;
 - inteligencia;
 - universo;
-- subscricao;
+- subscricao (Stripe ainda inactivo em produção);
 - zona critica.
 
 ## 7. Privacidade e seguranca
@@ -315,17 +331,26 @@ O plano gratuito permite experimentar o valor principal da plataforma (com limit
 3. Gere chaves e provedores permitidos.
 4. Decide quando recursos externos podem ou nao ser usados.
 
-## 11. Estados atuais do sistema (Julho 2026)
+## 11. Estados atuais do sistema (Setembro 2026)
 
 Com base nas atualizações recentes, o sistema atingiu maturidade de produção nas seguintes frentes:
 
 - **Hospedagem & Domínio**: Plataforma publicada no Firebase Hosting ([https://mnemosyne-one.web.app](https://mnemosyne-one.web.app)) e domínio oficial configurado em **[mnemosyne-one.com](https://mnemosyne-one.com)**;
+- **Ecrã principal**: o **Universo** (não existe vista Flow);
+- **E2EE**: texto e título cifrados no cliente (AES-GCM); embeddings/metadados em claro — ver `/security`;
+- **API / MCP**: keys Bearer; REST e MCP sobre dados persistidos (o servidor não decifra o cofre);
+- **Captura**: hotkey e clipper; export soberano ZIP;
+- **First-run (14 set)**: Starter Founder in-app, import vault Obsidian, taxonomia A–E, modo estudo thin, temas 3D distintos;
+- **Equipas**: espaços E2EE com teamKey no cliente;
 - **Sistema de Pagamentos**: Infraestrutura Stripe integrada, em modo **Founder Preview / Inativo** temporariamente;
 - **Disponibilidade Mobile**: App Android desenvolvida via Capacitor 8, em compilações privadas (ainda **não disponibilizada publicamente na Google Play Store**);
-- **Desktop Engine**: Versão desktop nativa via Tauri 2.0 + Rust com atualizador contínuo purgado e corrigido;
-- **Segurança & Privacidade**: Frase mnemónica ZK, encriptação cliente AES-256-GCM, isolamento total de segredos;
+- **Desktop Engine**: Versão desktop nativa via Tauri 2.0 + Rust;
 - **Inteligência Cognitiva**: Grafo de memória 3D (Three.js), busca semântica, autolink, extração de conceitos e resumos por IA;
+- **i18n**: interface em pt-PT, pt-BR, inglês e francês (sem espanhol);
+- **P3 (set 2026)**: papéis de equipa, `teamAudit`, `/enterprise`, SDK local; App Check monitor ainda sem site key na consola;
 - **Histórico & Transmissão**: Gestão de versões de memória, transmissão de cápsulas E2E entre contactos.
+
+**Agente in-app:** não existe um loop de tools tipo Cursor. O input do Universo já interpreta comandos (`cria memória…`, `/texto gerar`, pesquisa web, imagem). A geração corre no dispositivo (Ollama) ou no backend (Hugging Face / NVIDIA / OpenAI com chaves de servidor). O servidor **não** lê o cofre: plaintext só depois de decifrar no cliente. Um agente que “abre documentos e escreve código no vault” tem de correr no browser com a mnemónica desbloqueada — isso é o próximo slice, não um produto inventado.
 
 ## 12. Requisitos de qualidade
 
@@ -369,4 +394,4 @@ O Mnemosyne e um sistema de memoria cognitiva privada. Ele transforma ideias em 
 
 A promessa do sistema e simples:
 
-> dar ao utilizador uma mente digital privada, expansivel e viva, onde memoria nao e apenas armazenada, mas compreendida, conectada e protegida.
+> dar ao utilizador uma mente digital privada, expansivel e viva, onde memoria nao e apenas armazenada, mas compreendida, conectada e protegida.

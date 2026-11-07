@@ -1,5 +1,6 @@
 import React, { useRef, useMemo, useEffect, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { attachedSceneEvents } from '../../utils/attachedSceneEvents';
 import * as THREE from 'three';
 
 const createSeededRandom = (seed: number) => {
@@ -245,6 +246,7 @@ export const LandingBackground: React.FC = () => {
   return (
     <div className="fixed inset-0 z-0 bg-transparent" aria-hidden="true">
       <Canvas
+        events={attachedSceneEvents}
         camera={{ position: [0, 0, 38], fov: 68 }}
         gl={{ antialias: false, alpha: true }}
         dpr={[1, 1.5]}

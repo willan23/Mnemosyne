@@ -7,6 +7,10 @@ import type { MemoryObject } from '../../types/universe';
 import { v4 as uuidv4 } from 'uuid';
 import { auth } from '../../firebase';
 import toast from 'react-hot-toast';
+import { semanticCandidateEligibility } from '../../services/semanticWriteScope';
+import {withPersonalMemoryMutation} from '../../services/personalMemoryMutation';
+import {assertPersonalMemoryCreationEnabled,hasPendingAttachedMemoryCreation} from '../../services/attachedMemoryRecovery';
+import {useSyncFeedback} from '../../hooks/useSyncFeedback';
 
 const PLACEHOLDERS = [
   'No que estás a pensar?',
@@ -17,7 +21,7 @@ const PLACEHOLDERS = [
 ];
 
 interface MemoryInputPanelProps {
-  onSave?: (memory: MemoryObject) => void | Promise<void>;
+  onSave?: import('../../types/universe').MemorySaveCallback;
 }
 
 export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) => {
@@ -26,8 +30,9 @@ export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) =>
   const [isOpen, setIsOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const placeholderIndex = useRef(Math.floor(Math.random() * PLACEHOLDERS.length));
+  const edit=useRef(0),feedback=useSyncFeedback(isOpen);
 
-  const { addMemory, memories, embeddingReady, setIsLoading, selectMemory } = useUniverseStore();
+  const { addMemory, memories, embeddingReady, selectMemory } = useUniverseStore();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -36,16 +41,22 @@ export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) =>
   }, [isOpen]);
 
   const handleSubmit = useCallback(async () => {
-    const content = text.trim();
-    if (!content || isProcessing) return;
+    const content = text,actor=auth.currentUser?.uid;
+    if (!content.trim() || isProcessing||!onSave||!actor) return;
+    const current=feedback.capture(actor),submitted=edit.current;if(!current())return;
 
     setIsProcessing(true);
-    setIsLoading(true);
 
     try {
-      const result = await cognitiveEngine.processMemory(content, memories);
+      assertPersonalMemoryCreationEnabled();if(hasPendingAttachedMemoryCreation(actor))throw Error('Recupera ou cancela a criação pendente antes de repetir.');
+      await withPersonalMemoryMutation(actor,async context=>{const guard=()=>{context.assertCurrent();if(!current()||edit.current!==submitted)throw Error('Capture changed');};guard();const uid=actor;
+      const result = await cognitiveEngine.processMemory(
+        content,
+        memories,
+        { assertCurrent: guard, eligible: semanticCandidateEligibility(uid) },
+      );
       const title = cognitiveEngine.generateTitle(content);
-      const uid = auth.currentUser?.uid ?? 'anonymous';
+      guard();
 
       const newMemory: MemoryObject = {
         id: uuidv4(),
@@ -54,7 +65,8 @@ export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) =>
         celestialType: result.celestialType,
         position: result.position,
         embedding: result.embedding,
-        connections: result.connections,
+        embeddingModel: result.embeddingModel,
+        connections: [],
         semanticClusterId: result.semanticClusterId,
         importance: result.importance,
         timestamp: Date.now(),
@@ -63,27 +75,19 @@ export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) =>
         scale: 1,
       };
 
-      addMemory(newMemory);
-      await onSave?.(newMemory);
-      selectMemory(newMemory.id);
+      const outcome=await onSave(newMemory,{kind:'create',assertCurrent:guard});guard();if(!outcome?.id)throw Error('Criação sem confirmação de ID');const confirmed={...newMemory,id:outcome.id};
+      addMemory(confirmed);selectMemory(confirmed.id);
       setText('');
       setIsOpen(false);
 
-      const links = result.connections.length;
-      toast.success(
-        links > 0
-          ? `Memória lançada · ${links} ligação${links === 1 ? '' : 'ões'}`
-          : 'Memória lançada no universo',
-        { icon: '✦', duration: 3200 }
-      );
-    } catch (err) {
-      console.error('Failed to process memory:', err);
-      toast.error('Não foi possível processar a memória. Tenta de novo.');
+      toast.success('Memória lançada no universo', { icon: '✦', duration: 3200 });
+      });
+    } catch {
+      if(current())toast.error('Não foi possível confirmar a memória. O texto e o pedido pendente foram conservados.');
     } finally {
-      setIsProcessing(false);
-      setIsLoading(false);
+      if(auth.currentUser?.uid===actor)setIsProcessing(false);
     }
-  }, [text, isProcessing, memories, addMemory, setIsLoading, onSave, selectMemory]);
+  }, [text, isProcessing, memories, addMemory, onSave, selectMemory,feedback]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -161,7 +165,7 @@ export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) =>
               <textarea
                 ref={textareaRef}
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => {edit.current++;setText(e.target.value);}}
                 onKeyDown={handleKeyDown}
                 placeholder={PLACEHOLDERS[placeholderIndex.current]}
                 rows={4}

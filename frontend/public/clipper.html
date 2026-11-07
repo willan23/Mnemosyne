@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+  <script src="/clip-ingress.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clipper · Mnemosyne</title>
+  <meta name="robots" content="noindex,nofollow" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(34, 211, 238, 0.16), transparent 28rem),
+        radial-gradient(circle at 80% 20%, rgba(139, 92, 246, 0.18), transparent 30rem),
+        #03030d;
+      color: #e2e8f0;
+    }
+    main {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      max-width: 28rem;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 20px;
+      background: rgba(7, 16, 31, 0.88);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.4);
+      padding: 28px 24px;
+      text-align: center;
+    }
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: #67e8f9;
+      font-weight: 700;
+    }
+    h1 { margin: 10px 0 8px; font-size: 1.25rem; color: #fff; }
+    p { margin: 0; color: #94a3b8; font-size: 0.9rem; line-height: 1.55; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <p class="eyebrow">Mnemosyne</p>
+      <h1 id="clip-heading">A entregar o clip</h1>
+      <p id="clip-body">A sessão web vai cifrar este recorte com a tua chave. Nada é cifrado nesta página — a extensão não tem a mnemónica.</p>
+    </div>
+  </main>
+  <script>
+    (function () {
+      // Não entregar silenciosamente se o bootstrap estiver ausente ou bloqueado.
+      if (window.__mnemosyneClipIngressReady !== true) {
+        window.__mnemosyneClipIngressFailed = true;
+        try { history.replaceState(history.state, '', '/clipper.html'); } catch (e) {}
+      }
+      var copy = {
+        'pt-pt': {
+          title: 'A entregar o clip',
+          body: 'A sessão web vai cifrar este recorte com a tua chave. Nada é cifrado nesta página — a extensão não tem a mnemónica.',
+        },
+        'pt-br': {
+          title: 'Entregando o clip',
+          body: 'A sessão web vai cifrar este recorte com a sua chave. Nada é cifrado nesta página — a extensão não tem a mnemónica.',
+        },
+        en: {
+          title: 'Handing off the clip',
+          body: 'The web session will encrypt this clip with your key. Nothing is encrypted on this page — the extension does not have the mnemonic.',
+        },
+        fr: {
+          title: 'Remise du clip',
+          body: 'La session web chiffrera cet extrait avec votre clé. Rien n’est chiffré sur cette page — l’extension n’a pas la mnémotechnique.',
+        },
+      };
+      var nav = String(navigator.language || 'en').toLowerCase();
+      var locale = nav.indexOf('pt-br') === 0 ? 'pt-br' : nav.indexOf('pt') === 0 ? 'pt-pt' : nav.indexOf('fr') === 0 ? 'fr' : 'en';
+      try {
+        var raw = localStorage.getItem('mnemosyne-universe-preferences');
+        var stored = raw ? JSON.parse(raw) : null;
+        var storedLang = stored && stored.state && stored.state.language;
+        if (storedLang && copy[storedLang]) locale = storedLang;
+      } catch (e) {}
+      var htmlLang = { 'pt-pt': 'pt-PT', 'pt-br': 'pt-BR', en: 'en', fr: 'fr' }[locale];
+      document.documentElement.lang = htmlLang;
+      var heading = document.getElementById('clip-heading');
+      var body = document.getElementById('clip-body');
+      if (heading) heading.textContent = copy[locale].title;
+      if (body) body.textContent = copy[locale].body;
+      if (window.__mnemosyneClipIngressFailed === true) {
+        var errors = {
+          'pt-pt': ['Não foi possível receber o clip', 'A entrada é inválida, já existe um clip na fila ou o armazenamento local está indisponível. Volta à extensão e tenta novamente depois de resolver a fila ou o armazenamento.'],
+          'pt-br': ['Não foi possível receber o clip', 'A entrada é inválida, já existe um clip na fila ou o armazenamento local está indisponível. Volte à extensão e tente novamente depois de resolver a fila ou o armazenamento.'],
+          en: ['Could not receive the clip', 'The input is invalid, a clip is already queued, or local storage is unavailable. Return to the extension and try again after resolving the queue or storage.'],
+          fr: ['Impossible de recevoir l’extrait', 'L’entrée est invalide, un extrait est déjà en attente ou le stockage local est indisponible. Réessayez depuis l’extension après avoir résolu la file ou le stockage.']
+        };
+        if (heading) heading.textContent = errors[locale][0];
+        if (body) { body.textContent = errors[locale][1]; body.setAttribute('role', 'alert'); }
+        return;
+      }
+      location.replace('/clip');
+    })();
+  </script>
+</body>
+</html>
