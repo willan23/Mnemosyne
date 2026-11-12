@@ -13,12 +13,12 @@ import { fetchProviderResponse } from './providerTransport';
 import { isGenerationProviderEnabled } from './generationProviderPolicy';
 import { GENERATION_HTTP_POLICY } from './generationHttpPolicy';
 import { reportedTextModel, decodeProviderImage } from './providerResponsePolicy';
-import { generateGeminiText, generateGeminiImage } from './geminiGeneration';
+import { generateGeminiText, generateGeminiImage, generateVertexText } from './geminiGeneration';
 import { generateOpenRouterFreeText } from './openrouterFreeGeneration';
 import { safeFetchExternalUrl } from './safeExternalFetch';
 import { observeAiHandler, type AiOperation } from './aiOperationalEvents';
 
-import { readEnv, readSecret, openaiApiKey, nvidiaApiKey, huggingfaceApiKey, geminiApiKey, openrouterApiKey } from './params';
+import { readEnv, readSecret, openaiApiKey, nvidiaApiKey, huggingfaceApiKey, geminiApiKey, openrouterApiKey, vertexApiKey } from './params';
 
 type ResearchMode = 'public' | 'contextual' | 'private-local';
 type SourceStatus = 'read' | 'snippet-only' | 'failed';
@@ -774,6 +774,7 @@ export const generateTextHandler = observeAiHandler('text', async (req, res, ope
         nvidia: generateTextWithNvidia,
         openai: generateTextWithOpenAI,
         gemini: (prompt: string, model: string, maxTokens: number) => generateGeminiText(prompt, model, maxTokens, readSecret(geminiApiKey, 'GEMINI_API_KEY')),
+        vertex: (prompt: string, model: string, maxTokens: number) => generateVertexText(prompt, model, maxTokens, readSecret(vertexApiKey, 'GOOGLE_VERTEX_API_KEY')),
         openrouter: (prompt: string, model: string, maxTokens: number) => generateOpenRouterFreeText(prompt, model, maxTokens, readSecret(openrouterApiKey, 'OPENROUTER_API_KEY')),
     }[model.provider];
     try {

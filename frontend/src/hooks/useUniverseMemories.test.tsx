@@ -91,6 +91,17 @@ import { IndexedSemanticWriteIndex } from '../services/indexedSemanticWriteIndex
 import { selectSemanticWriteNeighbors } from '../services/semanticWriteClient';
 import type { IndexedSemanticWriteMessage } from '../services/indexedSemanticWriteProtocol';
 import { CURRENT_EMBEDDING_SPACE } from '../services/embeddingModel';
+import { IncrementalMemoryPublication } from '../services/incrementalMemoryPublication';
+import { stageUniverseDeletion } from '../services/universeMemoryPublication';
+function delayPublications() {
+  const publish = IncrementalMemoryPublication.prototype.publishSnapshot;
+  vi.spyOn(IncrementalMemoryPublication.prototype, 'publishSnapshot').mockImplementation(async function(isCurrent, deliver) {
+    const snapshot = this.snapshot();
+    if (snapshot.length >= 300) await new Promise<void>(resolve => setTimeout(resolve, 0));
+    if (!isCurrent() || this.snapshot() !== snapshot) return false;
+    return publish.call(this, isCurrent, deliver);
+  });
+}
 class HookIndexWorker extends EventTarget {
   index = new IndexedSemanticWriteIndex();
   terminate = vi.fn(() => this.index.clear());
@@ -124,7 +135,7 @@ beforeEach(() => {
     return {};
   });
   state.resolve.mockReset().mockImplementation(async data => ({ text: data.text, locked: false }));
-  state.apply.mockReset().mockImplementation(async input=>{input.assertCurrent();if(input.prepare)await input.prepare(input.assertCurrent);input.assertCurrent();return{status:'committed'};});state.capture.mockReset().mockImplementation(async input=>{input.assertCurrent();return base(input.id,input.teamId,input.expected.authorUid);});state.create.mockReset().mockResolvedValue({id:'actual-created-id'});state.semantic.mockReset().mockResolvedValue({embedding:[1],embeddingModel:'synthetic-local',semanticClusterId:'synthetic-cluster',position:[0,0,0],importance:.5,celestialType:'planet'});
+  state.apply.mockReset().mockImplementation(async input=>{input.assertCurrent();if(input.prepare)await input.prepare(input.assertCurrent);input.assertCurrent();return{status:'committed',revision:20};});state.capture.mockReset().mockImplementation(async input=>{input.assertCurrent();return base(input.id,input.teamId,input.expected.authorUid);});state.create.mockReset().mockResolvedValue({id:'actual-created-id'});state.semantic.mockReset().mockResolvedValue({embedding:[1],embeddingModel:'synthetic-local',semanticClusterId:'synthetic-cluster',position:[0,0,0],importance:.5,celestialType:'planet'});
 });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const base=(id:string,teamId:string|null,authorUid='bob')=>({kind:teamId?'team' as const:'personal' as const,sessionId:id,teamId,authorUid,ownerUid:teamId?'owner':authorUid,stateHash:'a'.repeat(64),stateDigest:'b'.repeat(64),revision:10,teamStateHash:teamId?'c'.repeat(64):null,epochStateHash:teamId?'d'.repeat(64):null,keyEpoch:teamId?1:null,keyId:teamId?'11111111-1111-4111-8111-111111111111':null,priorKeyEpoch:teamId?1:null,priorKeyId:teamId?'11111111-1111-4111-8111-111111111111':null});
@@ -183,7 +194,7 @@ it('refuses a semantic edit when a newer snapshot changes its candidate cohort d
   const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));
   await act(async()=>state.listeners[0].next(snapshot('allowed')));
   let finish!:(value:unknown)=>void;state.semantic.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
-  const committed=vi.fn();state.apply.mockImplementation(async input=>{input.assertCurrent();await input.prepare(input.assertCurrent);committed();return{status:'committed'};});
+  const committed=vi.fn();state.apply.mockImplementation(async input=>{input.assertCurrent();await input.prepare(input.assertCurrent);committed();return{status:'committed',revision:20};});
   const memory={id:'edited',uid:'alice',text:'New text',connections:[],persistedStateDigest:'b'.repeat(64)};
   const pending=view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'edit',baseline:base('edited',null,'alice'),title:null,metadata:{},refreshSemantic:true,assertCurrent:()=>{}});
   const rejected=expect(pending).rejects.toThrow('Não foi possível guardar a memória.');
@@ -192,7 +203,7 @@ it('refuses a semantic edit when a newer snapshot changes its candidate cohort d
   finish({embedding:[1],embeddingModel:'synthetic-local'});await rejected;
   expect(committed).not.toHaveBeenCalled();
 });
-it('explicit creation uses the confirmed generated ID and fails when its account changes during acknowledgement',async()=>{const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));const memory={id:'local-placeholder',uid:'alice',text:'Synthetic new capture',connections:[],embedding:[],position:[0,0,0],importance:.5,celestialType:'planet'};expect(await view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'create',assertCurrent:()=>{}})).toEqual({id:'actual-created-id'});state.create.mockImplementationOnce(async()=>{state.auth?.({uid:'bob'});return{id:'wrong-account-completion'};});await expect(view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'create',assertCurrent:()=>{}})).rejects.toThrow();});
+it('explicit creation uses the confirmed generated ID and fails when its account changes during acknowledgement',async()=>{const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));const memory={id:'local-placeholder',uid:'alice',text:'Synthetic new capture',connections:[],embedding:[],position:[0,0,0],importance:.5,celestialType:'planet'};expect(await view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'create',assertCurrent:()=>{}})).toMatchObject({id:'actual-created-id',viewCommit:expect.any(Object)});state.create.mockImplementationOnce(async()=>{state.auth?.({uid:'bob'});return{id:'wrong-account-completion'};});await expect(view.result.current.saveMemory(memory as Parameters<typeof view.result.current.saveMemory>[0],{kind:'create',assertCurrent:()=>{}})).rejects.toThrow();});
 it('a personal tombstone prevents a nested legacy shadow from resurrecting the same ID and is UID scoped',async()=>{renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));await act(async()=>state.listeners[1].next(snapshot('same-id')));expect(lastIds()).toEqual(['same-id']);await act(async()=>state.listeners[0].next({docs:[{id:'same-id',data:()=>({uid:'alice',teamId:null,timestamp:1,deletedAt:20})}]}));expect(lastIds()).toEqual([]);await act(async()=>state.listeners[1].next(snapshot('same-id')));expect(lastIds()).toEqual([]);act(()=>state.auth?.({uid:'bob'}));await act(async()=>state.listeners[3].next(snapshot('same-id')));expect(lastIds()).toEqual(['same-id']);});
 it('refuses saves and deletions after logout instead of acknowledging an operation that was never sent', async () => {
   const view = renderHook(() => useUniverseMemories()); act(() => state.auth?.(null));
@@ -518,9 +529,21 @@ it('resets active caches on membership replacement, key refresh, account change 
 const largeDocuments = () => Array.from({ length: 300 }, (_, index) =>
   document(`large-${index}`, { timestamp: 300 - index }));
 
+it('issues a scoped deletion confirmation only after a committed server revision', async () => {
+  const view = renderHook(() => useUniverseMemories()); act(() => state.auth?.({ uid: 'alice' }));
+  await act(async () => state.listeners[0].next({ docs: [document('confirmed-delete', { updatedAt: 10 })] }));
+  const source = lastMemories()[0];
+  const outcome = await view.result.current.deleteMemory(source.id, source);
+  expect(outcome?.viewCommit).toBeDefined();
+  expect(stageUniverseDeletion(lastMemories(), source.id, outcome?.viewCommit)?.[0].pendingDeletion).toBe(true);
+  state.apply.mockResolvedValueOnce({ status: 'pending', revision: null });
+  await expect(view.result.current.deleteMemory(source.id, source)).rejects.toThrow('Não foi possível apagar a memória.');
+});
+
 it.each(['key-refresh', 'account-change', 'logout', 'unmount'] as const)(
   'retires a yielding publication synchronously on %s', async reason => {
     vi.useFakeTimers();
+    delayPublications();
     const view = renderHook(() => useUniverseMemories());
     act(() => state.auth?.({ uid: 'alice' }));
     await act(async () => state.listeners[0].next({ docs: largeDocuments() }));
@@ -544,6 +567,7 @@ it.each(['key-refresh', 'account-change', 'logout', 'unmount'] as const)(
 it.each(['membership', 'listener-error'] as const)(
   'removes revoked team rows immediately while a large replacement view yields (%s)', async reason => {
     vi.useFakeTimers();
+    delayPublications();
     renderHook(() => useUniverseMemories());
     act(() => state.auth?.({ uid: 'alice' }));
     await act(async () => state.listeners[0].next({ docs: largeDocuments() }));
@@ -567,6 +591,7 @@ it.each(['membership', 'listener-error'] as const)(
 
 it('delivers only the latest delta when a prior large publication is yielding', async () => {
   vi.useFakeTimers();
+  delayPublications();
   renderHook(() => useUniverseMemories());
   act(() => state.auth?.({ uid: 'alice' }));
   await act(async () => state.listeners[0].next({ docs: largeDocuments() }));

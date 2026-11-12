@@ -96,6 +96,8 @@ export class IncrementalMemoryPublication<T extends { id: string; timestamp: num
   get count(): number { return this.resolved.size; }
   get(id: string): T | undefined { return this.resolved.get(id)?.value; }
   sourceValue(key: string, id: string): T | null | undefined { return this.sources.get(key)?.values.get(id); }
+  sourceSize(key: string): number { return this.sources.get(key)?.order.nodes.size ?? 0; }
+  sourcePosition(key: string, id: string): number | undefined { const source = this.sources.get(key); return source?.order.nodes.has(id) ? source.order.position(id) : undefined; }
   /** Listener order can differ from the merged view; only controlled Worker consumers enumerate it. */
   *orderedSourceValues(key: string): IterableIterator<T> {
     const source = this.sources.get(key); if (!source) return;

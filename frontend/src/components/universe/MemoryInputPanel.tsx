@@ -76,7 +76,7 @@ export const MemoryInputPanel: React.FC<MemoryInputPanelProps> = ({ onSave }) =>
       };
 
       const outcome=await onSave(newMemory,{kind:'create',assertCurrent:guard});guard();if(!outcome?.id)throw Error('Criação sem confirmação de ID');const confirmed={...newMemory,id:outcome.id};
-      addMemory(confirmed);selectMemory(confirmed.id);
+      addMemory(confirmed,outcome.viewCommit);selectMemory(confirmed.id);
       setText('');
       setIsOpen(false);
 

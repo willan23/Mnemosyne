@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { castDraft } from 'immer';
+import { memoryById } from '../services/memorySnapshot';
+import { confirmUniverseCreation, finishUniverseDeletion, isUniversePublication, stageUniverseDeletion, type UniverseViewCommit } from '../services/universeMemoryPublication';
 import type {
   MemoryObject,
   UniverseState,
@@ -10,9 +13,8 @@ import type {
 
 interface UniverseActions {
   setUniverseType: (type: UniverseType) => void;
-  addMemory: (memory: MemoryObject) => void;
-  updateMemory: (id: string, updates: Partial<MemoryObject>) => void;
-  removeMemory: (id: string) => void;
+  addMemory: (memory: MemoryObject, confirmation?: UniverseViewCommit) => void;
+  removeMemory: (id: string, confirmation?: UniverseViewCommit) => void;
   selectMemory: (id: string | null) => void;
   hoverMemory: (id: string | null) => void;
   setIsAddingMemory: (v: boolean) => void;
@@ -22,10 +24,8 @@ interface UniverseActions {
   setCameraTarget: (target: [number, number, number]) => void;
   setSearchQuery: (q: string) => void;
   setFilteredIds: (ids: string[] | null) => void;
-  startDeletion: (id: string, type: DeletionType) => void;
-  finishDeletion: () => void;
-  loadMemories: (memories: MemoryObject[]) => void;
-  addConnection: (sourceId: string, targetId: string) => void;
+  startDeletion: (id: string, type: DeletionType, confirmation?: UniverseViewCommit) => boolean;
+  loadMemories: (memories: readonly MemoryObject[]) => void;
   setGalaxyView: (v: boolean) => void;
   setLanguage: (lang: 'pt-pt' | 'pt-br' | 'en' | 'fr') => void;
   markSpawn: (id: string) => void;
@@ -58,18 +58,24 @@ const initialState: UniverseState = {
 
 export const useUniverseStore = create<UniverseState & UniverseActions>()(
   persist(
-    immer((set) => ({
+    immer((set, get) => ({
       ...initialState,
 
       setUniverseType: (type) =>
         set((state) => { state.universeType = type; }),
 
-      addMemory: (memory) =>
+      addMemory: (memory, confirmation) => {
+        const current = get().memories;
+        const scoped = isUniversePublication(current) || confirmation !== undefined || !Array.isArray(current);
+        const next = scoped ? confirmUniverseCreation(current, memory.id, confirmation) : undefined;
+        if (scoped && !next) return;
         set((state) => {
-          state.memories.push(memory);
+          if (next) state.memories = castDraft<readonly MemoryObject[]>(next);
+          else if (!memoryById(current, memory.id)) state.memories.push(memory);
           state.spawnedMemoryId = memory.id;
           state.spawnedAt = Date.now();
-        }),
+        });
+      },
 
       markSpawn: (id) =>
         set((state) => {
@@ -83,18 +89,16 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
           state.spawnedAt = 0;
         }),
 
-      updateMemory: (id, updates) =>
+      removeMemory: (id, confirmation) => {
+        const current = get().memories, scoped = isUniversePublication(current) || confirmation !== undefined || !Array.isArray(current);
+        const next = scoped ? finishUniverseDeletion(current, id, confirmation) : undefined;
+        if (scoped && !next) return;
         set((state) => {
-          const idx = state.memories.findIndex((m) => m.id === id);
-          if (idx !== -1) {
-            Object.assign(state.memories[idx], updates);
-          }
-        }),
-
-      removeMemory: (id) =>
-        set((state) => {
-          state.memories = state.memories.filter((m) => m.id !== id);
-        }),
+          state.memories = castDraft<readonly MemoryObject[]>(next ?? current.filter(memory => memory.id !== id));
+          if (state.selectedMemoryId === id && !memoryById(next ?? state.memories, id)) state.selectedMemoryId = null;
+          if (state.deletingMemoryId === id) { state.deletingMemoryId = null; state.deletionType = null; }
+        });
+      },
 
       selectMemory: (id) =>
         set((state) => {
@@ -128,47 +132,28 @@ export const useUniverseStore = create<UniverseState & UniverseActions>()(
       setFilteredIds: (ids) =>
         set((state) => { state.filteredIds = ids; }),
 
-      startDeletion: (id, type) =>
+      startDeletion: (id, type, confirmation) => {
+        const current = get().memories, scoped = isUniversePublication(current) || confirmation !== undefined || !Array.isArray(current);
+        const next = scoped ? stageUniverseDeletion(current, id, confirmation) : undefined;
+        if (scoped && !next) return false;
+        const row = memoryById(next ?? current, id), visible = Boolean(row && (!scoped || row.pendingDeletion));
         set((state) => {
+          if (next) state.memories = castDraft<readonly MemoryObject[]>(next);
+          if (!visible) { if (!row && state.selectedMemoryId === id) state.selectedMemoryId = null; return; }
           state.deletingMemoryId = id;
           state.deletionType = type;
-        }),
-
-      finishDeletion: () =>
-        set((state) => {
-          const deletedMemoryId = state.deletingMemoryId;
-          if (deletedMemoryId) {
-            state.memories = state.memories.filter(
-              (m) => m.id !== deletedMemoryId
-            );
-          }
-          state.deletingMemoryId = null;
-          state.deletionType = null;
-          if (state.selectedMemoryId === deletedMemoryId) {
-            state.selectedMemoryId = null;
-          }
-        }),
+        });
+        return visible;
+      },
 
       loadMemories: (memories) =>
         set((state) => {
-          state.memories = memories;
-          if (state.selectedMemoryId && !memories.some((memory) => memory.id === state.selectedMemoryId)) {
+          state.memories = castDraft(memories);
+          if (state.selectedMemoryId && !memoryById(memories, state.selectedMemoryId)) {
             state.selectedMemoryId = null;
           }
           state.hoveredMemoryId = null;
           state.filteredIds = null;
-        }),
-
-      addConnection: (sourceId, targetId) =>
-        set((state) => {
-          const src = state.memories.find((m) => m.id === sourceId);
-          const tgt = state.memories.find((m) => m.id === targetId);
-          if (src && !src.connections.includes(targetId)) {
-            src.connections.push(targetId);
-          }
-          if (tgt && !tgt.connections.includes(sourceId)) {
-            tgt.connections.push(sourceId);
-          }
         }),
 
       setGalaxyView: (v) =>

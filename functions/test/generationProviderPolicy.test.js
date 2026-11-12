@@ -8,7 +8,7 @@ test('release enables only free OpenRouter inference and registers no paid provi
   assert.equal(Object.isFrozen(ACTIVE_GENERATION_PROVIDERS), true);
   assert.deepEqual(generationSecretNames(), ['OPENROUTER_API_KEY']);
   assert.deepEqual(require('../lib/generationProviderPolicy').generationImageSecretNames(), []);
-  for (const name of ['nvidia', 'openai', 'huggingface', 'gemini', 'constructor', 'unknown']) assert.equal(isGenerationProviderEnabled(name), false);
+  for (const name of ['nvidia', 'openai', 'huggingface', 'gemini', 'vertex', 'constructor', 'unknown']) assert.equal(isGenerationProviderEnabled(name), false);
   for (const providers of [null, ['nvidia', 'nvidia'], ['constructor'], ['unknown'], ['openai', 'nvidia', 'huggingface', 'openai']]) {
     let calls = 0; assert.throws(() => declareGenerationSecrets(providers, () => { calls++; })); assert.equal(calls, 0);
   }
@@ -32,4 +32,20 @@ for (const [provider, name, parameter] of [['nvidia', 'NVIDIA_API_KEY', 'nvidiaA
     assert.equal(parameters.readSecret(undefined, ${JSON.stringify(name)}), '');
   `], {cwd: require('node:path').resolve(__dirname, '..'), encoding: 'utf8', timeout: 30000});
   assert.equal(run.status, 0, run.stderr);
+});
+
+test('future Vertex configuration binds only text to the dedicated credential and has no environment fallback', () => {
+  const run = spawnSync(process.execPath, ['-e', `
+    const assert=require('node:assert/strict');process.env.FUNCTIONS_CONTROL_API='true';process.env.GCLOUD_PROJECT='demo-mnemosyne-rules';
+    const policy=require('./lib/generationProviderPolicy');policy.ACTIVE_GENERATION_PROVIDERS=Object.freeze(['vertex']);
+    const params=require('./lib/params'),functions=require('./lib/index');
+    assert.deepEqual(require('firebase-functions/params').declaredParams.map(x=>x.name).sort(),['GOOGLE_VERTEX_API_KEY','STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET'].sort());
+    assert.deepEqual(functions.generateText.__endpoint.secretEnvironmentVariables.map(x=>x.key),['GOOGLE_VERTEX_API_KEY']);
+    assert.deepEqual(functions.generateImage.__endpoint.secretEnvironmentVariables,[]);
+    params.vertexApiKey.value=()=> 'synthetic-future-vertex';
+    assert.equal(params.readSecret(params.vertexApiKey,'GOOGLE_VERTEX_API_KEY'),'synthetic-future-vertex');
+    assert.equal(params.readSecret(params.vertexApiKey,'GEMINI_API_KEY'),'');
+    process.env.GOOGLE_VERTEX_API_KEY='synthetic-env';assert.equal(params.readEnv('GOOGLE_VERTEX_API_KEY'),undefined);
+  `],{cwd:require('node:path').resolve(__dirname,'..'),encoding:'utf8',timeout:30000});
+  assert.equal(run.status,0,run.stderr);
 });

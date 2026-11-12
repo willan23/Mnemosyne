@@ -13,7 +13,7 @@ import {
 interface SovereignExportModalProps {
   isOpen: boolean;
   onClose: () => void;
-  memories: SovereignExportMemoryInput[];
+  memories: readonly SovereignExportMemoryInput[];
   vaultUnlocked: boolean;
   encryptByDefault?: boolean;
 }

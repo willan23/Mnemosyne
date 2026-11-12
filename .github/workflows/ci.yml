@@ -57,6 +57,9 @@ jobs:
       - name: Semantic index recovery from queued changes and a delayed real Worker ACK in Chromium
         run: node scripts/semantic-index-recovery-browser.cjs
         working-directory: .
+      - name: Universe store publication and confirmed mutations with a compiled semantic Worker in Chromium
+        run: node scripts/universe-publication-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

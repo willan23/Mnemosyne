@@ -1,8 +1,8 @@
 import type { Attachment } from './attachments';
 import type {MemoryEditBaseline} from '../../../functions/src/memoryEditContract';
 export type MemorySaveSubmission={kind:'create';assertCurrent:()=>void}|{kind:'edit';baseline:MemoryEditBaseline;title:string|null;metadata:Record<string,unknown>;refreshSemantic:boolean;assertCurrent:()=>void};
-export type MemorySaveCallback=(memory:MemoryObject,submission?:MemorySaveSubmission)=>Promise<{id:string}|void>|{id:string}|void;
-export type MemoryDeleteCallback=(id:string,source?:MemoryObject,assertCurrent?:()=>void)=>Promise<void>|void;
+export type MemorySaveCallback=(memory:MemoryObject,submission?:MemorySaveSubmission)=>Promise<{id:string;viewCommit?:import('../services/universeMemoryPublication').UniverseViewCommit}|void>|{id:string;viewCommit?:import('../services/universeMemoryPublication').UniverseViewCommit}|void;
+export type MemoryDeleteCallback=(id:string,source?:MemoryObject,assertCurrent?:()=>void)=>Promise<{viewCommit?:import('../services/universeMemoryPublication').UniverseViewCommit}|void>;
 
 export type CelestialType =
   | 'star'
@@ -40,6 +40,9 @@ export interface AuditTrailEntry {
 }
 
 export interface MemoryObject {
+  /** Ephemeral confirmed-deletion projection; never written as client metadata. */
+  deletedAt?: number;
+  pendingDeletion?: boolean;
   id: string;
   text: string;
   title?: string;
@@ -94,7 +97,7 @@ export interface MemoryObject {
 
 export interface UniverseState {
   universeType: UniverseType;
-  memories: MemoryObject[];
+  memories: readonly MemoryObject[];
   selectedMemoryId: string | null;
   hoveredMemoryId: string | null;
   isAddingMemory: boolean;

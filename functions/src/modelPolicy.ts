@@ -1,6 +1,7 @@
 import type { AiPlan } from './aiCostPolicy';
-export type TextProvider = 'huggingface' | 'nvidia' | 'openai' | 'gemini' | 'openrouter';
-export type ImageProvider = Exclude<TextProvider, 'openrouter'>;
+export type TextProvider = 'huggingface' | 'nvidia' | 'openai' | 'gemini' | 'openrouter' | 'vertex';
+export type ImageProvider = Exclude<TextProvider, 'openrouter' | 'vertex'>;
+export const VERTEX_TEXT_MODEL = 'gemini-3.5-flash' as const;
 
 export interface TextModelPolicy {
   id: string;
@@ -26,6 +27,7 @@ const textModels: Record<string, TextModelPolicy> = {
   'nvidia-nemotron-ultra': { id: 'nvidia-nemotron-ultra', provider: 'nvidia', externalModel: 'nvidia/nemotron-3-ultra-550b-a55b', maxOutputTokens: 900, costUnitsPerRequest: 4 },
   'openai-mini': { id: 'openai-mini', provider: 'openai', externalModel: 'gpt-4o-mini', maxOutputTokens: 900, costUnitsPerRequest: 2 },
   'gemini-flash': { id: 'gemini-flash', provider: 'gemini', externalModel: 'gemini-3.5-flash-lite', maxOutputTokens: 900, costUnitsPerRequest: 1 },
+  'vertex-flash': { id: 'vertex-flash', provider: 'vertex', externalModel: VERTEX_TEXT_MODEL, maxOutputTokens: 900, costUnitsPerRequest: 2 },
 };
 
 const imageModels: Record<string, ImageModelPolicy> = {

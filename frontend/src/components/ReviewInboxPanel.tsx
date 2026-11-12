@@ -14,7 +14,7 @@ import {reviewInboxBackupCopy} from './reviewInboxBackupCopy';
 
 interface Props {
   uid: string;
-  memories: MemoryObject[];
+  memories: readonly MemoryObject[];
   selectedMemoryId: string | null;
   onOpenSource: (id: string) => void;
   onClose: () => void;

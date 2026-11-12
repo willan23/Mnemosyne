@@ -60,6 +60,14 @@ describe('local AI configuration', () => {
     }
   });
 
+  it('preserves a separate inactive Vertex selection and normalizes its server-controlled model', () => {
+    localStorage.setItem('mnemosyne_local_ai_config', JSON.stringify({ primaryProvider: 'vertex', providers: { vertex: { model: 'foreign-model' } } }));
+    const config = getLocalAiConfig();
+    expect(config.primaryProvider).toBe('vertex'); expect(config.providers.vertex.model).toBe('vertex-flash');
+    expect(config.providers.vertex.hasSecret).toBe(false); expect(isAiProviderEnabled('vertex')).toBe(false);
+    expect(AI_MODEL_PRESETS.vertex.map(preset => preset.id)).toEqual(['vertex-flash']);
+  });
+
   it('migrates legacy cluster-only permission to confirmation', () => {
     localStorage.setItem('mnemosyne_local_ai_config', JSON.stringify({
       memoryPermission: 'cluster-only',

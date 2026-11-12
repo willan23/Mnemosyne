@@ -206,7 +206,7 @@ export function isVaultReadyForExport(vaultUnlocked = isMemoryCryptoReady()): bo
  * Recusa cofre bloqueado e memórias ainda cifradas (encLocked).
  */
 export function buildSovereignExportPayload(
-  memories: SovereignExportMemoryInput[],
+  memories: readonly SovereignExportMemoryInput[],
   options: BuildSovereignExportOptions
 ): SovereignExportPayload {
   if (!options.vaultUnlocked) {
@@ -330,7 +330,7 @@ function dateStamp(iso: string): string {
  * e o ficheiro descarregado é um envelope JSON — não o ZIP em claro.
  */
 export async function downloadSovereignExport(
-  memories: SovereignExportMemoryInput[],
+  memories: readonly SovereignExportMemoryInput[],
   options: DownloadSovereignExportOptions
 ): Promise<{ filename: string; encrypted: boolean; memoryCount: number }> {
   const passphrase = options.passphrase?.trim() ?? '';

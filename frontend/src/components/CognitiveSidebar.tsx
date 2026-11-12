@@ -125,16 +125,16 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
   }, [memories, selected]);
 
   const handleDelete = async () => {
-    if (!selected || !onDeleteMemory || isDeleting || isSaving) return;
+    if (!selected || !onDeleteMemory || isDeleting || isSaving || selected.pendingDeletion) return;
     if (!window.confirm('Apagar este corpo celeste da galáxia cognitiva? (Supernova)')) return;
     setIsDeleting(true);
     try {
       const captured=structuredClone(selected),actor=auth.currentUser?.uid;if(!actor)return;const current=feedback.capture(actor);if(!current())return;
-      await onDeleteMemory(captured.id,captured,()=>{if(!current())throw Error('Deletion view changed');});if(!current())return;
+      const outcome=await onDeleteMemory(captured.id,captured,()=>{if(!current())throw Error('Deletion view changed');});if(!current())return;
       if(useUniverseStore.getState().selectedMemoryId!==captured.id)return;
-      startDeletion(selected.id, 'supernova');
+      if(!startDeletion(captured.id, 'supernova',outcome?.viewCommit))return;
       setTimeout(() => {
-        if(!current())return;const state=useUniverseStore.getState(),present=state.memories.find(item=>item.id===captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id);
+        if(!current())return;const state=useUniverseStore.getState(),present=state.memories.find(item=>item.id===captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id,outcome?.viewCommit);
         if (state.selectedMemoryId === captured.id) selectMemory(null);
       }, 800);
       toast.success('Memória absorvida pelo cosmos.', { icon: '✨' });
@@ -399,7 +399,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
                         <button
                           type="button"
                           onClick={handleDelete}
-                          disabled={isDeleting || isSaving || !onDeleteMemory}
+                          disabled={isDeleting || isSaving || selected.pendingDeletion || !onDeleteMemory}
                           className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-1.5 text-rose-300 transition hover:bg-rose-500/25 hover:text-rose-100"
                           title="Apagar Memória (Supernova)"
                         >

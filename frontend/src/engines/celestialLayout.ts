@@ -163,7 +163,7 @@ function getConstellationLabel(id: string): string {
 
 function weightedCenter(
   memories: MemoryObject[],
-  allMemories: MemoryObject[],
+  allMemories: readonly MemoryObject[],
   time: number
 ): [number, number, number] {
   const center: [number, number, number] = [0, 0, 0];
@@ -205,7 +205,7 @@ function hashString(str: string): number {
 
 export function getDynamicPosition(
   memory: MemoryObject,
-  allMemories: MemoryObject[],
+  allMemories: readonly MemoryObject[],
   time: number,
   lookup?: ReadonlyMap<string, MemoryObject>,
 ): [number, number, number] {

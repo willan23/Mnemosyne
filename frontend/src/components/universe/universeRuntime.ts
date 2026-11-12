@@ -4,7 +4,7 @@ import type { MemoryObject } from '../../types/universe';
 import type { UniverseQualityProfile } from './qualityProfile';
 
 export interface UniverseRuntime {
-  memoriesRef: MutableRefObject<MemoryObject[]>;
+  memoriesRef: MutableRefObject<readonly MemoryObject[]>;
   lookupRef: MutableRefObject<Map<string, MemoryObject>>;
   sphereGeometry: SphereGeometry;
   glowGeometry: SphereGeometry;

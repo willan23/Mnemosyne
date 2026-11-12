@@ -10,7 +10,7 @@ export class MemoryViewClient {
   private yieldTask: () => Promise<void>;
   private worker: Worker | null = null;
   private references = new Map<string, MemoryObject>();
-  private source: MemoryObject[] | null = null;
+  private source: readonly MemoryObject[] | null = null;
   private generation = 0;
   private sequence = 0;
   private busy = false;
@@ -53,7 +53,7 @@ export class MemoryViewClient {
     });
   }
   /** Compare immutable object references in bounded tasks; only changed projections cross the Worker boundary. */
-  async select(memories: MemoryObject[], options: MemoryViewOptions, signal: AbortSignal): Promise<MemoryViewResult> {
+  async select(memories: readonly MemoryObject[], options: MemoryViewOptions, signal: AbortSignal): Promise<MemoryViewResult> {
     if (this.busy) this.dispose();
     const generation = this.generation;
     const current = () => !signal.aborted && generation === this.generation;

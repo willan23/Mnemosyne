@@ -3,16 +3,19 @@ import { fetchProviderResponse, ProviderTransportError } from './providerTranspo
 import { ProviderHttpError } from './providerErrorPolicy';
 import { decodeProviderImage } from './providerResponsePolicy';
 import { GENERATION_HTTP_POLICY } from './generationHttpPolicy';
+import { VERTEX_TEXT_MODEL } from './modelPolicy';
 
 const models = { text: 'gemini-3.5-flash-lite', image: 'gemini-3.1-flash-image' } as const;
 
 /** Official SDK, restricted to one selected generation endpoint and our bounded transport. */
-async function request(kind: 'text' | 'image', prompt: string, model: string, maxTokens: number, apiKey: string): Promise<GenerateContentResponse> {
-  if (model !== models[kind] || !apiKey || !Number.isInteger(maxTokens) || maxTokens < 64 || maxTokens > 900) throw new ProviderTransportError();
+async function request(kind: 'text' | 'image', prompt: string, model: string, maxTokens: number, apiKey: string, backend: 'developer' | 'vertex' = 'developer'): Promise<GenerateContentResponse> {
+  if (backend === 'vertex' && kind !== 'text' || model !== (backend === 'vertex' ? VERTEX_TEXT_MODEL : models[kind]) || !apiKey || !Number.isInteger(maxTokens) || maxTokens < 64 || maxTokens > 900) throw new ProviderTransportError();
   const timeout = GENERATION_HTTP_POLICY[kind].providerTimeoutMs;
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const client = new GoogleGenAI({ apiKey, vertexai: false, httpOptions: {
-    baseUrl: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', timeout,
+  const baseUrl = backend === 'vertex' ? 'https://aiplatform.googleapis.com' : 'https://generativelanguage.googleapis.com';
+  const apiVersion = backend === 'vertex' ? 'v1' : 'v1beta';
+  const endpoint = `${baseUrl}/${apiVersion}/${backend === 'vertex' ? 'publishers/google/' : ''}models/${model}:generateContent`;
+  const client = new GoogleGenAI({ apiKey, vertexai: backend === 'vertex', httpOptions: {
+    baseUrl, apiVersion, timeout,
     retryOptions: { attempts: 1 },
     fetch: async (input, init) => {
       // No query-key URLs, uploads, tools, alternate hosts or model switching by the SDK.
@@ -46,6 +49,14 @@ export async function generateGeminiText(prompt: string, model: string, maxToken
   const text = response.candidates![0].content!.parts!.filter(part => !part.thought && typeof part.text === 'string').map(part => part.text).join('').trim();
   if (!text) throw new ProviderTransportError();
   return { text, model: response.modelVersion!, provider: 'gemini' };
+}
+
+/** Separate server credential and endpoint; never falls back to the Developer API. */
+export async function generateVertexText(prompt: string, model: string, maxTokens: number, apiKey: string) {
+  const response = await request('text', prompt, model, maxTokens, apiKey, 'vertex');
+  const text = response.candidates![0].content!.parts!.filter(part => !part.thought && typeof part.text === 'string').map(part => part.text).join('').trim();
+  if (!text) throw new ProviderTransportError();
+  return { text, model: response.modelVersion!, provider: 'vertex' };
 }
 
 export async function generateGeminiImage(prompt: string, model: string, apiKey: string) {

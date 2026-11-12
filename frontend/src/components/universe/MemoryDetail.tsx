@@ -159,14 +159,14 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
   };
 
   const handleDelete = async () => {
-    if (!selected || !onDelete || isDeleting || isSaving) return;
+    if (!selected || !onDelete || isDeleting || isSaving || selected.pendingDeletion) return;
     if (!window.confirm('Apagar esta memória do universo? (animação de supernova)')) return;
     setIsDeleting(true);
     try {
-      const captured=structuredClone(selected),actor=auth.currentUser?.uid;if(!actor)return;const current=feedback.capture(actor);if(!current())return;await onDelete(captured.id,captured,()=>{if(!current())throw Error('Deletion view changed');});if(!current()||useUniverseStore.getState().selectedMemoryId!==captured.id)return;
-      startDeletion(selected.id, 'supernova');
+      const captured=structuredClone(selected),actor=auth.currentUser?.uid;if(!actor)return;const current=feedback.capture(actor);if(!current())return;const outcome=await onDelete(captured.id,captured,()=>{if(!current())throw Error('Deletion view changed');});if(!current()||useUniverseStore.getState().selectedMemoryId!==captured.id)return;
+      if(!startDeletion(captured.id, 'supernova',outcome?.viewCommit))return;
       setTimeout(() => {
-        if(!current())return;const state=useUniverseStore.getState(),present=state.memories.find(item=>item.id===captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id);
+        if(!current())return;const state=useUniverseStore.getState(),present=state.memories.find(item=>item.id===captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id,outcome?.viewCommit);
         if (state.selectedMemoryId === captured.id) selectMemory(null);
       }, 800);
     } catch { /* Persistence reports the fixed error; keep the memory visible. */ }
@@ -174,7 +174,7 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
   };
 
   const handleSave = async () => {
-    if (!selected || !onSave || !draftText.trim() || isSaving || isDeleting || selected.encLocked || selected.teamScopeAmbiguous) return;
+    if (!selected || !onSave || !draftText.trim() || isSaving || isDeleting || selected.encLocked || selected.pendingDeletion || selected.teamScopeAmbiguous) return;
     if (selected.teamId && !TEAM_WRITES_ENABLED) return;
     await editor.submit();
   };
@@ -360,7 +360,7 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
                   }
                   void editor.begin();
                 }}
-                disabled={isSaving || isDeleting || !onSave || selected.encLocked || selected.teamScopeAmbiguous || Boolean(selected.teamId && !TEAM_WRITES_ENABLED)||isEditing&&!editor.canSubmit}
+                disabled={isSaving || isDeleting || !onSave || selected.encLocked || selected.pendingDeletion || selected.teamScopeAmbiguous || Boolean(selected.teamId && !TEAM_WRITES_ENABLED)||isEditing&&!editor.canSubmit}
                 title={selected.teamId && !TEAM_WRITES_ENABLED ? TEAM_READ_ONLY_MESSAGE : undefined}
                 className="flex items-center justify-center gap-1.5 rounded-xl border border-indigo-300/20 bg-indigo-300/10 px-3 py-2 text-xs text-indigo-100 transition hover:bg-indigo-300/20 disabled:opacity-50"
               >
@@ -397,7 +397,7 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
               <button
                 type="button"
                 onClick={handleDelete}
-                disabled={isDeleting || isSaving || !onDelete || Boolean(selected.teamId && !TEAM_WRITES_ENABLED)}
+                disabled={isDeleting || isSaving || selected.pendingDeletion || !onDelete || Boolean(selected.teamId && !TEAM_WRITES_ENABLED)}
                 className="rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-300 transition hover:bg-red-400/20"
               >
                 Apagar

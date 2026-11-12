@@ -1,5 +1,9 @@
 # Integração Gemini — 21 de outubro de 2026
 
+## Nova chave Vertex AI — 12 de novembro de 2026
+
+A chave fornecida nesta data pertence ao Vertex AI e tem um [secret e adaptador próprios](GOOGLE_VERTEX_AI_2026-11-12.md). Passou a autenticação gratuita por `countTokens`, sem geração paga. Não substitui a chave Gemini Developer API descrita abaixo; os dois fornecedores continuam inativos na política atual.
+
 ## Atualização operacional — autenticação resolvida
 
 A API de gestão de chaves foi ativada com autorização explícita em `mnemosyne-one` (`960796327752`). A consulta encontrou uma única chave Gemini recém-criada não eliminada, limitada à Generative Language API, com conta de serviço não desativada. O seu valor foi lido diretamente na Google para concluir a configuração pedida, sem o mostrar, copiar para ficheiro ou colocar em argumentos. A comparação em memória confirmou que a entrada local era diferente.

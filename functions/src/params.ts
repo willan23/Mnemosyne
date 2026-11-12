@@ -9,6 +9,7 @@ export const openaiApiKey = generationParameters.byProvider.openai;
 export const nvidiaApiKey = generationParameters.byProvider.nvidia;
 export const huggingfaceApiKey = generationParameters.byProvider.huggingface;
 export const geminiApiKey = generationParameters.byProvider.gemini;
+export const vertexApiKey = generationParameters.byProvider.vertex;
 export const openrouterApiKey = generationParameters.byProvider.openrouter;
 export const aiProviderSecrets = generationParameters.secrets;
 const imageSecretNames = new Set<string>(generationImageSecretNames());
@@ -16,6 +17,7 @@ export const aiImageProviderSecrets = aiProviderSecrets.filter(parameter => imag
 const secretParameters: Record<string, ReturnType<typeof defineSecret> | undefined> = {
   STRIPE_SECRET_KEY: stripeSecretKey, STRIPE_WEBHOOK_SECRET: stripeWebhookSecret,
   OPENAI_API_KEY: openaiApiKey, NVIDIA_API_KEY: nvidiaApiKey, HUGGINGFACE_API_KEY: huggingfaceApiKey, GEMINI_API_KEY: geminiApiKey, OPENROUTER_API_KEY: openrouterApiKey,
+  GOOGLE_VERTEX_API_KEY: vertexApiKey,
 };
 
 /** Runtime-only access through the declared parameter, never an alias/dotenv fallback. */

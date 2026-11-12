@@ -2113,7 +2113,7 @@ if (!emulatorOn) {
       auth.verifyBearerIdToken = async () => ({uid: 'bob'}); params.readSecret = blocked('secret');
       budget.reserveAiGenerationBudget = blocked('reserve'); circuit.beginProviderAttempt = blocked('begin'); providerHttp.fetch = blocked('fetch');
       for (const [handler, model] of [[generateTextHandler, 'nvidia-nemotron-ultra'], [generateImageHandler, 'nvidia-image'], [generateTextHandler, 'openai-mini'], [generateImageHandler, 'openai-image'],
-        [generateTextHandler, 'hf-default'], [generateImageHandler, 'hf-image'], [generateTextHandler, 'gemini-flash'], [generateImageHandler, 'gemini-image']]) {
+        [generateTextHandler, 'hf-default'], [generateImageHandler, 'hf-image'], [generateTextHandler, 'gemini-flash'], [generateImageHandler, 'gemini-image'], [generateTextHandler, 'vertex-flash']]) {
         const res = {code: null, body: null, set() {return this;}, status(code) {this.code = code; return this;}, json(body) {this.body = body; return this;}};
         await handler({method: 'POST', headers: {}, body: {prompt: 'Synthetic prompt', model, expectedUid: 'bob', scope: f.scope}}, res);
         assert.equal(res.code, 400); assert.equal(res.body.error, 'ai_provider_disabled');
@@ -2127,19 +2127,20 @@ if (!emulatorOn) {
     }
   });
 
-  test('selected adapters route NVIDIA and explicitly enabled future Hugging Face/Gemini text and images without fallback', async () => {
+  test('selected adapters route NVIDIA and explicitly enabled future Hugging Face/Gemini/Vertex without fallback', async () => {
     const policy = require('../lib/generationProviderPolicy'), enabled = policy.isGenerationProviderEnabled;
     const f = await aiCostFixture(); const auth = require('../lib/httpAuth'), params = require('../lib/params');
     const {generateTextHandler, generateImageHandler} = require('../lib/webApi');
     const originals = {verify: auth.verifyBearerIdToken, secret: params.readSecret, fetch: providerHttp.fetch};
     const secrets = [], requests = [];
     try {
-      policy.isGenerationProviderEnabled = id => enabled(id, ['nvidia', 'huggingface', 'gemini']);
+      policy.isGenerationProviderEnabled = id => enabled(id, ['nvidia', 'huggingface', 'gemini', 'vertex']);
       auth.verifyBearerIdToken = async () => ({uid: 'bob'});
       params.readSecret = (parameter, name) => {secrets.push(name); assert.equal(parameter,
-        name === 'NVIDIA_API_KEY' ? params.nvidiaApiKey : name === 'GEMINI_API_KEY' ? params.geminiApiKey : params.huggingfaceApiKey); return 'synthetic-selected-key';};
+        name === 'NVIDIA_API_KEY' ? params.nvidiaApiKey : name === 'GEMINI_API_KEY' ? params.geminiApiKey : name === 'GOOGLE_VERTEX_API_KEY' ? params.vertexApiKey : params.huggingfaceApiKey); return 'synthetic-selected-key';};
       providerHttp.fetch = async (url, options) => {
         requests.push({url: String(url), body: JSON.parse(options.body)});
+        if (String(url).includes('aiplatform.googleapis.com')) return new Response(JSON.stringify({modelVersion:'gemini-3.5-flash',candidates:[{finishReason:'STOP',content:{parts:[{text:'Synthetic answer'}]}}]}),{status:200});
         if (String(url).includes('generativelanguage.googleapis.com')) {
           const image = String(url).includes('gemini-3.1-flash-image');
           return new Response(JSON.stringify({modelVersion: image ? 'gemini-3.1-flash-image' : 'gemini-3.5-flash-lite',
@@ -2156,6 +2157,7 @@ if (!emulatorOn) {
         [generateImageHandler, 'nvidia-image', 'NVIDIA_API_KEY', 'ai.api.nvidia.com'],
         [generateImageHandler, 'hf-image', 'HUGGINGFACE_API_KEY', 'router.huggingface.co'],
         [generateTextHandler, 'gemini-flash', 'GEMINI_API_KEY', 'generativelanguage.googleapis.com'],
+        [generateTextHandler, 'vertex-flash', 'GOOGLE_VERTEX_API_KEY', 'aiplatform.googleapis.com'],
         [generateImageHandler, 'gemini-image', 'GEMINI_API_KEY', 'generativelanguage.googleapis.com'],
       ]) {
         const res = {code: null, body: null, set() {return this;}, status(code) {this.code = code; return this;}, json(body) {this.body = body; return this;}};
@@ -2163,9 +2165,10 @@ if (!emulatorOn) {
         assert.equal(res.code, 200); assert.equal(requests.length, start + 1); assert.equal(new URL(requests.at(-1).url).hostname, host);
         assert.equal(secrets.at(-1), name);
         if (handler === generateTextHandler) {
-          assert.equal(res.body.model, model === 'hf-default' ? 'openai/gpt-oss-120b:nscale' : model === 'gemini-flash' ? 'gemini-3.5-flash-lite' : model === 'nvidia-nemotron-ultra' ? 'nvidia/nemotron-3-ultra-550b-a55b' : 'nvidia/nemotron-3-super-120b-a12b');
+          assert.equal(res.body.model, model === 'hf-default' ? 'openai/gpt-oss-120b:nscale' : model === 'gemini-flash' ? 'gemini-3.5-flash-lite' : model === 'vertex-flash' ? 'gemini-3.5-flash' : model === 'nvidia-nemotron-ultra' ? 'nvidia/nemotron-3-ultra-550b-a55b' : 'nvidia/nemotron-3-super-120b-a12b');
           if (model === 'hf-default') assert.equal(res.body.provider, 'huggingface-nscale');
           else if (model === 'gemini-flash') assert.equal(res.body.provider, 'gemini');
+          else if (model === 'vertex-flash') assert.equal(res.body.provider, 'vertex');
           else {
             assert.equal(requests.at(-1).body.chat_template_kwargs.enable_thinking, false);
             assert.equal(requests.at(-1).body.temperature, 1);
@@ -2180,7 +2183,7 @@ if (!emulatorOn) {
           else {assert.equal(requests.at(-1).body.steps, 4); assert.equal(requests.at(-1).body.cfg_scale, 0);}
         }
       }
-      assert.equal(secrets.length, 7); assert.equal((await f.db.collection('teamAiBudgets').get()).docs[0].data().usage.requests, 7);
+      assert.equal(secrets.length, 8); assert.equal((await f.db.collection('teamAiBudgets').get()).docs[0].data().usage.requests, 8);
     } finally {policy.isGenerationProviderEnabled = enabled; auth.verifyBearerIdToken = originals.verify; params.readSecret = originals.secret; providerHttp.fetch = originals.fetch;}
   });
 

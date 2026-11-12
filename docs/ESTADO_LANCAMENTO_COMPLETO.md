@@ -1,5 +1,15 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Vertex AI e publicação do Universo — 12 de novembro de 2026
+
+A [nova chave Vertex AI](GOOGLE_VERTEX_AI_2026-11-12.md) passou autenticação por contagem gratuita de tokens e ficou no secret próprio do servidor, mantendo a restrição Vertex. O adaptador de texto está preparado e inativo, sem geração paga ou deploy. A [publicação confirmada do Universo](PUBLICACAO_UNIVERSO_CONFIRMADA_2026-11-12.md) conserva raízes persistentes e bindings semânticos após criar/apagar, reconcilia SDK e recibos e protege restaurações e variantes por âmbito.
+
+Passaram **2288 testes frontend/239 ficheiros**, 77 focados/oito ficheiros, 614 Functions (uma omissão prevista fora do emulador), 328 Functions/Rules +25 frontend/Rules, build/identidade, lint zero erros/21 avisos, 23 contratos e seis ensaios Chromium sem pedidos externos. A atualização transitiva fast-xml-parser 5.12.0 corrigiu a vulnerabilidade encontrada na auditoria atual; após instalar pelo lockfile passaram novamente Functions, um ensaio de XML e 7 casos HTTP/Rules focados. A suite integral Rules foi executada antes dessa instalação, sem alterar as fontes de aplicação/regras entre as duas passagens. Ambas as auditorias de produção terminaram em zero vulnerabilidades.
+
+O ensaio novo usou 10.000 vetores de 384 dimensões, uma projeção por edição, lotes de 128 e zero enumerações da origem no percurso medido. O maior intervalo de heartbeat foi 460,5 ms; não prova SLO nem ausência de tarefas longas. Auth real, inferência e nativos completos não foram exercitados por esse ensaio. A consulta de metadata de produção confirmou que os secrets Stripe ainda faltam, com entradas locais por migrar e bindings por publicar.
+
+Permanecem os consumidores lineares da fase 5, os pré-requisitos de rollout, instaladores finais e disponibilidade operacional/CI. A conclusão global das fases 0–6 continua pendente e os **49 switches permanecem fechados**, sem deploy. Prova local: `google-vertex-and-universe-local-validation-20261112.json`. Os blocos seguintes são cronologia.
+
 ## Índice semântico — recuperação e transporte limitado, 7 de novembro de 2026
 
 A [recuperação do índice semântico](RECUPERACAO_INDICE_SEMANTICO_2026-11-07.md) captura raízes imutáveis, repõe a réplica quando o histórico excede o orçamento e aplica os deltas seguintes. Preserva ordem/prioridades, nulidade, tombstones e membership. Documentos e metadata de ordem/remoção/reset usam lotes de até 128; resets só de ordem reutilizam vetores.

@@ -8,7 +8,7 @@ import {captureTeamConnectionBaselines,changeTeamMemoryConnection,hasPendingTeam
 import {useSyncFeedback} from '../hooks/useSyncFeedback';
 import type {MemoryObject} from '../types/universe';
 import {useTranslation} from '../utils/translations';
-type Props={memory:MemoryObject;peers:MemoryObject[]};
+type Props={memory:MemoryObject;peers:readonly MemoryObject[]};
 export function TeamMemoryConnectionsPanel(props:Props){
   const feedback=useSyncFeedback(),[,tick]=useState(0),uid=auth.currentUser?.uid??null,generation=getTeamKeyCacheGeneration();
   useEffect(()=>onTeamKeyChanged(()=>tick(value=>value+1)),[]);

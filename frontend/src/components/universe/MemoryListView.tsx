@@ -5,7 +5,7 @@ import { useMemoryView } from '../../hooks/useMemoryView';
 import type { MemoryViewOptions } from '../../services/memoryViewProtocol';
 
 interface MemoryListViewProps {
-  memories: MemoryObject[];
+  memories: readonly MemoryObject[];
   mode: 'list' | 'table';
   selectedMemoryId: string | null;
   onSelect: (id: string) => void;
@@ -20,7 +20,7 @@ export function MemoryListView({ memories, mode, selectedMemoryId, onSelect }: M
   const deferredQuery = useDeferredValue(query);
   const searchRef = useRef<HTMLInputElement>(null);
   const resultRefs = useRef(new Map<string, HTMLButtonElement>());
-  const nextFocus = useRef<{index: number; query: string; source: MemoryObject[]} | null>(null);
+  const nextFocus = useRef<{index: number; query: string; source: readonly MemoryObject[]} | null>(null);
   const options = useMemo<MemoryViewOptions>(() => ({ mode: 'list', query: deferredQuery,
     locale: HTML_LANG[language] as 'pt-PT' | 'pt-BR' | 'en' | 'fr', limit: visibleCount }), [deferredQuery, language, visibleCount]);
   const view = useMemoryView(memories, options);

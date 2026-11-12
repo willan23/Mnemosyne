@@ -34,6 +34,7 @@ import {cognitiveEngine} from '../engines/CognitiveEngine';
 import { IncrementalSessionSnapshot, type SessionSnapshotLease } from '../services/incrementalSessionSnapshot';
 import { IncrementalMemoryPublication } from '../services/incrementalMemoryPublication';
 import { IndexedSemanticWriteCorpus } from '../services/indexedSemanticWriteCorpus';
+import { UniverseMemoryPublication, type UniverseDeletionRecord, type UniverseViewCommit } from '../services/universeMemoryPublication';
 import { semanticCandidateEligibility } from '../services/semanticWriteScope';
 import {
   parseLaneTag,
@@ -186,6 +187,7 @@ interface UniverseSnapshotValue {
   memory: MemoryObject | null;
   tombstone: boolean;
   legacyPlaintext: boolean;
+  revision: number;
 }
 type UniverseSnapshotLease = Pick<SessionSnapshotLease<UniverseSnapshotValue>, 'changed' | 'removed' | 'order'>;
 /** The common publisher can consume this projection without reading the snapshot again. */
@@ -196,21 +198,6 @@ function universeBucketPatch(lease: UniverseSnapshotLease) {
     order: lease.order,
   };
 }
-function applyUniverseBucketLease(bucket: Map<string, MemoryObject>, order: string[], lease: UniverseSnapshotLease) {
-  const patch = universeBucketPatch(lease);
-  if (patch.order.reset) bucket.clear();
-  for (const id of patch.removed) bucket.delete(id);
-  for (const { id, value } of patch.changed) {
-    if (value) bucket.set(id, value); else bucket.delete(id);
-  }
-  const nextOrder = patch.order.reset ? [...patch.order.reset] : order;
-  for (const change of patch.order.changes) {
-    if (change.type === 'modified' && change.oldIndex === change.newIndex) continue;
-    if (change.type !== 'added') nextOrder.splice(change.oldIndex, 1);
-    if (change.type !== 'removed') nextOrder.splice(change.newIndex, 0, change.id);
-  }
-  return nextOrder;
-}
 
 export function useUniverseMemories(accountReady = true) {
   const { loadMemories, setIsLoading } = useUniverseStore();
@@ -218,22 +205,19 @@ export function useUniverseMemories(accountReady = true) {
   const uidRef = useRef<string | null>(null);
   const subscriptionEpochRef = useRef(0);
   const unsubscribeRefs = useRef<Array<() => void>>([]);
-  const sessionMemoriesRef = useRef<Map<string, MemoryObject>>(new Map());
-  const sessionOrderRef = useRef<string[]>([]);
   const personalTombstonesRef=useRef(new Set<string>());
   const tombstoneOwnerRef=useRef<string|null>(null);
-  const legacyMemoriesRef = useRef<Map<string, MemoryObject>>(new Map());
-  const legacyOrderRef = useRef<string[]>([]);
-  const teamMemoriesRef = useRef<Map<string, Map<string, MemoryObject>>>(new Map());
-  const teamOrdersRef = useRef(new Map<string, string[]>());
   const teamRecordsRef = useRef<Map<string, TeamRecord>>(new Map());
   const teamQueryUnsubsRef = useRef<Array<() => void>>([]);
   const publicationRef = useRef<IncrementalMemoryPublication<MemoryObject> | null>(null);
   const semanticRevisionRef = useRef(0);
   const semanticCorpusRef = useRef<IndexedSemanticWriteCorpus<MemoryObject> | null>(null);
+  const viewPublicationRef = useRef<UniverseMemoryPublication | null>(null);
+  const confirmedDeletionsRef = useRef(new Map<string, UniverseDeletionRecord>());
 
   const subscribeToMemories = useCallback((uid: string) => {
-    if(tombstoneOwnerRef.current!==uid){personalTombstonesRef.current.clear();tombstoneOwnerRef.current=uid;}
+    if(tombstoneOwnerRef.current!==uid){personalTombstonesRef.current.clear();confirmedDeletionsRef.current.clear();tombstoneOwnerRef.current=uid;}
+    viewPublicationRef.current?.clear();
     publicationRef.current?.clear(); semanticCorpusRef.current?.clear();
     unsubscribeRefs.current.forEach((unsubscribe) => unsubscribe());
     const epoch = ++subscriptionEpochRef.current;
@@ -241,7 +225,6 @@ export function useUniverseMemories(accountReady = true) {
     publicationRef.current = publication;
     const semanticCorpus = new IndexedSemanticWriteCorpus<MemoryObject>({ uid, teamIds: new Set() }, id => publication.get(id), undefined, { direction: 'asc', sourceBase: 2 });
     semanticCorpusRef.current = semanticCorpus;
-    const exclude = (id: string, excluded: boolean) => { publication.exclude('legacy', id, excluded); semanticCorpus.exclude('legacy', id, excluded); };
     const listenerCaches = new Set<IncrementalSessionSnapshot<UniverseSnapshotValue>>();
     const createCache = () => {
       const cache = new IncrementalSessionSnapshot<UniverseSnapshotValue>();
@@ -253,25 +236,24 @@ export function useUniverseMemories(accountReady = true) {
     };
     const retireCaches = () => { for (const cache of listenerCaches) cache.reset(); listenerCaches.clear(); };
     const isCurrent = () => publicationRef.current === publication && subscriptionEpochRef.current === epoch && uidRef.current === uid;
+    const local = new UniverseMemoryPublication({ uid, publication, semantic: semanticCorpus, isCurrent,
+      teams: () => new Set(teamRecordsRef.current.keys()), changed: () => { semanticRevisionRef.current++; },
+      tombstones: personalTombstonesRef.current, deletions: confirmedDeletionsRef.current });
+    viewPublicationRef.current = local;
+    const exclude = (id: string, excluded: boolean) => local.legacyTombstone(id, excluded);
     const publishMemories = () => {
       semanticRevisionRef.current++;
-      void publication.publish(isCurrent, values => { semanticCorpus.associate(values); loadMemories(values); }).catch(() => {
-        if (isCurrent()) { publication.clear(); semanticCorpus.clear(); loadMemories([]); setIsLoading(false); }
+      void publication.publishSnapshot(isCurrent, () => { loadMemories(local.snapshot()); }).catch(() => {
+        if (isCurrent()) { local.clear(); publication.clear(); semanticCorpus.clear(); loadMemories([]); setIsLoading(false); }
       });
     };
     // Rekey/account changes retire the old view synchronously, before a task can yield.
-    loadMemories([]);
+    loadMemories(local.snapshot());
     for (const id of personalTombstonesRef.current) exclude(id, true);
     unsubscribeRefs.current = [];
     teamQueryUnsubsRef.current.forEach((unsubscribe) => unsubscribe());
     teamQueryUnsubsRef.current = [];
-    sessionMemoriesRef.current.clear();
-    sessionOrderRef.current = [];
-    legacyMemoriesRef.current.clear();
-    legacyOrderRef.current = [];
     setLegacyPlaintextCount(0);
-    teamMemoriesRef.current.clear();
-    teamOrdersRef.current.clear();
     teamRecordsRef.current.clear();
 
     setIsLoading(true);
@@ -289,10 +271,7 @@ export function useUniverseMemories(accountReady = true) {
       if (!isCurrent()) return;
       ++sessionsRevision;
       retireCache(sessionsCache); sessionsCache = createCache();
-      sessionMemoriesRef.current.clear();
-      sessionOrderRef.current = [];
-      publication.removeSource('personal');
-      semanticCorpus.removeSource('personal');
+      local.removeSource('personal');
       loadMemories([]);
       publishMemories();
       setIsLoading(false);
@@ -300,18 +279,18 @@ export function useUniverseMemories(accountReady = true) {
     const unsubSessions = onSnapshot(sessionsQuery, (snapshot) => {
       if (!isCurrent()) return;
       const revision = ++sessionsRevision;
+      local.observedSnapshot('personal', revision);
       const cache = sessionsCache;
       void (async () => {
         const lease = await cache.prepare(snapshot, async docSnap => {
           const data = docSnap.data() as Record<string, unknown>;
           const tombstone = data.deletedAt != null;
-          return { memory: data.deletedAt ? null : await fromFirestore(data, docSnap.id, uid), tombstone, legacyPlaintext: false };
+          return { memory: data.deletedAt ? null : await fromFirestore(data, docSnap.id, uid), tombstone, legacyPlaintext: false, revision: toMillis(data.updatedAt ?? data.deletedAt ?? data.timestamp, 0) };
         });
         if (!isCurrent() || revision !== sessionsRevision || !lease.isCurrent()) return;
         if (!lease.commit()) return;
         if (lease.order.reset) {
-          for (const id of personalTombstonesRef.current) exclude(id, false);
-          personalTombstonesRef.current.clear();
+          for (const id of personalTombstonesRef.current) { personalTombstonesRef.current.delete(id); exclude(id, false); }
         }
         for (const id of lease.removed) {
           personalTombstonesRef.current.delete(id);
@@ -321,9 +300,7 @@ export function useUniverseMemories(accountReady = true) {
           if (value.tombstone) personalTombstonesRef.current.add(id); else personalTombstonesRef.current.delete(id);
           exclude(id, value.tombstone);
         }
-        sessionOrderRef.current = applyUniverseBucketLease(sessionMemoriesRef.current, sessionOrderRef.current, lease);
-        publication.apply('personal', universeBucketPatch(lease), 1);
-        semanticCorpus.apply('personal', universeBucketPatch(lease), 1);
+        local.apply('personal', universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), revision);
         publishMemories();
         setIsLoading(false);
       })().catch(() => { if (revision === sessionsRevision) clearSessions(); });
@@ -337,13 +314,10 @@ export function useUniverseMemories(accountReady = true) {
       if (!isCurrent()) return;
       ++legacyRevision;
       retireCache(legacyCache); legacyCache = createCache();
-      legacyMemoriesRef.current.clear();
-      legacyOrderRef.current = [];
       legacyFlags.clear();
       legacyCount = 0;
       setLegacyPlaintextCount(0);
-      publication.removeSource('legacy');
-      semanticCorpus.removeSource('legacy');
+      local.removeSource('legacy');
       loadMemories([]);
       publishMemories();
       setIsLoading(false);
@@ -351,12 +325,13 @@ export function useUniverseMemories(accountReady = true) {
     const unsubLegacy = onSnapshot(legacyQuery, (snapshot) => {
       if (!isCurrent()) return;
       const revision = ++legacyRevision;
+      local.observedSnapshot('legacy', revision);
       const cache = legacyCache;
       void (async () => {
         const lease = await cache.prepare(snapshot, async docSnap => {
           const data = docSnap.data() as Record<string, unknown>;
           return { memory: await fromFirestore(data, docSnap.id, uid), tombstone: false,
-            legacyPlaintext: isLegacyNestedMemoryCandidate(data, uid) };
+            legacyPlaintext: isLegacyNestedMemoryCandidate(data, uid), revision: toMillis(data.updatedAt ?? data.timestamp, 0) };
         });
         if (!isCurrent() || revision !== legacyRevision || !lease.isCurrent()) return;
         if (!lease.commit()) return;
@@ -370,9 +345,7 @@ export function useUniverseMemories(accountReady = true) {
           legacyFlags.set(id, value.legacyPlaintext);
         }
         setLegacyPlaintextCount(legacyCount);
-        legacyOrderRef.current = applyUniverseBucketLease(legacyMemoriesRef.current, legacyOrderRef.current, lease);
-        publication.apply('legacy', universeBucketPatch(lease), 0);
-        semanticCorpus.apply('legacy', universeBucketPatch(lease), 0);
+        local.apply('legacy', universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), revision);
         publishMemories();
         setIsLoading(false);
       })().catch(() => { if (revision === legacyRevision) clearLegacy(); });
@@ -382,6 +355,7 @@ export function useUniverseMemories(accountReady = true) {
     const stopTeams = watchMyTeams(uid, (teams) => {
       if (!isCurrent()) return;
       const teamGeneration = ++teamsRevision;
+      const previousTeamIds = [...teamRecordsRef.current.keys()];
       const nextIds = new Set(teams.map((team) => team.id));
       semanticCorpus.setTeams(nextIds);
       let removedTeamKey = false;
@@ -396,11 +370,9 @@ export function useUniverseMemories(accountReady = true) {
         (teamId) => isCurrent() && teamGeneration === teamsRevision && teamRecordsRef.current.has(teamId));
       teamQueryUnsubsRef.current.forEach((unsubscribe) => unsubscribe());
       teamQueryUnsubsRef.current = [];
-      Array.from(teamMemoriesRef.current.keys()).forEach((teamId) => {
+      previousTeamIds.forEach((teamId) => {
         if (!nextIds.has(teamId)) {
-          teamMemoriesRef.current.delete(teamId); teamOrdersRef.current.delete(teamId);
-          publication.removeSource(`team:${teamId}`);
-          semanticCorpus.removeSource(`team:${teamId}`);
+          local.removeSource(`team:${teamId}`);
           // A large replacement view may yield; never retain revoked rows meanwhile.
           loadMemories([]);
         }
@@ -422,10 +394,7 @@ export function useUniverseMemories(accountReady = true) {
           retireCache(cache); cache = createCache();
           epochUnlocks.clear();
           loadedEpochs.clear();
-          teamMemoriesRef.current.delete(team.id);
-          teamOrdersRef.current.delete(team.id);
-          publication.removeSource(`team:${team.id}`);
-          semanticCorpus.removeSource(`team:${team.id}`);
+          local.removeSource(`team:${team.id}`);
           loadMemories([]);
           publishMemories();
           setIsLoading(false);
@@ -433,11 +402,12 @@ export function useUniverseMemories(accountReady = true) {
         const unsubTeam = onSnapshot(teamQuery, (snapshot) => {
           if (!teamCurrent()) return;
           const snapshotRevision = ++revision;
+          local.observedSnapshot(`team:${team.id}`, snapshotRevision);
           const currentCache = cache;
           void (async () => {
             const lease = await currentCache.prepare(snapshot, async docSnap => {
               const data = docSnap.data() as Record<string, unknown>;
-              if (data.deletedAt) return { memory: null, tombstone: false, legacyPlaintext: false };
+              if (data.deletedAt) return { memory: null, tombstone: true, legacyPlaintext: false, revision: toMillis(data.updatedAt ?? data.deletedAt ?? data.timestamp, 0) };
               const epoch = Number.isSafeInteger(data.keyEpoch) && (data.keyEpoch as number) >= 1 ? data.keyEpoch as number : 1;
               const mnemonic = readSessionMnemonic();
               if (mnemonic && !getCachedTeamKey(team.id, epoch)) {
@@ -452,15 +422,11 @@ export function useUniverseMemories(accountReady = true) {
                 try { await pending; } catch { /* A missing historical wrap leaves only that epoch locked. */ }
               }
               if (!teamCurrent()) throw new Error('Team snapshot changed');
-              return { memory: await fromFirestore(data, docSnap.id, uid), tombstone: false, legacyPlaintext: false };
+              return { memory: await fromFirestore(data, docSnap.id, uid), tombstone: false, legacyPlaintext: false, revision: toMillis(data.updatedAt ?? data.timestamp, 0) };
             });
             if (!teamCurrent() || snapshotRevision !== revision || !lease.isCurrent()) return;
             if (!lease.commit()) return;
-            let bucket = teamMemoriesRef.current.get(team.id);
-            if (!bucket) { bucket = new Map(); teamMemoriesRef.current.set(team.id, bucket); }
-            teamOrdersRef.current.set(team.id, applyUniverseBucketLease(bucket, teamOrdersRef.current.get(team.id) ?? [], lease));
-            publication.apply(`team:${team.id}`, universeBucketPatch(lease));
-            semanticCorpus.apply(`team:${team.id}`, universeBucketPatch(lease));
+            local.apply(`team:${team.id}`, universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), snapshotRevision);
             publishMemories();
             setIsLoading(false);
             if (loadedEpochs.size) { loadedEpochs.clear(); notifyTeamKeysUpdated(); }
@@ -477,9 +443,11 @@ export function useUniverseMemories(accountReady = true) {
     unsubscribeRefs.current = [
       () => {
         retireCaches();
+        local.clear();
         publication.clear();
         semanticCorpus.clear();
         if (semanticCorpusRef.current === semanticCorpus) semanticCorpusRef.current = null;
+        if (viewPublicationRef.current === local) viewPublicationRef.current = null;
         if (publicationRef.current === publication) { publicationRef.current = null; loadMemories([]); }
         if (subscriptionEpochRef.current === epoch) ++subscriptionEpochRef.current;
       },
@@ -494,9 +462,11 @@ export function useUniverseMemories(accountReady = true) {
     return () => {
       unsubSessions();
       retireCaches();
+      local.clear();
       publication.clear();
       semanticCorpus.clear();
       if (semanticCorpusRef.current === semanticCorpus) semanticCorpusRef.current = null;
+      if (viewPublicationRef.current === local) viewPublicationRef.current = null;
       if (publicationRef.current === publication) { publicationRef.current = null; loadMemories([]); }
       if (subscriptionEpochRef.current === epoch) ++subscriptionEpochRef.current;
       unsubLegacy();
@@ -509,6 +479,7 @@ export function useUniverseMemories(accountReady = true) {
   useEffect(() => {
     if (!accountReady) {
       uidRef.current = null;
+      viewPublicationRef.current?.clear(); viewPublicationRef.current = null;
       publicationRef.current?.clear();
       semanticCorpusRef.current?.clear();
       loadMemories([]);
@@ -519,19 +490,14 @@ export function useUniverseMemories(accountReady = true) {
         subscribeToMemories(user.uid);
       } else {
         uidRef.current = null;
+        viewPublicationRef.current?.clear(); viewPublicationRef.current = null;
         publicationRef.current?.clear();
         semanticCorpusRef.current?.clear(); semanticCorpusRef.current = null;
         publicationRef.current = null;
         unsubscribeRefs.current.forEach((unsubscribe) => unsubscribe());
         unsubscribeRefs.current = [];
-        sessionMemoriesRef.current.clear();
-        sessionOrderRef.current = [];
-        legacyMemoriesRef.current.clear();
-        legacyOrderRef.current = [];
-        personalTombstonesRef.current.clear();tombstoneOwnerRef.current=null;
+        personalTombstonesRef.current.clear();confirmedDeletionsRef.current.clear();tombstoneOwnerRef.current=null;
         setLegacyPlaintextCount(0);
-        teamMemoriesRef.current.clear();
-        teamOrdersRef.current.clear();
         teamRecordsRef.current.clear();
         loadMemories([]);
       }
@@ -552,7 +518,7 @@ export function useUniverseMemories(accountReady = true) {
     };
   }, [subscribeToMemories, loadMemories, accountReady]);
 
-  const saveMemory = useCallback(async (memory: MemoryObject,submission?:MemorySaveSubmission):Promise<{id:string}> => {
+  const saveMemory = useCallback(async (memory: MemoryObject,submission?:MemorySaveSubmission):Promise<{id:string;viewCommit?:UniverseViewCommit}> => {
     const uid = uidRef.current;
     if (!uid) throw new Error('Conta indisponível para guardar a memória.');
     const captured=structuredClone(memory),epoch=subscriptionEpochRef.current;
@@ -562,7 +528,7 @@ export function useUniverseMemories(accountReady = true) {
         const guard=()=>{context.assertCurrent();submission.assertCurrent();if(uidRef.current!==uid||subscriptionEpochRef.current!==epoch)throw new MemoryEditError('baseline');};guard();
         if(submission.kind==='create'){
           if(captured.teamId||captured.uid!==uid||captured.persistedStateDigest||captured.connections.length||captured.attachments?.length)throw new MemoryEditError('baseline');
-          const created=await createPersonalMemory({uid,text:captured.text,title:captured.title??null,metadata:{tags:captured.tags??[],category:captured.category??'Universe',embedding:captured.embedding.length?captured.embedding:null,embeddingModel:captured.embedding.length?captured.embeddingModel??null:null,semanticClusterId:captured.semanticClusterId??null,position:captured.position,importance:captured.importance,celestialType:captured.celestialType,connections:[],processingMethod:'universe+local-embedding'}},undefined,guard);guard();return{id:created.id};
+          const created=await createPersonalMemory({uid,text:captured.text,title:captured.title??null,metadata:{tags:captured.tags??[],category:captured.category??'Universe',embedding:captured.embedding.length?captured.embedding:null,embeddingModel:captured.embedding.length?captured.embeddingModel??null:null,semanticClusterId:captured.semanticClusterId??null,position:captured.position,importance:captured.importance,celestialType:captured.celestialType,connections:[],processingMethod:'universe+local-embedding'}},undefined,guard);guard();return{id:created.id,viewCommit:viewPublicationRef.current?.created(captured,created.id)};
         }
         if(submission.baseline.sessionId!==captured.id||submission.baseline.teamId!==(captured.teamId??null)||submission.baseline.stateDigest!==captured.persistedStateDigest||submission.baseline.authorUid!==captured.uid)throw new MemoryEditError('baseline');
         let semanticPending=false;const metadata=structuredClone(submission.metadata);
@@ -597,8 +563,8 @@ export function useUniverseMemories(accountReady = true) {
     try {
       const memory=source?structuredClone(source):null;
       if(!memory||memory.id!==id||memory.teamScopeAmbiguous||memory.encLocked||!memory.persistedStateDigest||memory.persistedTitle===undefined)throw new MemoryEditError('baseline');
-      await withPersonalMemoryMutation(uid,async context=>{const guard=()=>{context.assertCurrent();assertCurrent();if(uidRef.current!==uid||subscriptionEpochRef.current!==epoch)throw new MemoryEditError('baseline');};guard();
-        const baseline=await captureMemoryEditBaseline({uid,id,teamId:memory.teamId??null,viewDigest:memory.persistedStateDigest!,expected:{text:memory.text,title:memory.persistedTitle!,authorUid:memory.uid},assertCurrent:guard});guard();await applyMemoryEdit({uid,id,teamId:memory.teamId??null,operation:'delete',baseline,assertCurrent:guard});guard();});
+      return await withPersonalMemoryMutation(uid,async context=>{const guard=()=>{context.assertCurrent();assertCurrent();if(uidRef.current!==uid||subscriptionEpochRef.current!==epoch)throw new MemoryEditError('baseline');};guard();
+        const baseline=await captureMemoryEditBaseline({uid,id,teamId:memory.teamId??null,viewDigest:memory.persistedStateDigest!,expected:{text:memory.text,title:memory.persistedTitle!,authorUid:memory.uid},assertCurrent:guard});guard();const outcome=await applyMemoryEdit({uid,id,teamId:memory.teamId??null,operation:'delete',baseline,assertCurrent:guard});guard();if(!outcome||outcome.status!=='committed'||outcome.revision===null)throw new MemoryEditError('confirmation');return{viewCommit:viewPublicationRef.current?.deleted(memory,outcome.revision)};});
     } catch {
       if(uidRef.current===uid&&subscriptionEpochRef.current===epoch)toast.error('Não foi possível confirmar o apagamento. O pedido foi conservado para recuperação.');
       throw new Error('Não foi possível apagar a memória.');

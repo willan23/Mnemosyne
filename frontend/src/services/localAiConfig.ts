@@ -2,7 +2,7 @@ import { decryptTextAesGcm, deriveAesKeyFromMnemonic, encryptTextAesGcm } from '
 import { isGenerationProviderEnabled } from '../../../functions/src/generationProviderPolicy';
 import { generationBackendBase } from './generationEndpoints';
 
-export type AiProviderId = 'ollama' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia' | 'huggingface' | 'openrouter';
+export type AiProviderId = 'ollama' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia' | 'huggingface' | 'openrouter' | 'vertex';
 export type MemoryPermission = 'never-cloud' | 'confirm-cloud' | 'allow-cloud';
 export type AiFailurePolicy = 'save-with-warning' | 'confirm-before-save' | 'block-save';
 
@@ -40,11 +40,12 @@ export const AI_PROVIDERS: AiProviderDefinition[] = [
   { id: 'openai', label: 'OpenAI', kind: 'backend', needsSecret: false },
   { id: 'anthropic', label: 'Claude', kind: 'cloud', needsSecret: true },
   { id: 'gemini', label: 'Google Gemini via Mnemosyne', kind: 'backend', needsSecret: false, defaultEndpoint: generationBackendBase() },
+  { id: 'vertex', label: 'Google Vertex AI via Mnemosyne', kind: 'backend', needsSecret: false, defaultEndpoint: generationBackendBase() },
   { id: 'mistral', label: 'Mistral', kind: 'cloud', needsSecret: true },
 ];
 
 /** Known adapters preserve stored selections, independently of this release's enabled providers. */
-export const GENERATION_PROVIDER_IDS: readonly AiProviderId[] = ['ollama', 'openrouter', 'nvidia', 'huggingface', 'openai', 'gemini'];
+export const GENERATION_PROVIDER_IDS: readonly AiProviderId[] = ['ollama', 'openrouter', 'nvidia', 'huggingface', 'openai', 'gemini', 'vertex'];
 export function isAiProviderEnabled(provider: AiProviderId): boolean {
   return provider === 'ollama' || isGenerationProviderEnabled(provider);
 }
@@ -77,6 +78,7 @@ export const AI_MODEL_PRESETS: Record<AiProviderId, AiModelPreset[]> = {
   huggingface: [{ id: 'hf-default', label: 'GPT-OSS 120B via Hugging Face' }],
   anthropic: [],
   gemini: [{ id: 'gemini-flash', label: 'Gemini 3.5 Flash-Lite' }],
+  vertex: [{ id: 'vertex-flash', label: 'Gemini 3.5 Flash · Vertex AI' }],
   mistral: [],
 };
 
@@ -101,6 +103,7 @@ const providerDefaults = (): Record<AiProviderId, AiProviderConfig> => ({
   huggingface: { enabled: false, endpoint: generationBackendBase(), model: 'hf-default', hasSecret: false },
   anthropic: { enabled: false, endpoint: '', model: '', hasSecret: false },
   gemini: { enabled: false, endpoint: '', model: '', hasSecret: false },
+  vertex: { enabled: false, endpoint: generationBackendBase(), model: 'vertex-flash', hasSecret: false },
   mistral: { enabled: false, endpoint: '', model: '', hasSecret: false },
 });
 
@@ -143,6 +146,7 @@ function mergeConfig(parsed: Partial<LocalAiConfig>): LocalAiConfig {
     : openaiModel;
   if (!AI_MODEL_PRESETS.huggingface.some(preset => preset.id === providers.huggingface.model)) providers.huggingface.model = 'hf-default';
   if (!AI_MODEL_PRESETS.gemini.some(preset => preset.id === providers.gemini.model)) providers.gemini.model = 'gemini-flash';
+  if (!AI_MODEL_PRESETS.vertex.some(preset => preset.id === providers.vertex.model)) providers.vertex.model = 'vertex-flash';
   if (!AI_MODEL_PRESETS.openrouter.some(preset => preset.id === providers.openrouter.model)) providers.openrouter.model = 'openrouter-gemma-4-free';
 
   const migratedHost = normalizeEndpoint(parsed.host || providers.ollama.endpoint);

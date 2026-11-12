@@ -95,18 +95,19 @@ export async function generateTextFromPrompt(prompt: string, options: AiGenerati
       return payload.response.trim();
     });
   }
-  if (!['nvidia', 'huggingface', 'openai', 'gemini', 'openrouter'].includes(config.primaryProvider)) {
+  if (!['nvidia', 'huggingface', 'openai', 'gemini', 'openrouter', 'vertex'].includes(config.primaryProvider)) {
     throw new Error('Este fornecedor ainda não está ligado ao backend de geração.');
   }
   if (!isGenerationProviderEnabled(config.primaryProvider)) throw new Error('Este fornecedor não está ativo neste lançamento. Seleciona um fornecedor disponível nas Definições.');
   guardPrompt(prompt, 'text-generation', generationProviderLabel(config.primaryProvider), config.primaryProvider === 'openrouter' ? 0 : undefined);
-  const selectedModel = provider.model || (config.primaryProvider === 'openrouter' ? 'openrouter-gemma-4-free' : config.primaryProvider === 'nvidia' ? 'nvidia-nemotron-ultra' : config.primaryProvider === 'huggingface' ? 'hf-default' : config.primaryProvider === 'gemini' ? 'gemini-flash' : 'openai-mini');
+  const selectedModel = provider.model || (config.primaryProvider === 'openrouter' ? 'openrouter-gemma-4-free' : config.primaryProvider === 'nvidia' ? 'nvidia-nemotron-ultra' : config.primaryProvider === 'huggingface' ? 'hf-default' : config.primaryProvider === 'gemini' ? 'gemini-flash' : config.primaryProvider === 'vertex' ? 'vertex-flash' : 'openai-mini');
   return inGenerationContext(options, context => requestBackendGeneration(prompt, selectedModel, context));
 }
 
 export async function generateImageFromPrompt(prompt: string, options: AiGenerationOptions = {}): Promise<GeneratedImageResult> {
   const config = getLocalAiConfig();
   if (config.primaryProvider === 'openrouter') throw new Error('O Gemma gratuito gera texto. A geração de imagens não está disponível com este modelo.');
+  if (config.primaryProvider === 'vertex') throw new Error('O modelo Vertex AI configurado gera texto. Seleciona um fornecedor de imagem nas Definições.');
   if (!['nvidia', 'huggingface', 'openai', 'gemini'].includes(config.primaryProvider)) {
     throw new Error('Seleciona um fornecedor de imagem configurado nas Definições.');
   }

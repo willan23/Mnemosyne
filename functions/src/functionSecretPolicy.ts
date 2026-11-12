@@ -1,6 +1,6 @@
 import { generationSecretNames, generationImageSecretNames } from './generationProviderPolicy';
 /** All credential names remain forbidden in dotenv/Vite, even when their provider is disabled. */
-export const FUNCTION_CREDENTIAL_NAMES = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'OPENAI_API_KEY', 'NVIDIA_API_KEY', 'HUGGINGFACE_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY'] as const;
+export const FUNCTION_CREDENTIAL_NAMES = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'OPENAI_API_KEY', 'NVIDIA_API_KEY', 'HUGGINGFACE_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'GOOGLE_VERTEX_API_KEY'] as const;
 export const AI_SECRET_NAMES = generationSecretNames();
 export const FUNCTION_SECRET_NAMES = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', ...AI_SECRET_NAMES] as const;
 export const LEGACY_PROVIDER_SECRET_NAMES = ['NVIDIA_API_KEY_FAST', 'NVIDIA_API_KEY_CORE', 'HF_TOKEN', 'HUGGINGFACE_HUB_TOKEN', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY'] as const;
