@@ -69,6 +69,12 @@ jobs:
       - name: Ordered ID-only related memory views with 100000 synthetic records
         run: node scripts/related-memory-views-browser.cjs
         working-directory: .
+      - name: Local cognitive analysis with 100000 memories and unique 384-dimensional vectors
+        run: node scripts/cognitive-analysis-browser.cjs
+        working-directory: .
+      - name: Cognitive panels, held Worker ACK and scope retirement in Chromium
+        run: node scripts/cognitive-panels-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

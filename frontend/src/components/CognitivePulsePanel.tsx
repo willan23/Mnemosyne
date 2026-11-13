@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
@@ -12,17 +12,19 @@ import {
 } from 'lucide-react';
 import type { SessionData } from '../hooks/useSessions';
 import {
-  buildCognitivePulse,
   markPulseSeen,
   type CognitivePulseHighlight,
 } from '../services/cognitivePulse';
 import type { InsightKind } from '../services/insightEngine';
 import { useTranslation } from '../utils/translations';
+import {useCognitiveAnalysis} from '../hooks/useCognitiveAnalysis';
+import type {MemoryReadScope} from '../services/memoryReadScope';
 
 interface CognitivePulsePanelProps {
   isOpen: boolean;
   sessions: readonly SessionData[];
   uid: string;
+  readScope: MemoryReadScope;
   onClose: () => void;
   onOpenMemory: (memoryId: string) => void;
   onOpenInsights: () => void;
@@ -94,12 +96,14 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
   isOpen,
   sessions,
   uid,
+  readScope,
   onClose,
   onOpenMemory,
   onOpenInsights,
 }) => {
   const { t } = useTranslation();
-  const pulse = useMemo(() => buildCognitivePulse(sessions), [sessions]);
+  const analysis=useCognitiveAnalysis(sessions,readScope,'pulse',isOpen&&uid===readScope.uid);
+  const pulse=analysis.analysis?.mode==='pulse'?analysis.analysis.pulse:null;
 
   const dismiss = () => {
     markPulseSeen(uid);
@@ -140,9 +144,9 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
                       id="cognitive-pulse-title"
                       className="mt-1 text-lg font-semibold tracking-tight text-white"
                     >
-                      {pulse.title}
+                      {pulse?.title??t('loading')}
                     </h2>
-                    <p className="mt-1.5 text-xs leading-relaxed text-slate-400">{pulse.subtitle}</p>
+                    <p className="mt-1.5 text-xs leading-relaxed text-slate-400">{pulse?.subtitle??t(analysis.loading?'cognitiveLoading':'cognitiveUnavailable')}</p>
                   </div>
                 </div>
                 <button
@@ -157,10 +161,10 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
 
               <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {[
-                  { label: t('pulseMemories'), value: pulse.stats.memories, icon: Star },
-                  { label: t('pulseLinks'), value: pulse.stats.connections, icon: Link2 },
-                  { label: t('pulseEchos'), value: pulse.stats.resurfacing, icon: Sparkles },
-                  { label: t('pulseTensions'), value: pulse.stats.contradictions, icon: AlertTriangle },
+                  { label: t('pulseMemories'), value: pulse?.stats.memories??'—', icon: Star },
+                  { label: t('pulseLinks'), value: pulse?.stats.connections??'—', icon: Link2 },
+                  { label: t('pulseEchos'), value: pulse?.stats.resurfacing??'—', icon: Sparkles },
+                  { label: t('pulseTensions'), value: pulse?.stats.contradictions??'—', icon: AlertTriangle },
                 ].map(({ label, value, icon: Icon }) => (
                   <div
                     key={label}
@@ -177,7 +181,7 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
             </div>
 
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4 mnem-scroll">
-              {pulse.highlights.length === 0 ? (
+              {!pulse ? <div role="status" className="space-y-3 rounded-2xl border border-white/10 p-4 text-sm text-slate-300"><p>{t(analysis.loading?'cognitiveLoading':'cognitiveUnavailable')}</p>{!analysis.loading&&<button type="button" className="rounded-lg border border-white/15 px-3 py-2" onClick={analysis.retry}>{t('cognitiveRetry')}</button>}</div> : pulse.highlights.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center">
                   <Compass className="mx-auto h-8 w-8 text-slate-600" />
                   <p className="mt-3 text-sm font-medium text-slate-300">{t('pulseEmptyTitle')}</p>
@@ -191,6 +195,7 @@ export const CognitivePulsePanel: React.FC<CognitivePulsePanelProps> = ({
                     key={item.id}
                     item={item}
                     onOpen={(id) => {
+                      if(!analysis.getMemory(id))return;
                       markPulseSeen(uid);
                       onOpenMemory(id);
                       onClose();

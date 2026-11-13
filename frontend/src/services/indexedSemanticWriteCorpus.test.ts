@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IncrementalMemoryPublication, type MemoryPublicationPatch } from './incrementalMemoryPublication';
 import { IndexedSemanticWriteCorpus } from './indexedSemanticWriteCorpus';
 import { IndexedSemanticWriteIndex } from './indexedSemanticWriteIndex';
-import type { IndexedSemanticWriteMessage } from './indexedSemanticWriteProtocol';
+import { INDEXED_SEMANTIC_WRITE_LIMITS as capacity, type IndexedSemanticWriteMessage } from './indexedSemanticWriteProtocol';
 import { semanticCandidateEligibility } from './semanticWriteScope';
 import { selectSemanticWriteNeighbors } from './semanticWriteClient';
 import { CURRENT_EMBEDDING_SPACE } from './embeddingModel';
@@ -207,8 +207,12 @@ it('compacts thousands of unqueried edits to the current reference without proje
 });
 
 it('counts reset IDs in the queue budget and streams the latest listener order, including null positions', async () => {
-  const f = fixture(), values = Array.from({ length: 3000 }, (_, index) => row('m' + index)); f.apply('personal', reset(values));
-  f.apply('personal', { changed: [{ id: 'm1500', value: null }], removed: [], order: { changes: [] } });
+  const f = fixture(), size = 1024, rotations = Math.floor(capacity.pendingChanges / size) + 1;
+  // Exceed the metadata-entry budget while staying below the separate batch-count cap.
+  expect(rotations * size).toBeGreaterThan(capacity.pendingChanges);
+  expect(rotations + 1).toBeLessThan(capacity.pendingBatches);
+  const values = Array.from({ length: size }, (_, index) => row('m' + index)); f.apply('personal', reset(values));
+  f.apply('personal', { changed: [{ id: 'm512', value: null }], removed: [], order: { changes: [] } });
   await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') });
   let held: unknown;
   f.worker.postMessage.mockImplementation(message => {
@@ -218,12 +222,12 @@ it('counts reset IDs in the queue budget and streams the latest listener order, 
   f.corpus.apply('personal', { changed: [], removed: [], order: { reset: values.map(value => value.id), changes: [] } });
   await vi.waitFor(() => expect(held).toBeDefined());
   let ids = values.map(value => value.id);
-  for (let index = 0; index < 90; index++) { ids = [...ids.slice(1), ids[0]]; f.corpus.apply('personal', { changed: [], removed: [], order: { reset: ids, changes: [] } }); }
+  for (let index = 0; index < rotations; index++) { ids = [...ids.slice(1), ids[0]]; f.corpus.apply('personal', { changed: [], removed: [], order: { reset: ids, changes: [] } }); }
   // The reference view needs only the final order; this case exercises the replica's queued metadata budget.
   f.publication.apply('personal', { changed: [], removed: [], order: { reset: ids, changes: [] } });
   const source = f.corpus.sourceSelection('personal', f.publication.count, semanticCandidateEligibility('alice'));
   const result = await selectSemanticWriteNeighbors([1, 0], source, {});
-  expect(result.count).toBe(2999); expect(result.neighbors.map(hit => hit.candidate.id)).toEqual(ids.filter(id => id !== 'm1500').slice(0, 7));
+  expect(result.count).toBe(size - 1); expect(result.neighbors.map(hit => hit.candidate.id)).toEqual(ids.filter(id => id !== 'm512').slice(0, 7));
   expect(f.workers).toHaveLength(2); expect(f.worker.terminate).toHaveBeenCalledOnce(); const active = f.workers[1];
   const starts = active.postMessage.mock.calls.flatMap(([message]) => message.type === 'patch-start' ? [message] : []);
   expect(starts).toHaveLength(1); expect(starts[0].orderedReset).toBe(true); expect(starts[0].order.reset).toEqual([]);

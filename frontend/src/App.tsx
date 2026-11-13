@@ -281,6 +281,7 @@ const App: React.FC = () => {
   const {
     sessions,
     allSessions,
+    readScope: cognitiveReadScope,
     searchResults,
     legacyPersonalCount: legacySessionCount,
   } = useSessions(currentUser, searchQuery, filters);
@@ -921,6 +922,7 @@ const App: React.FC = () => {
                     activeTab={sidebarTab}
                     onTabChange={setSidebarTab}
                     allSessions={allSessions}
+                    readScope={cognitiveReadScope}
                     onSaveMemory={saveMemory}
                     onDeleteMemory={deleteMemory}
                     onOpenTransmission={openTransmission}
@@ -1030,6 +1032,7 @@ const App: React.FC = () => {
           isOpen={isPulseOpen}
           onClose={() => setIsPulseOpen(false)}
           uid={currentUser.uid}
+          readScope={cognitiveReadScope}
           sessions={sessions}
           onOpenMemory={(memoryId: string) => {
             selectMemory(memoryId);

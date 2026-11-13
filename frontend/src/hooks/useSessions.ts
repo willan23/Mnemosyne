@@ -177,6 +177,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
     const scopeCarry = useRef<{ candidate: readonly SessionData[]; scope: typeof loadedScope } | null>(null);
     const teams = useMyTeams(user?.uid ?? null);
     const teamIds = useTeamIds(teams);
+    const readScope = useMemo(() => ({uid:user?.uid??'',teamIds:new Set(teamIds)}),[user?.uid,teamIds]);
     useEffect(() => () => { searchIndex.dispose(); hybridIndex.dispose(); preparedSearchCache.dispose(); setRankedResult(null); }, [searchIndex, hybridIndex, preparedSearchCache, user?.uid, cryptoEpoch, teamIds]);
     useUnlockTeamKeys(user?.uid ?? null, teams);
     const authorizedCandidate = useMemo(() => {
@@ -429,6 +430,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         loadedScope.uid === user?.uid && loadedScope.cryptoEpoch === cryptoEpoch && isMemoryCryptoReady() && memorySnapshotScopeActive(allSessions) ? resourceState.resources : NO_RESOURCES;
 
     return {
+        readScope,
         sessions,
         allSessions: authorizedAllSessions,
         filteredSessions,

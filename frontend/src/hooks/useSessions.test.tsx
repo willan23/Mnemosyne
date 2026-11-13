@@ -567,3 +567,10 @@ it('retains authorized personal rows and catalogs while withdrawing a team befor
   await waitFor(() => expect(result.current.availableTags).toEqual(['personal', 'private-team'])); state.teamIds = []; rerender();
   expect(result.current.sessions.map(row => row.id)).toEqual(['personal']); expect(result.current.availableTags).toEqual(['personal']); expect(result.current.availableCategories).toEqual(['Personal']);
 });
+it('publishes a stable read scope for row changes and replaces it when membership or account changes',async()=>{
+  state.teamIds=['crew'];const {result,rerender}=renderHook(({user})=>useSessions(user,'',filters),{initialProps:{user:alice}}),initial=result.current.readScope;
+  expect(initial.uid).toBe('alice');expect([...initial.teamIds]).toEqual(['crew']);
+  await act(async()=>state.listeners[0]({docs:[doc('scope-row')]}));await waitFor(()=>expect(result.current.sessions).toHaveLength(1));expect(result.current.readScope).toBe(initial);
+  state.teamIds=[];rerender({user:alice});expect(result.current.readScope).not.toBe(initial);expect([...result.current.readScope.teamIds]).toEqual([]);expect([...initial.teamIds]).toEqual(['crew']);
+  rerender({user:{uid:'bob'} as User});expect(result.current.readScope.uid).toBe('bob');expect(initial.uid).toBe('alice');
+});

@@ -1,5 +1,13 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Insights e pulso no Worker — 13 de novembro de 2026
+
+Os [painéis de análise](ANALISE_COGNITIVA_WORKER_2026-11-13.md) usam projeção autorizada e transporte incremental confirmado, com vetores Float64 transferidos. O UI deixa de executar a classificação do cofre. Publicações durante uma confirmação são agregadas, e remoções/perda de acesso retiram o trabalho pendente. O Worker continua a percorrer candidatos; não há inferência cloud.
+
+Passaram **2362 testes frontend/247 ficheiros**, 113 focados/11, build/identidade, lint zero erros/21 avisos e 23 contratos. Seis ensaios browser sem pedidos externos. Com 100.000 linhas e 384 dimensões, a carga inicial demorou 9978.2 ms e a edição 197.2 ms, uma projeção e zero enumerações da origem na edição. Tempos excluem construção/oracle; a amostra privada de memória foi 1240485888 bytes, sem medir pico ou aplicação completa. Regressões PT/EN/FR não substituem avaliação real de modelos.
+
+Captura inicial/churn/memória e qualidade representativa, requisitos de rollout, CI e instaladores finais continuam pendentes. Backend/regras/auditorias são reutilizados por hashes. A chave Google conserva a configuração Vertex anterior, sem geração paga. Fase 5 e fases 0–6 abertas, **49 switches fechados e sem deploy**. Prova: cognitive-analysis-local-validation-20261113.json. Os blocos seguintes conservam a cronologia.
+
 ## Relacionadas ordenadas no Worker — 13 de novembro de 2026
 
 As [memórias relacionadas](RELACIONADAS_ORDENADAS_2026-11-13.md) do detalhe/sidebar usam IDs e a ordem publicada, sem filter integral no UI. Mantêm oito/dez linhas, âmbito atual e subconjuntos explícitos. A partilha conserva o rascunho durante a preparação ligada e não admite um conjunto incompleto; pedidos cifrados já preparados continuam recuperáveis.

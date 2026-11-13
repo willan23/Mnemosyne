@@ -3,6 +3,9 @@ import { sameEmbeddingSpace } from './embeddingModel';
 
 export type InsightKind = 'contradiction' | 'orphan' | 'resurface' | 'pattern';
 export type InsightSeverity = 'low' | 'medium' | 'high';
+export type InsightMemory = Readonly<Pick<SessionData, 'id' | 'text' | 'title' | 'timestamp' | 'updatedAt' | 'embeddingModel' | 'deletedAt'>> & {
+  readonly tags?: readonly string[]; readonly embedding?: Readonly<ArrayLike<number>>; readonly connections?: readonly string[];
+};
 
 export interface CognitiveInsight {
   id: string;
@@ -16,7 +19,7 @@ export interface CognitiveInsight {
 }
 
 interface MemorySignal {
-  memory: SessionData;
+  memory: InsightMemory;
   normalizedText: string;
   concepts: string[];
   hasNegation: boolean;
@@ -55,7 +58,7 @@ const snippet = (text: string, max = 136) => {
   return compact.length > max ? `${compact.slice(0, max - 1).trim()}...` : compact;
 };
 
-const cosineSimilarity = (a?: number[], b?: number[]) => {
+const cosineSimilarity = (a?: Readonly<ArrayLike<number>>, b?: Readonly<ArrayLike<number>>) => {
   if (!a?.length || !b?.length || a.length !== b.length) return 0;
   let dot = 0;
   let magA = 0;
@@ -93,19 +96,22 @@ const relationScore = (a: MemorySignal, b: MemorySignal) => {
   return Math.max(semantic, lexical);
 };
 
-const makeSignals = (sessions: readonly SessionData[]): MemorySignal[] =>
-  sessions
-    .filter((memory) => memory.text?.trim())
-    .map((memory) => {
-      const normalizedText = normalize(memory.text);
-      return {
-        memory,
-        normalizedText,
-        concepts: topConcepts(memory.text),
-        hasNegation: NEGATION_RE.test(normalizedText),
-        hasCommitment: COMMITMENT_RE.test(normalizedText),
-      };
-    });
+/** Worker records are immutable; only replaced records need text preparation again. */
+export class InsightSignalCache {
+  private signals = new WeakMap<InsightMemory, MemorySignal | null>();
+  get(memory: InsightMemory): MemorySignal | null {
+    const cached = this.signals.get(memory); if (cached !== undefined) return cached;
+    if (!memory.text?.trim()) { this.signals.set(memory, null); return null; }
+    const normalizedText = normalize(memory.text), signal = { memory, normalizedText,
+      concepts: topConcepts(memory.text), hasNegation: NEGATION_RE.test(normalizedText), hasCommitment: COMMITMENT_RE.test(normalizedText) };
+    this.signals.set(memory, signal); return signal;
+  }
+}
+const makeSignals = (sessions: readonly InsightMemory[], cache: InsightSignalCache): MemorySignal[] => {
+  const signals: MemorySignal[] = [];
+  for (const memory of sessions) { const signal = cache.get(memory); if (signal) signals.push(signal); }
+  return signals;
+};
 
 const contradictionInsights = (signals: MemorySignal[]): CognitiveInsight[] => {
   const insights: CognitiveInsight[] = [];
@@ -144,7 +150,7 @@ const contradictionInsights = (signals: MemorySignal[]): CognitiveInsight[] => {
     .slice(0, 6);
 };
 
-const orphanInsights = (sessions: readonly SessionData[], now: number): CognitiveInsight[] => {
+const orphanInsights = (sessions: readonly InsightMemory[], now: number): CognitiveInsight[] => {
   const day = 24 * 60 * 60 * 1000;
   const orphans = sessions
     .filter((memory) => (memory.connections?.length || 0) === 0)
@@ -203,13 +209,13 @@ const resurfaceInsights = (signals: MemorySignal[], now: number): CognitiveInsig
     .slice(0, 5);
 };
 
-const patternInsights = (sessions: readonly SessionData[], signals: MemorySignal[]): CognitiveInsight[] => {
-  const tagCounts = new Map<string, SessionData[]>();
+const patternInsights = (sessions: readonly InsightMemory[], signals: MemorySignal[]): CognitiveInsight[] => {
+  const tagCounts = new Map<string, InsightMemory[]>();
   for (const memory of sessions) {
     for (const tag of memory.tags || []) {
       const normalizedTag = normalize(tag).trim();
       if (!normalizedTag) continue;
-      tagCounts.set(normalizedTag, [...(tagCounts.get(normalizedTag) || []), memory]);
+      const group = tagCounts.get(normalizedTag); if (group) group.push(memory); else tagCounts.set(normalizedTag, [memory]);
     }
   }
 
@@ -231,10 +237,10 @@ const patternInsights = (sessions: readonly SessionData[], signals: MemorySignal
     }];
   }
 
-  const conceptCounts = new Map<string, SessionData[]>();
+  const conceptCounts = new Map<string, InsightMemory[]>();
   for (const signal of signals) {
     for (const concept of signal.concepts.slice(0, 5)) {
-      conceptCounts.set(concept, [...(conceptCounts.get(concept) || []), signal.memory]);
+      const group = conceptCounts.get(concept); if (group) group.push(signal.memory); else conceptCounts.set(concept, [signal.memory]);
     }
   }
 
@@ -257,10 +263,10 @@ const patternInsights = (sessions: readonly SessionData[], signals: MemorySignal
   }];
 };
 
-export const generateCognitiveInsights = (sessions: readonly SessionData[], now = Date.now()): CognitiveInsight[] => {
+export const generateCognitiveInsights = (sessions: readonly InsightMemory[], now = Date.now(), cache = new InsightSignalCache()): CognitiveInsight[] => {
   if (!sessions.length) return [];
 
-  const signals = makeSignals(sessions);
+  const signals = makeSignals(sessions, cache);
   return [
     ...contradictionInsights(signals),
     ...resurfaceInsights(signals, now),

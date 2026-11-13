@@ -1,5 +1,8 @@
 /** Tuple order: pt-PT (tu), pt-BR (você), EN, FR. */
 export const translationCatalog = {
+  cognitiveLoading: ['A preparar os sinais das tuas memórias…', 'Preparando os sinais das suas memórias…', 'Preparing signals from your memories…', 'Préparation des signaux de vos souvenirs…'],
+  cognitiveUnavailable: ['Não foi possível preparar os sinais. As memórias continuam disponíveis.', 'Não foi possível preparar os sinais. As memórias continuam disponíveis.', 'Signals could not be prepared. Your memories remain available.', 'Les signaux n’ont pas pu être préparés. Vos souvenirs restent disponibles.'],
+  cognitiveRetry: ['Tentar novamente', 'Tentar novamente', 'Try again', 'Réessayer'],
   downloadBack: ['Voltar ao Mnemosyne', 'Voltar ao Mnemosyne', 'Back to Mnemosyne', 'Retour à Mnemosyne'],
   downloadFree: ['Aplicação desktop gratuita', 'Aplicativo desktop gratuito', 'Free desktop app', 'Application de bureau gratuite'],
   downloadHeading: ['Descarrega o Mnemosyne para Windows', 'Baixe o Mnemosyne para Windows', 'Download Mnemosyne for Windows', 'Télécharger Mnemosyne pour Windows'],

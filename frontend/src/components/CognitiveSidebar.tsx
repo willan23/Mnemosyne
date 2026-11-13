@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, Star, Sun, Circle, Orbit, Zap, Infinity as InfinityIcon, Cloud,
@@ -29,6 +29,7 @@ import {useSyncFeedback} from '../hooks/useSyncFeedback';
 import {MemoryEditorStatus} from './MemoryEditorStatus';
 import { memoryById, memoryConnectionReferences } from '../services/memorySnapshot';
 import { useRelatedMemories } from '../hooks/useRelatedMemories';
+import type { MemoryReadScope } from '../services/memoryReadScope';
 
 const TYPE_ICONS: Record<CelestialType, React.ReactNode> = {
   star: <Star size={15} />,
@@ -68,6 +69,7 @@ interface CognitiveSidebarProps {
   activeTab?: SidebarTab;
   onTabChange?: (tab: SidebarTab) => void;
   allSessions?: readonly SessionData[];
+  readScope?: MemoryReadScope;
   onSaveMemory?: import('../types/universe').MemorySaveCallback;
   onDeleteMemory?: import('../types/universe').MemoryDeleteCallback;
   onOpenTransmission?: (
@@ -84,6 +86,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
   activeTab: externalTab,
   onTabChange,
   allSessions = [],
+  readScope,
   onSaveMemory,
   onDeleteMemory,
   onOpenTransmission,
@@ -207,6 +210,8 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
 
   // MemoryObject satisfies SessionData. Keep its scope fence and all access metadata.
   const sessionDataList: readonly SessionData[] = allSessions.length > 0 ? allSessions : memories;
+  const actorUid=auth.currentUser?.uid??'';
+  const personalReadScope=useMemo(()=>({uid:actorUid,teamIds:new Set<string>()}),[actorUid]);
 
   return (
     <AnimatePresence>
@@ -569,6 +574,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
               <div className="space-y-4">
                 <InsightsPanel
                   sessions={sessionDataList}
+                  readScope={readScope??personalReadScope}
                   onMemoryClick={(session) => {
                     selectMemory(session.id);
                     setTab('memory');
