@@ -5,7 +5,7 @@ import type { UniverseQualityProfile } from './qualityProfile';
 
 export interface UniverseRuntime {
   memoriesRef: MutableRefObject<readonly MemoryObject[]>;
-  lookupRef: MutableRefObject<Map<string, MemoryObject>>;
+  lookupRef: MutableRefObject<ReadonlyMap<string, MemoryObject>>;
   sphereGeometry: SphereGeometry;
   glowGeometry: SphereGeometry;
   quality: UniverseQualityProfile;

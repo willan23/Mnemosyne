@@ -60,6 +60,9 @@ jobs:
       - name: Universe store publication and confirmed mutations with a compiled semantic Worker in Chromium
         run: node scripts/universe-publication-browser.cjs
         working-directory: .
+      - name: Incremental list and scene views with 100000 synthetic records and acknowledged transfer frames
+        run: node scripts/memory-view-deltas-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

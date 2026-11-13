@@ -39,17 +39,20 @@ describe('memory view lifecycle', () => {
     expect(worker.postMessage).toHaveBeenCalledOnce(); unmount();
     expect(worker.terminate).toHaveBeenCalledOnce();
     expect(observers.personal.size).toBe(0); expect(observers.team.size).toBe(0);
-    await act(async () => worker.onmessage?.({ data: { v: 1, id: 1, ok: true, count: 1, ids: ['pending'] } }));
+    await act(async () => worker.onmessage?.({ data: { v: 2, id: 1, ok: true, ack: true } }));
   });
   it('does not accept a delayed old query after a newer query is requested', async () => {
     const workers: MemoryViewWorkerMock[] = [];
-    vi.stubGlobal('Worker', class { constructor() { const worker = new MemoryViewWorkerMock(); worker.postMessage.mockImplementation(() => undefined); workers.push(worker); return worker; } });
+    vi.stubGlobal('Worker', class { constructor() { const worker = new MemoryViewWorkerMock(), normal = worker.postMessage.getMockImplementation()!; worker.postMessage.mockImplementation(request => { if (request.type !== 'query-end') normal(request); }); workers.push(worker); return worker; } });
     const rows = [memory('a')], { result, rerender } = renderHook(({ query }) => useMemoryView(rows, query), { initialProps: { query: { ...options, query: 'old' } } });
+    await waitFor(() => expect(workers[0].postMessage.mock.calls.some(([message]) => message.type === 'query-end')).toBe(true));
+    const old = workers[0].postMessage.mock.calls.find(([message]) => message.type === 'query-end')![0];
     rerender({ query: { ...options, query: 'new' } }); expect(workers[0].terminate).toHaveBeenCalledOnce();
-    await act(async () => workers[0].onmessage?.({ data: { v: 1, id: 1, ok: true, count: 1, ids: ['a'] } }));
+    await act(async () => workers[0].onmessage?.({ data: { v: 2, id: old.id, ok: true, count: 1, ids: ['a'] } }));
     expect(result.current.memories).toEqual([]);
-    const request = workers[1].postMessage.mock.calls[0][0];
-    await act(async () => workers[1].onmessage?.({ data: { v: 1, id: request.id, ok: true, count: 0, ids: [] } }));
+    await waitFor(() => expect(workers[1].postMessage.mock.calls.some(([message]) => message.type === 'query-end')).toBe(true));
+    const request = workers[1].postMessage.mock.calls.find(([message]) => message.type === 'query-end')![0];
+    await act(async () => workers[1].onmessage?.({ data: { v: 2, id: request.id, ok: true, count: 0, ids: [] } }));
     expect(result.current.loading).toBe(false); expect(result.current.error).toBe(false); expect(result.current.count).toBe(0);
   });
 });

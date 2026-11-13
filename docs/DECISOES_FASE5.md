@@ -1,5 +1,13 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Lista e cena por deltas — 13 de novembro de 2026
+
+As [vistas incrementais](VISTAS_INCREMENTAIS_2026-11-13.md) usam as raízes publicadas e frames confirmados de até 128 dados/IDs/movimentos/filtros. Uma edição já não reconstrói o Map e a ordem completos no cliente; consultas antigas e lookups são retirados por seleção e âmbito. Passaram **2306 testes frontend/240 ficheiros**, 63 focados/cinco ficheiros, build/identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Functions/Rules anteriores são reutilizadas por hashes, sem nova execução.
+
+Chromium validou o cliente/Worker reais com 100.000 registos sintéticos, uma projeção e zero iterações da origem na edição seguinte, paridade da cena, recuperação e ACK atrasado. A interface passou paginação e foco por teclado com o Worker compilado e CSP nativa; zero pedidos externos nos dois ensaios. Não prova SLO, memória representativa, Auth ou nativos completos.
+
+Detalhe/sidebar, insights, contadores, grafos, avaliação/carga e pré-requisitos de rollout continuam pendentes. A fase 5 e a conclusão global permanecem abertas, com **49 switches fechados e sem deploy**. Prova: `memory-view-deltas-local-validation-20261113.json`. Os blocos seguintes conservam a cronologia.
+
 ## Vertex AI e publicação do Universo — 12 de novembro de 2026
 
 A [nova chave Vertex AI](GOOGLE_VERTEX_AI_2026-11-12.md) passou autenticação por contagem gratuita de tokens e ficou no secret próprio do servidor, mantendo a restrição Vertex. O adaptador de texto está preparado e inativo, sem geração paga ou deploy. A [publicação confirmada do Universo](PUBLICACAO_UNIVERSO_CONFIRMADA_2026-11-12.md) conserva raízes persistentes e bindings semânticos após criar/apagar, reconcilia SDK e recibos e protege restaurações e variantes por âmbito.
