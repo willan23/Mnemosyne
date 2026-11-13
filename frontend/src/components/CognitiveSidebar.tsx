@@ -27,6 +27,7 @@ import {auth} from '../firebase';
 import {useMemoryEditor} from '../hooks/useMemoryEditor';
 import {useSyncFeedback} from '../hooks/useSyncFeedback';
 import {MemoryEditorStatus} from './MemoryEditorStatus';
+import { memoryById, memoryConnectionReferences } from '../services/memorySnapshot';
 
 const TYPE_ICONS: Record<CelestialType, React.ReactNode> = {
   star: <Star size={15} />,
@@ -104,7 +105,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
     onTabChange?.(tab);
   };
 
-  const selected = useMemo(() => memories.find((m) => m.id === selectedMemoryId), [memories, selectedMemoryId]);
+  const selected = selectedMemoryId ? memoryById(memories, selectedMemoryId) : undefined;
   const selectedId=selected?.id;
   const editor=useMemoryEditor(selected,onSaveMemory,isOpen&&currentTab==='memory');
   const isEditing=editor.editing,draftText=editor.text,draftTitle=editor.title,setDraftText=editor.setText,setDraftTitle=editor.setTitle;
@@ -120,9 +121,9 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
   }, [selectedId, externalTab]);
 
   const connectedMemories = useMemo(() => {
-    if (!selected) return [];
+    if (!isOpen || currentTab !== 'memory' || !selected?.connections.length) return [];
     return memories.filter((m) => selected.connections.includes(m.id)).slice(0, 10);
-  }, [memories, selected]);
+  }, [memories, selected, isOpen, currentTab]);
 
   const handleDelete = async () => {
     if (!selected || !onDeleteMemory || isDeleting || isSaving || selected.pendingDeletion) return;
@@ -134,7 +135,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
       if(useUniverseStore.getState().selectedMemoryId!==captured.id)return;
       if(!startDeletion(captured.id, 'supernova',outcome?.viewCommit))return;
       setTimeout(() => {
-        if(!current())return;const state=useUniverseStore.getState(),present=state.memories.find(item=>item.id===captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id,outcome?.viewCommit);
+        if(!current())return;const state=useUniverseStore.getState(),present=memoryById(state.memories,captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id,outcome?.viewCommit);
         if (state.selectedMemoryId === captured.id) selectMemory(null);
       }, 800);
       toast.success('Memória absorvida pelo cosmos.', { icon: '✨' });
@@ -205,23 +206,8 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
     });
   };
 
-  // Convert universe memories to SessionData format for InsightsPanel/WebResearchPanel if needed
-  const sessionDataList: readonly SessionData[] = useMemo(() => {
-    if (allSessions.length > 0) return allSessions;
-    return memories.map((m) => ({
-      id: m.id,
-      uid: m.uid,
-      text: m.text,
-      title: m.title,
-      timestamp: m.timestamp,
-      updatedAt: m.updatedAt,
-      tags: m.tags,
-      category: m.category,
-      connections: m.connections,
-      embedding: m.embedding,
-      embeddingModel: m.embeddingModel,
-    }));
-  }, [allSessions, memories]);
+  // MemoryObject satisfies SessionData. Keep its scope fence and all access metadata.
+  const sessionDataList: readonly SessionData[] = allSessions.length > 0 ? allSessions : memories;
 
   return (
     <AnimatePresence>
@@ -243,7 +229,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
                 <div>
                   <h2 className="text-sm font-semibold tracking-tight text-white">Cognitive Sidebar</h2>
                   <p className="text-[11px] text-slate-400">
-                    {memories.length} corpos celestes · {memories.reduce((acc, m) => acc + m.connections.length, 0) / 2} ligações
+                    {memories.length} corpos celestes · {memoryConnectionReferences(memories) / 2} ligações
                   </p>
                 </div>
               </div>

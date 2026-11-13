@@ -1,11 +1,73 @@
 import { expect, it, vi } from 'vitest';
 import { produce } from 'immer';
 import { IncrementalMemoryPublication, type MemoryPublicationPatch } from './incrementalMemoryPublication';
-import { isMemorySnapshot, memorySnapshotDelta } from './memorySnapshot';
+import { isMemorySnapshot, memoryConnectionReferences, memorySnapshotDelta } from './memorySnapshot';
 
-type Row = { id: string; timestamp: number; deleted?: boolean; text?: string };
+type Row = { id: string; timestamp: number; deleted?: boolean; text?: string; connections?: string[] };
 const reset = (rows: Row[]): MemoryPublicationPatch<Row> => ({ changed: rows.map(value => ({ id: value.id, value })), removed: [], order: { reset: rows.map(row => row.id), changes: [] } });
 const change = (value: Row): MemoryPublicationPatch<Row> => ({ changed: [{ id: value.id, value }], removed: [], order: { changes: [] } });
+
+it('updates outgoing-reference totals from the changed row without rereading historical rows', () => {
+  let reads = 0;
+  const make = (index: number, count: number): Row => ({ id: 'm' + index, timestamp: index,
+    get connections() { reads++; return Array.from({ length: count }, () => 'outside'); },
+    get text() { throw Error('Read plaintext for a counter'); } });
+  const publisher = new IncrementalMemoryPublication<Row>('asc');
+  publisher.apply('source', reset(Array.from({ length: 10000 }, (_, index) => make(index, 2))));
+  const old = publisher.snapshot(); reads = 0;
+  for (let render = 0; render < 1000; render++) expect(memoryConnectionReferences(old)).toBe(20000);
+  expect(reads).toBe(0);
+  publisher.apply('source', change(make(5000, 5)));
+  expect(reads).toBe(2); // New DTO enters the order and ID trees. Path copies use cached weights.
+  reads = 0;
+  expect(memoryConnectionReferences(publisher.snapshot())).toBe(20003);
+  expect(memoryConnectionReferences(old)).toBe(20000);
+  expect(reads).toBe(0);
+  publisher.clear();
+  expect(() => memoryConnectionReferences(old)).toThrow('memory_snapshot_unavailable');
+  expect(memoryConnectionReferences(publisher.snapshot())).toBe(0);
+});
+
+it('keeps view totals and source precedence through overlays, suppression and removal', () => {
+  const publisher = new IncrementalMemoryPublication<Row>('asc', { views: { active: value => !value.deleted } });
+  publisher.apply('base', reset([{ id: 'a', timestamp: 1, connections: ['b'] },
+    { id: 'b', timestamp: 2, connections: ['a', 'outside'] },
+    { id: 'c', timestamp: 3, deleted: true, connections: ['a', 'a', 'outside'] }]), 0);
+  const original = publisher.snapshot(), active = original.view('active');
+  expect(memoryConnectionReferences(original)).toBe(6); expect(memoryConnectionReferences(active)).toBe(3);
+  publisher.apply('overlay', reset([{ id: 'a', timestamp: 1, connections: ['b', 'c', 'outside'] }]), 10);
+  expect(memoryConnectionReferences(publisher.snapshot())).toBe(8);
+  expect(memoryConnectionReferences(publisher.snapshot().view('active'))).toBe(5);
+  publisher.removeSource('overlay');
+  publisher.exclude('base', 'b', true);
+  expect(memoryConnectionReferences(publisher.snapshot())).toBe(4);
+  expect(memoryConnectionReferences(publisher.snapshot().view('active'))).toBe(1);
+  publisher.apply('base', change({ id: 'c', timestamp: 0, connections: ['a', 'a', 'a', 'a', 'outside'] }));
+  expect(memoryConnectionReferences(publisher.snapshot().view('active'))).toBe(6);
+  expect(memoryConnectionReferences(original)).toBe(6); expect(memoryConnectionReferences(active)).toBe(3);
+  publisher.exclude('base', 'b', false);
+  publisher.apply('base', { changed: [], removed: ['a'], order: { changes: [{ type: 'removed', id: 'a', oldIndex: 0, newIndex: -1 }] } });
+  expect(memoryConnectionReferences(publisher.snapshot())).toBe(7);
+});
+
+it('matches a materialized oracle across edits, reorders and view transitions', () => {
+  const publisher = new IncrementalMemoryPublication<Row>('desc', { views: { active: value => !value.deleted, deleted: value => Boolean(value.deleted) } });
+  const rows = Array.from({ length: 80 }, (_, index): Row => ({ id: 'm' + index, timestamp: index % 9, connections: [] }));
+  publisher.apply('source', reset(rows)); let seed = 73421;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed >>> 8; };
+  for (let step = 0; step < 250; step++) {
+    const old = publisher.snapshot(), oldTotal = rows.reduce((sum, row) => sum + (row.connections?.length ?? 0), 0);
+    const index = random() % rows.length;
+    rows[index] = { ...rows[index], timestamp: random() % 9, deleted: Boolean(random() % 2), connections: Array.from({ length: random() % 11 }, () => 'outside') };
+    publisher.apply('source', change(rows[index]));
+    const next = publisher.snapshot();
+    expect(memoryConnectionReferences(old)).toBe(oldTotal);
+    for (const name of ['active', 'deleted'] as const) expect(memoryConnectionReferences(next.view(name)))
+      .toBe(rows.filter(row => name === 'active' ? !row.deleted : row.deleted).reduce((sum, row) => sum + (row.connections?.length ?? 0), 0));
+    expect(memoryConnectionReferences(next)).toBe(rows.reduce((sum, row) => sum + (row.connections?.length ?? 0), 0));
+  }
+  expect(memoryConnectionReferences([{ id: 'a', connections: ['missing', 'missing'] }, { id: 'b' }])).toBe(2);
+});
 
 it('publishes 10000 references without materialization and preserves prior values after a delta', async () => {
   let reads = 0;

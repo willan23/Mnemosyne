@@ -4,6 +4,7 @@ import { CognitiveSidebar } from './CognitiveSidebar';
 import { useUniverseStore } from '../store/universeStore';
 import type { MemoryObject, MemorySaveCallback } from '../types/universe';
 const records=vi.hoisted(()=>new Map<string,unknown>());
+const observed=vi.hoisted(()=>({insights:null as unknown,web:null as unknown}));
 vi.mock('../firebase',()=>({default:{},db:{},storage:{},auth:{currentUser:{uid:'alice'}}}));
 vi.mock('firebase/auth',()=>({onAuthStateChanged:()=>()=>{}}));
 vi.mock('../config/releaseGates',async original=>({...await original<typeof import('../config/releaseGates')>(),TEAM_WRITES_ENABLED:true,PERSONAL_REVISION_WRITES_ENABLED:true}));
@@ -14,12 +15,14 @@ vi.mock('../services/memoryEditorDraftStore',()=>({memoryEditorDraftStore:{get:a
 import {setMemoryCryptoMnemonic} from '../services/memoryCrypto';
 const words=['abandon','ability','able','about','above','absent','absorb','abstract','absurd','abuse','access','accident'];
 vi.mock('./AttachmentPreviewGrid', () => ({ AttachmentPreviewGrid: () => null }));
-vi.mock('./InsightsPanel', () => ({ InsightsPanel: () => null }));
-vi.mock('./WebResearchPanel', () => ({ WebResearchPanel: () => null }));
+vi.mock('./InsightsPanel', () => ({ InsightsPanel: ({sessions}:{sessions:unknown}) => { observed.insights=sessions; return null; } }));
+vi.mock('./WebResearchPanel', () => ({ WebResearchPanel: ({sessions}:{sessions:unknown}) => { observed.web=sessions; return null; } }));
 vi.mock('./TeamMemoryConnectionsPanel', () => ({ TeamMemoryConnectionsPanel: () => null }));
 vi.mock('../utils/export', () => ({ downloadMemory: vi.fn() }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 import toast from 'react-hot-toast';
+import { IncrementalMemoryPublication } from '../services/incrementalMemoryPublication';
+import { memoryById, type MemorySnapshot } from '../services/memorySnapshot';
 const memory: MemoryObject = { id: 'sidebar-synthetic', uid: 'alice', teamId: 'crew', text: 'Synthetic original',
   celestialType: 'planet', position: [0, 0, 0], embedding: [], connections: [], importance: 0.5,
   timestamp: 1, updatedAt: 10, persistedUpdatedAt: 10,persistedTitle:null,persistedStateDigest:'b'.repeat(64) };
@@ -28,8 +31,37 @@ function deferred() {
   const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-beforeEach(() => { vi.clearAllMocks();records.clear();setMemoryCryptoMnemonic(words);useUniverseStore.setState({ memories: [{ ...memory }], selectedMemoryId: memory.id, deletingMemoryId: null, language: 'pt-pt' }); });
+beforeEach(() => { vi.clearAllMocks();observed.insights=null;observed.web=null;records.clear();setMemoryCryptoMnemonic(words);useUniverseStore.setState({ memories: [{ ...memory }], selectedMemoryId: memory.id, deletingMemoryId: null, language: 'pt-pt' }); });
 afterEach(() => { cleanup();setMemoryCryptoMnemonic(null);vi.restoreAllMocks(); vi.clearAllTimers(); vi.useRealTimers(); useUniverseStore.setState({ memories: [], selectedMemoryId: null }); });
+it('reuses the scoped fallback collection and retains team, sharing, lock and deletion fields', () => {
+  const publisher = new IncrementalMemoryPublication<MemoryObject>('asc');
+  const protectedRow = {...memory,teamScopeAmbiguous:true,encLocked:true,sharedWithIds:['bob'],deletedAt:42};
+  publisher.apply('source',{changed:[{id:memory.id,value:protectedRow}],removed:[],order:{reset:[memory.id],changes:[]}});
+  const snapshot = publisher.snapshot();useUniverseStore.setState({memories:snapshot,selectedMemoryId:null});
+  const view=render(<CognitiveSidebar isOpen activeTab="insights" onClose={()=>{}}/>);
+  expect(observed.insights).toBe(snapshot);
+  expect(memoryById(observed.insights as MemorySnapshot<MemoryObject>,memory.id)).toBe(protectedRow);
+  view.rerender(<CognitiveSidebar isOpen activeTab="web" onClose={()=>{}}/>);
+  expect(observed.web).toBe(snapshot);
+  const explicit=[{...memory,id:'authoritative'}];
+  view.rerender(<CognitiveSidebar isOpen activeTab="insights" allSessions={explicit} onClose={()=>{}}/>);
+  expect(observed.insights).toBe(explicit);
+  publisher.clear();
+  expect(()=>memoryById(observed.web as MemorySnapshot<MemoryObject>,memory.id)).toThrow('memory_snapshot_unavailable');
+});
+it('renders an empty selection and counters without enumerating a large published collection', () => {
+  const publisher = new IncrementalMemoryPublication<MemoryObject>('asc');
+  const rows = Array.from({length:10000},(_,index)=>({...memory,id:'synthetic-'+index,timestamp:index,connections:['outside','outside']}));
+  publisher.apply('source',{changed:rows.map(value=>({id:value.id,value})),removed:[],order:{reset:rows.map(row=>row.id),changes:[]}});
+  const snapshot=publisher.snapshot(),prototype=Object.getPrototypeOf(snapshot);
+  for(const method of ['find','filter','map','at',Symbol.iterator] as const)vi.spyOn(prototype,method).mockImplementation(()=>{throw Error('Full collection traversal during sidebar render');});
+  useUniverseStore.setState({memories:snapshot,selectedMemoryId:null});
+  const view=render(<CognitiveSidebar isOpen={false} onClose={()=>{}}/>);
+  view.rerender(<CognitiveSidebar isOpen onClose={()=>{}}/>);
+  expect(screen.getByText('10000 corpos celestes · 10000 ligações')).toBeInTheDocument();
+  view.rerender(<CognitiveSidebar isOpen activeTab="insights" onClose={()=>{}}/>);
+  expect(observed.insights).toBe(snapshot);
+});
 it('a refused project metadata change is reported and keeps the displayed tags and status',async()=>{
   useUniverseStore.setState({memories:[{...memory,projectStatus:'active',tags:['projeto','status:active']}]});const save=vi.fn<MemorySaveCallback>(async()=>{throw Error('Synthetic conflict');});render(<CognitiveSidebar isOpen onClose={()=>{}} onSaveMemory={save}/>);fireEvent.click(screen.getByRole('button',{name:'Concluído',exact:true}));await waitFor(()=>expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('estado do projeto')));expect(save).toHaveBeenCalledOnce();expect(save.mock.calls[0][1]).toMatchObject({kind:'edit',refreshSemantic:false,metadata:{projectStatus:'done',tags:['projeto','status:done']}});expect(useUniverseStore.getState().memories[0]).toMatchObject({projectStatus:'active',tags:['projeto','status:active']});
 });

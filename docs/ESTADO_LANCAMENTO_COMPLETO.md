@@ -1,5 +1,13 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Contadores e sidebar sem cópia integral — 13 de novembro de 2026
+
+Os [contadores e a sidebar](CONTADORES_E_SIDEBAR_2026-11-13.md) usam totais das raízes e a coleção autorizada original. A alternativa para insights/pesquisa conserva agora metadata de equipa, partilha, bloqueio e eliminação. Seleção e verificações por ID usam o índice. Relacionadas ordenadas e processamento de insights/grafos ainda precisam de migração.
+
+Passaram **2311 testes frontend/240 ficheiros**, 70 focados/7 ficheiros, build/identidade, lint zero erros/21 avisos e 23 contratos. Chromium confirmou 100.000 linhas, leituras do contador sem percorrer a origem e atualização de uma linha, além de repetir os ensaios de Worker e teclado. Os tempos excluem a construção inicial e não provam SLO, memória representativa, Auth ou nativos. Backend/regras e auditorias são reutilizados por hashes.
+
+A chave Google foi novamente confirmada ativa/restrita ao Vertex, com secret ENABLED; não houve geração paga ou configuração de produção neste incremento. Fase 5, fases 0–6 e rollout permanecem abertos, **49 switches fechados, sem deploy**. Prova: detail-counters-local-validation-20261113.json. Os blocos seguintes conservam a cronologia.
+
 ## Lista e cena por deltas — 13 de novembro de 2026
 
 As [vistas incrementais](VISTAS_INCREMENTAIS_2026-11-13.md) usam as raízes publicadas e frames confirmados de até 128 dados/IDs/movimentos/filtros. Uma edição já não reconstrói o Map e a ordem completos no cliente; consultas antigas e lookups são retirados por seleção e âmbito. Passaram **2306 testes frontend/240 ficheiros**, 63 focados/cinco ficheiros, build/identidade, lint zero erros/21 avisos, 23 contratos e auditorias de produção sem vulnerabilidades. Functions/Rules anteriores são reutilizadas por hashes, sem nova execução.

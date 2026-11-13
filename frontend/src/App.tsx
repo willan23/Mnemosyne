@@ -1,4 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
+import { memoryConnectionReferences } from './services/memorySnapshot';
 import { Routes, Route, useNavigate, Navigate, useLocation } from 'react-router-dom';
 import { AuthModal } from './components/AuthModal';
 import { MnemonicBackupModal } from './components/MnemonicBackupModal';
@@ -696,7 +697,7 @@ const App: React.FC = () => {
                           <p className="text-[10px] text-slate-400">
                             {t('appCelestialCount', {
                               bodies: universeMemories.length,
-                              orbits: universeMemories.reduce((acc, m) => acc + m.connections.length, 0) / 2,
+                              orbits: memoryConnectionReferences(universeMemories) / 2,
                             })}
                           </p>
                         </div>

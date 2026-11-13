@@ -3,22 +3,32 @@ export interface PersistentMemoryNode<T extends { id: string }> {
   readonly id: string; readonly value: T; readonly priority: number;
   readonly left: PersistentMemoryNode<T> | null; readonly right: PersistentMemoryNode<T> | null;
   readonly size: number; readonly flags: number; readonly counts: readonly number[];
+  readonly ownConnectionReferences: number; readonly connectionReferences: number;
+  readonly viewConnectionReferences: readonly number[];
 }
 export const memoryNodeCount = <T extends { id: string }>(node: PersistentMemoryNode<T> | null, view = -1): number => node ? view < 0 ? node.size : node.counts[view] ?? 0 : 0;
+export const memoryNodeConnectionReferences = <T extends { id: string }>(node: PersistentMemoryNode<T> | null, view = -1): number => node ? view < 0 ? node.connectionReferences : node.viewConnectionReferences[view] ?? 0 : 0;
 export const memoryNodeIncluded = <T extends { id: string }>(node: PersistentMemoryNode<T>, view = -1): boolean => view < 0 || Boolean(node.flags & (1 << view));
-export function memoryNode<T extends { id: string }>(value: T, priority: number, left: PersistentMemoryNode<T> | null = null, right: PersistentMemoryNode<T> | null = null, flags = 0, views = 0): PersistentMemoryNode<T> {
+function connectionReferences(value: { id: string }): number {
+  const connections = (value as { connections?: unknown }).connections;
+  return Array.isArray(connections) ? connections.length : 0;
+}
+export function memoryNode<T extends { id: string }>(value: T, priority: number, left: PersistentMemoryNode<T> | null = null, right: PersistentMemoryNode<T> | null = null, flags = 0, views = 0, ownConnectionReferences = connectionReferences(value)): PersistentMemoryNode<T> {
   const node: PersistentMemoryNode<T> = { id: value.id, value, priority, left, right, flags,
+    ownConnectionReferences,
+    connectionReferences: ownConnectionReferences + memoryNodeConnectionReferences(left) + memoryNodeConnectionReferences(right),
+    viewConnectionReferences: Object.freeze(Array.from({ length: views }, (_, at) => (flags & (1 << at) ? ownConnectionReferences : 0) + memoryNodeConnectionReferences(left, at) + memoryNodeConnectionReferences(right, at))),
     size: 1 + memoryNodeCount(left) + memoryNodeCount(right),
     counts: Object.freeze(Array.from({ length: views }, (_, at) => Number(Boolean(flags & (1 << at))) + memoryNodeCount(left, at) + memoryNodeCount(right, at))) };
   return Object.freeze(node);
 }
 function copy<T extends { id: string }>(node: PersistentMemoryNode<T>, left: PersistentMemoryNode<T> | null, right: PersistentMemoryNode<T> | null) {
-  return memoryNode(node.value, node.priority, left, right, node.flags, node.counts.length);
+  return memoryNode(node.value, node.priority, left, right, node.flags, node.counts.length, node.ownConnectionReferences);
 }
 export function insertMemoryNode<T extends { id: string }>(root: PersistentMemoryNode<T> | null, node: PersistentMemoryNode<T>, compare: (a: string, b: string) => number): PersistentMemoryNode<T> {
   if (!root) return node;
   const order = compare(node.id, root.id);
-  if (!order) return memoryNode(node.value, root.priority, root.left, root.right, node.flags, node.counts.length);
+  if (!order) return memoryNode(node.value, root.priority, root.left, root.right, node.flags, node.counts.length, node.ownConnectionReferences);
   if (order < 0) {
     const left = insertMemoryNode(root.left, node, compare);
     return left.priority < root.priority ? copy(left, left.left, copy(root, left.right, root.right)) : copy(root, left, root.right);

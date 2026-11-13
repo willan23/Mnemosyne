@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { AlertTriangle, GitBranch, Link2Off, RotateCcw, Sparkles, X } from 'lucide-react';
 import type { SessionData } from '../hooks/useSessions';
+import { memoryById } from '../services/memorySnapshot';
 import { generateCognitiveInsights, type CognitiveInsight, type InsightKind } from '../services/insightEngine';
 
 interface Props {
@@ -31,7 +32,7 @@ const memoryLabel = (memory: SessionData, index: number) => {
   return `Memória ${index + 1}`;
 };
 
-const findMemory = (sessions: readonly SessionData[], id: string) => sessions.find((session) => session.id === id);
+const findMemory = memoryById<SessionData>;
 
 const InsightCard: React.FC<{
   insight: CognitiveInsight;

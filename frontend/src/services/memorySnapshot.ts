@@ -1,4 +1,4 @@
-import { memoryNodeAt, memoryNodeById, memoryNodeCount, memoryNodeIncluded, memoryNodeRange, type PersistentMemoryNode } from './persistentMemoryTree';
+import { memoryNodeAt, memoryNodeById, memoryNodeConnectionReferences, memoryNodeCount, memoryNodeIncluded, memoryNodeRange, type PersistentMemoryNode } from './persistentMemoryTree';
 
 export interface MemorySnapshotFence { active: boolean }
 export interface MemorySnapshotMove { type: 'added' | 'removed'; id: string; oldIndex: number; newIndex: number }
@@ -21,6 +21,8 @@ export type MemorySnapshot<T extends { id: string }> = ReadonlyArray<T> & Memory
 class MemorySnapshotFacade<T extends { id: string }> {
   get length(): number { const row = read(this); return memoryNodeCount(row.root, row.view); }
   get revision(): number { return read(this).revision; }
+  /** Sum of stored outgoing references, including duplicates and references outside this view. */
+  get connectionReferences(): number { const row = read(this); return memoryNodeConnectionReferences(row.root, row.view); }
   get [Symbol.isConcatSpreadable](): boolean { return true; }
   get(id: string): T | undefined { const row = read(this), node = memoryNodeById(row.byId, id); return node && memoryNodeIncluded(node, row.view) ? node.value : undefined; }
   at(index: number): T | undefined { const row = read(this), length = memoryNodeCount(row.root, row.view), at = Math.trunc(Number(index)) || 0; return memoryNodeAt(row.root, at < 0 ? length + at : at, row.view); }
@@ -63,6 +65,7 @@ export function createMemorySnapshot<T extends { id: string }>(roots: MemorySnap
 export const isMemorySnapshot = <T extends { id: string }>(value: readonly T[]): value is MemorySnapshot<T> => data.has(value);
 export const memorySnapshotScopeActive = (value: object): boolean => data.get(value)?.fence.active !== false;
 export const memoryById = <T extends { id: string }>(values: readonly T[], id: string): T | undefined => isMemorySnapshot(values) ? values.get(id) : values.find(value => value.id === id);
+export const memoryConnectionReferences = <T extends { id: string; connections?: readonly string[] }>(values: readonly T[]): number => isMemorySnapshot(values) ? values.connectionReferences : values.reduce((sum, value) => sum + (value.connections?.length ?? 0), 0);
 export interface MemorySnapshotDelta<T> { changed: T[]; removed: string[]; order: MemorySnapshotMove[] }
 /** Only IDs from bounded history are read. An unavailable history requires one guarded initial transfer. */
 export function memorySnapshotDelta<T extends { id: string }>(previous: readonly T[] | null, next: readonly T[]): MemorySnapshotDelta<T> | undefined {

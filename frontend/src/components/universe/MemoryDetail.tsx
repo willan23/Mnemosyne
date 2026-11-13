@@ -21,6 +21,7 @@ import {prepareSemanticRelationReview,applySemanticRelationReview,semanticRelati
 import {memoryEditStateDigest} from '../../services/memoryEditRecovery';
 import {ShareModal} from '../ShareModal';
 import {isMemoryCryptoReady} from '../../services/memoryCrypto';
+import { memoryById } from '../../services/memorySnapshot';
 
 const TYPE_ICONS: Record<CelestialType, React.ReactNode> = {
   star: <Star size={16} />,
@@ -78,7 +79,7 @@ function isPrivatePersonalMemory(memory: MemoryObject | undefined, uid: string):
 
 export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, onTransmit }) => {
   const { memories, selectedMemoryId, selectMemory, startDeletion, removeMemory } = useUniverseStore();
-  const selected = memories.find((m) => m.id === selectedMemoryId);
+  const selected = selectedMemoryId ? memoryById(memories, selectedMemoryId) : undefined;
   const editor=useMemoryEditor(selected,onSave);
   const isEditing=editor.editing,draftText=editor.text,setDraftText=editor.setText,isSaving=editor.busy;
   const feedback=useSyncFeedback();
@@ -125,12 +126,12 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
     return()=>{active=false;revision++;stop();};
   }, [selectedId, canReadSuggestions,feedbackEpoch,captureFeedback,suggestionScope]);
 
-  const connectedMemories = selected
+  const connectedMemories = selected?.connections.length
     ? memories.filter((m) => selected.connections.includes(m.id)).slice(0, 8)
     : [];
   const visibleSuggestions = selected
     ? suggestions.filter(row=>row.status==='suggested').flatMap((suggestion) => {
-      const target = memories.find((memory) => memory.id === suggestion.targetId);
+      const target = memoryById(memories, suggestion.targetId);
       return target && isPrivatePersonalMemory(target, selected.uid) &&
         suggestion.sourceUpdatedAt === selected.updatedAt &&
         suggestion.targetUpdatedAt === target.updatedAt &&
@@ -143,9 +144,9 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
   const reviewSuggestion = async (targetId: string, decision: 'accepted' | 'rejected') => {
     if (!selected || reviewingTargetId || !auth.currentUser ||
       !isPrivatePersonalMemory(selected, auth.currentUser.uid)) return;
-    const actor=auth.currentUser.uid,source=structuredClone(selected),candidate=memories.find(row=>row.id===targetId),target=candidate?structuredClone(candidate):undefined,proposal=visibleSuggestions.find(row=>row.targetId===targetId);
+    const actor=auth.currentUser.uid,source=structuredClone(selected),candidate=memoryById(memories,targetId),target=candidate?structuredClone(candidate):undefined,proposal=visibleSuggestions.find(row=>row.targetId===targetId);
     if(!target?.persistedStateDigest||!source.persistedStateDigest||!proposal||!semanticRelationWritesEnabled())return;
-    const captured=feedback.capture(actor),current=()=>{const state=useUniverseStore.getState();return captured()&&state.selectedMemoryId===source.id&&state.memories.find(row=>row.id===source.id)?.persistedStateDigest===source.persistedStateDigest&&state.memories.find(row=>row.id===targetId)?.persistedStateDigest===target.persistedStateDigest;},guard=()=>{if(!current())throw Error('A vista da relação mudou.');};if(!current())return;
+    const captured=feedback.capture(actor),current=()=>{const state=useUniverseStore.getState();return captured()&&state.selectedMemoryId===source.id&&memoryById(state.memories,source.id)?.persistedStateDigest===source.persistedStateDigest&&memoryById(state.memories,targetId)?.persistedStateDigest===target.persistedStateDigest;},guard=()=>{if(!current())throw Error('A vista da relação mudou.');};if(!current())return;
     setReviewState({scope:reviewScope,targetId});
     try {
       const baseline=await prepareSemanticRelationReview(actor,{sourceId:source.id,targetId,sourceViewDigest:source.persistedStateDigest,targetViewDigest:target.persistedStateDigest,suggestionViewDigest:proposal.viewDigest},guard);guard();
@@ -166,7 +167,7 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
       const captured=structuredClone(selected),actor=auth.currentUser?.uid;if(!actor)return;const current=feedback.capture(actor);if(!current())return;const outcome=await onDelete(captured.id,captured,()=>{if(!current())throw Error('Deletion view changed');});if(!current()||useUniverseStore.getState().selectedMemoryId!==captured.id)return;
       if(!startDeletion(captured.id, 'supernova',outcome?.viewCommit))return;
       setTimeout(() => {
-        if(!current())return;const state=useUniverseStore.getState(),present=state.memories.find(item=>item.id===captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id,outcome?.viewCommit);
+        if(!current())return;const state=useUniverseStore.getState(),present=memoryById(state.memories,captured.id);if(present&&present.persistedStateDigest!==captured.persistedStateDigest)return;removeMemory(captured.id,outcome?.viewCommit);
         if (state.selectedMemoryId === captured.id) selectMemory(null);
       }, 800);
     } catch { /* Persistence reports the fixed error; keep the memory visible. */ }
