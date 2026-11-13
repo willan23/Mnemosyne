@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, Star, Sun, Circle, Orbit, Zap, Infinity as InfinityIcon, Cloud,
@@ -28,6 +28,7 @@ import {useMemoryEditor} from '../hooks/useMemoryEditor';
 import {useSyncFeedback} from '../hooks/useSyncFeedback';
 import {MemoryEditorStatus} from './MemoryEditorStatus';
 import { memoryById, memoryConnectionReferences } from '../services/memorySnapshot';
+import { useRelatedMemories } from '../hooks/useRelatedMemories';
 
 const TYPE_ICONS: Record<CelestialType, React.ReactNode> = {
   star: <Star size={15} />,
@@ -120,10 +121,8 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
     }
   }, [selectedId, externalTab]);
 
-  const connectedMemories = useMemo(() => {
-    if (!isOpen || currentTab !== 'memory' || !selected?.connections.length) return [];
-    return memories.filter((m) => selected.connections.includes(m.id)).slice(0, 10);
-  }, [memories, selected, isOpen, currentTab]);
+  const related = useRelatedMemories(memories, selected?.connections, isOpen && currentTab === 'memory', 10);
+  const connectedMemories = related.memories;
 
   const handleDelete = async () => {
     if (!selected || !onDeleteMemory || isDeleting || isSaving || selected.pendingDeletion) return;
@@ -520,6 +519,8 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
 
                     <MemoryEditorStatus message={editor.message} busy={editor.busy} retryOpening={editor.canRetryOpening} onReopen={editor.discardAndReopen}/>
                     {/* Conexões */}
+                    {related.loading && <p role="status" className="text-xs text-slate-400">A preparar memórias ligadas…</p>}
+                    {related.error && <p role="status" className="text-xs text-amber-200">Não foi possível preparar as ligações. <button type="button" onClick={related.retry} className="underline">Tentar novamente</button></p>}
                     {connectedMemories.length > 0 && (
                       <div className="border-t border-white/[0.08] pt-4">
                         <p className="mb-2.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">

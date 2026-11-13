@@ -8,6 +8,16 @@ const row = (id: string, extra: Partial<MemoryViewRecord> = {}): MemoryViewRecor
 const list = { mode: 'list', query: '', locale: 'en', limit: 100 } as const;
 const request = (rows: MemoryViewRecord[], options: MemoryViewOptions = list): MemoryViewRequest => ({ v: 1, id: 1, changed: rows, order: rows.map(row => row.id), options, now: 1_700_000_000_000 });
 describe('Worker memory view selection', () => {
+  it('selects related IDs in the published order, independently of timestamps and filter order', () => {
+    const index = new MemoryViewIndex(), rows = [row('z'), row('a'), row('new', {timestamp:999})];
+    const options = {mode:'related' as const,filteredIds:['new','z','z','missing'],limit:1};
+    expect(index.handle(request(rows, options))).toEqual({count:2,ids:['z']});
+    expect(index.handle({...request([], {...options,limit:10}),order:['new','a','z']})).toEqual({count:2,ids:['new','z']});
+    expect(index.query({...options,filteredIds:[]},1)).toEqual({count:0,ids:[]});
+  });
+  it.each([null, ['a/b']])('refuses a related query without an explicit valid subset: %s', filteredIds => {
+    expect(()=>new MemoryViewIndex().handle(request([row('a')],{mode:'related',filteredIds,limit:10}))).toThrow('memory_view_unavailable');
+  });
   it('preserves timestamp ties and exact page counts without returning content', () => {
     const index = new MemoryViewIndex(), rows = [row('b'), row('a'), row('new', { timestamp: 2 })];
     expect(index.handle(request(rows, { ...list, limit: 2 }))).toEqual({ count: 3, ids: ['new', 'b'] });

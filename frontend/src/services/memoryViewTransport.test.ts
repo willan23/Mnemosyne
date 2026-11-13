@@ -17,6 +17,23 @@ function fixture() {
   const query = (options: MemoryViewOptions = list) => { send({ type: 'query-start', options, now: 1, filteredCount: null, reuseFilter: false }); return send({ type: 'query-end' }); };
   return { transport, send, initialize, query };
 }
+it('streams an explicit related subset, retains published order and reuses only a committed subset', () => {
+  const f=fixture();f.initialize([row('z'),row('a'),row('b')]);
+  const options={mode:'related' as const,filteredIds:null,limit:2};
+  f.send({type:'query-start',options,now:1,filteredCount:3,reuseFilter:false});f.send({type:'filter-chunk',ids:['b','z','missing']});
+  expect(f.send({type:'query-end'})).toEqual({count:2,ids:['z','b']});
+  f.send({type:'query-start',options:{...options,limit:1},now:1,filteredCount:null,reuseFilter:true});
+  expect(f.send({type:'query-end'})).toEqual({count:2,ids:['z']});
+  f.send({type:'query-start',options,now:1,filteredCount:0,reuseFilter:false});
+  expect(f.send({type:'query-end'})).toEqual({count:0,ids:[]});
+});
+it('never interprets a missing related subset as the whole vault or reuses an unrestricted scene', () => {
+  for(const reuse of [false,true]){
+    const f=fixture();f.initialize([row('a')]);
+    f.query({mode:'scene',activeId:null,filteredIds:null,taxonomy:null});
+    expect(()=>f.send({type:'query-start',options:{mode:'related',filteredIds:null,limit:10},now:1,filteredCount:null,reuseFilter:reuse})).toThrow('memory_view_unavailable');
+  }
+});
 it('streams a baseline then applies precise order moves, content changes and removals', () => {
   const f = fixture(); f.initialize([row('a'), row('b'), row('c')]); expect(f.query()).toEqual({ count: 3, ids: ['a', 'b', 'c'] });
   f.send({ type: 'patch-start', reset: false, preserve: true, counts: { size: 2, changed: 1, removed: 1, moves: 3, order: 0 } });

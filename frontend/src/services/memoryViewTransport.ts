@@ -22,9 +22,10 @@ export class MemoryViewTransport {
       else if (message.type === 'patch-end' && this.phase === 'patch') { this.index.commit(); this.phase = 'idle'; this.initialized = true; }
       else if (message.type === 'query-start' && this.phase === 'idle' && this.initialized) {
         const options = message.options;
-        if (!options || !['list', 'scene'].includes(options.mode) || typeof message.reuseFilter !== 'boolean' ||
+        if (!options || !['list', 'scene', 'related'].includes(options.mode) || typeof message.reuseFilter !== 'boolean' ||
           message.filteredCount !== null && (!Number.isSafeInteger(message.filteredCount) || message.filteredCount < 0 || message.filteredCount > limits.documents) ||
-          options.mode === 'scene' && options.filteredIds !== null || options.mode === 'list' && (message.filteredCount !== null || message.reuseFilter) ||
+          options.mode !== 'list' && options.filteredIds !== null || options.mode === 'list' && (message.filteredCount !== null || message.reuseFilter) ||
+          options.mode === 'related' && (message.reuseFilter ? this.filters === null : message.filteredCount === null) ||
           message.reuseFilter && (!this.filtersKnown || message.filteredCount !== null)) throw fail();
         this.query = { options, now: message.now, expected: message.filteredCount, ids: message.reuseFilter ? this.filters : message.filteredCount === null ? null : [], reuse: message.reuseFilter };
         this.phase = 'query';
@@ -36,8 +37,8 @@ export class MemoryViewTransport {
       } else if (message.type === 'query-end' && this.phase === 'query') {
         const query = this.query!;
         if (!query.reuse && query.expected !== null && query.ids!.length !== query.expected) throw fail();
-        const result = this.index.query(query.options.mode === 'scene' ? { ...query.options, filteredIds: query.ids } : query.options, query.now);
-        if (query.options.mode === 'scene') { this.filters = query.ids; this.filtersKnown = true; }
+        const result = this.index.query(query.options.mode !== 'list' ? { ...query.options, filteredIds: query.ids } : query.options, query.now);
+        if (query.options.mode !== 'list') { this.filters = query.ids; this.filtersKnown = true; }
         this.query = null; this.phase = 'idle'; return result;
       } else throw fail();
       return { ack: true };

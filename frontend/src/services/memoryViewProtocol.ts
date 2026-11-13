@@ -14,6 +14,9 @@ export type MemoryViewOptions = {
   mode: 'list'; query: string; locale: 'pt-PT' | 'pt-BR' | 'en' | 'fr'; limit: number;
 } | {
   mode: 'scene'; activeId: string | null; filteredIds: string[] | null; taxonomy: string | null;
+} | {
+  /** Null is reserved for streamed headers; a completed related query requires explicit IDs. */
+  mode: 'related'; filteredIds: string[] | null; limit: number;
 };
 export interface MemoryViewRequest {
   v: 1; id: number; changed: MemoryViewRecord[]; order?: string[]; options: MemoryViewOptions; now: number;

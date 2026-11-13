@@ -25,6 +25,24 @@ const fixture = (mode: MemoryViewOptions['mode'] = 'list') => {
   return { client, workers, yieldTask };
 };
 describe('memory view client', () => {
+  it('uses an ID-only related projection and exact source order, with an explicit streamed subset', async () => {
+    const {client,workers}=fixture('related'),rows=[memory('z'),memory('a'),memory('new')];
+    for(const row of rows)for(const field of ['uid','text','title','timestamp','updatedAt','importance','connections','embedding','taxonomyLane','category','tags'])Object.defineProperty(row,field,{get(){throw Error('Read unrelated field '+field);}});
+    const filteredIds=['new','z','missing','z'];
+    try{
+      const result=await client.select(rows,{mode:'related',filteredIds,limit:1},signal());
+      expect(result.count).toBe(2);expect(result.memories[0]).toBe(rows[0]);
+      expect(documents(workers[0])).toEqual(rows.map(row=>({id:row.id,timestamp:0,updatedAt:0,importance:.5,taxonomyLane:null,fields:[],connections:[]})));
+      expect(messages(workers[0]).find(message=>message.type==='query-start')).toMatchObject({options:{mode:'related',filteredIds:null},filteredCount:4,reuseFilter:false});
+      workers[0].postMessage.mockClear();
+      const next=await client.select(rows,{mode:'related',filteredIds,limit:10},signal());expect(next.memories.map(row=>row.id)).toEqual(['z','new']);
+      expect(messages(workers[0]).some(message=>message.type==='filter-chunk'||message.type==='patch-start')).toBe(false);
+    }finally{client.dispose();}
+  });
+  it('rejects a Worker response containing an authorized row outside the selected relations', async () => {
+    const {client,workers}=fixture('related'),rows=[memory('a'),memory('b')],options={mode:'related' as const,filteredIds:['a'],limit:10};
+    try{await client.select(rows,options,signal());corruptQuery(workers[0],{ids:['b']});await expect(client.select(rows,options,signal())).rejects.toThrow('memory_view_unavailable');}finally{client.dispose();}
+  });
   it('sends only changed projections and reuses the corpus for a new query/page', async () => {
     const { client, workers } = fixture(), a = memory('a', { updatedAt: 999999, importance: 987654 }), b = memory('b'), rows = [a, b];
     try {

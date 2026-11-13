@@ -22,6 +22,31 @@ beforeEach(()=>{
 });
 afterEach(cleanup);
 async function generate(){fireEvent.change(screen.getByLabelText(/Passphrase, pelo menos/),{target:{value:'SYNTHETIC_PASSPHRASE'}});fireEvent.click(screen.getByRole('button',{name:'Gerar cápsula cifrada'}));}
+it('keeps the dialog draft and linked consent while related rows load, then uses only the ready subset',async()=>{
+  const first={...memory,id:'b'},next={...memory,id:'c'},onClose=vi.fn(),retry=vi.fn();
+  const view=show({relatedSessions:[first],onClose,onRetryRelated:retry});
+  fireEvent.change(screen.getByLabelText(/Passphrase, pelo menos/),{target:{value:'SYNTHETIC_PASSPHRASE'}});fireEvent.click(screen.getByRole('checkbox',{name:/memória\(s\) ligada/}));
+  const rerender=(status:'ready'|'loading'|'unavailable',rows:typeof memory[])=>view.rerender(<MemoryRouter><ShareModal session={memory} onClose={onClose} relatedSessions={rows} relatedStatus={status} onRetryRelated={retry}/></MemoryRouter>);
+  rerender('loading',[]);expect(screen.getByRole('button',{name:'Gerar cápsula cifrada'})).toBeDisabled();expect(screen.getByLabelText(/Passphrase, pelo menos/)).toHaveValue('SYNTHETIC_PASSPHRASE');expect(screen.getByRole('checkbox',{name:/memória\(s\) ligada/})).toBeChecked();
+  rerender('unavailable',[]);fireEvent.click(screen.getByRole('button',{name:'Tentar novamente'}));expect(retry).toHaveBeenCalledOnce();expect(state.prepare).not.toHaveBeenCalled();
+  rerender('ready',[next]);fireEvent.click(screen.getByRole('button',{name:'Gerar cápsula cifrada'}));await waitFor(()=>expect(state.send).toHaveBeenCalledOnce());
+  expect(state.prepare.mock.calls[0][0].map((row:{id:string})=>row.id)).toEqual(['a','c']);
+});
+it('disposes a linked preparation that finishes after its related view changes and unlocks the draft for retry',async()=>{
+  let finish!:(value:ReturnType<typeof prepared>)=>void;state.prepare.mockReturnValueOnce(new Promise(resolve=>{finish=resolve;}));
+  const rows=[{...memory,id:'b'}],onClose=vi.fn(),view=show({relatedSessions:rows,onClose});
+  fireEvent.click(screen.getByRole('checkbox',{name:/memória\(s\) ligada/}));await generate();await waitFor(()=>expect(state.prepare).toHaveBeenCalledOnce());
+  view.rerender(<MemoryRouter><ShareModal session={memory} onClose={onClose} relatedSessions={[]} relatedStatus="loading"/></MemoryRouter>);
+  await act(async()=>finish(prepared()));expect(state.dispose).toHaveBeenCalledOnce();expect(state.send).not.toHaveBeenCalled();
+  view.rerender(<MemoryRouter><ShareModal session={memory} onClose={onClose} relatedSessions={rows} relatedStatus="ready"/></MemoryRouter>);
+  expect(screen.getByRole('button',{name:'Gerar cápsula cifrada'})).toBeEnabled();await generate();await waitFor(()=>expect(state.send).toHaveBeenCalledOnce());expect(state.prepare).toHaveBeenCalledTimes(2);
+});
+it('can resume its already prepared encrypted request while the live related subset is unavailable',async()=>{
+  state.send.mockRejectedValueOnce(Error('Lost synthetic receipt'));const onClose=vi.fn(),rows=[{...memory,id:'b'}],view=show({relatedSessions:rows,onClose});
+  fireEvent.click(screen.getByRole('checkbox',{name:/memória\(s\) ligada/}));await generate();await waitFor(()=>expect(screen.getByRole('button',{name:'Retomar publicação'})).toBeEnabled());
+  view.rerender(<MemoryRouter><ShareModal session={memory} onClose={onClose} relatedSessions={[]} relatedStatus="loading"/></MemoryRouter>);
+  fireEvent.click(screen.getByRole('button',{name:'Retomar publicação'}));await waitFor(()=>expect(state.send).toHaveBeenCalledTimes(2));expect(state.prepare).toHaveBeenCalledOnce();
+});
 it('only exposes a confirmed link and retains one prepared request after a lost response',async()=>{
   state.send.mockRejectedValueOnce(Error('PRIVATE_DIAGNOSTIC'));show();await generate();
   expect(screen.queryByLabelText('Link da cápsula confirmada')).toBeNull();await screen.findByRole('button',{name:'Retomar publicação'});

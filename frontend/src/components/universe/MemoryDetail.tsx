@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, Star, Sun, Circle, Orbit, Zap, Infinity as InfinityIcon, Cloud,
@@ -22,6 +22,7 @@ import {memoryEditStateDigest} from '../../services/memoryEditRecovery';
 import {ShareModal} from '../ShareModal';
 import {isMemoryCryptoReady} from '../../services/memoryCrypto';
 import { memoryById } from '../../services/memorySnapshot';
+import { useRelatedMemories } from '../../hooks/useRelatedMemories';
 
 const TYPE_ICONS: Record<CelestialType, React.ReactNode> = {
   star: <Star size={16} />,
@@ -126,9 +127,10 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
     return()=>{active=false;revision++;stop();};
   }, [selectedId, canReadSuggestions,feedbackEpoch,captureFeedback,suggestionScope]);
 
-  const connectedMemories = selected?.connections.length
-    ? memories.filter((m) => selected.connections.includes(m.id)).slice(0, 8)
-    : [];
+  const related = useRelatedMemories(memories, selected?.connections, Boolean(selected), selected?.connections.length ?? 1);
+  const connectedMemories = related.memories.slice(0, 8);
+  const shareRelatedSessions = useMemo(() => shareScope===sharingScope
+    ? related.memories.map(row=>({...row,updatedAt:row.persistedUpdatedAt??row.updatedAt})) : [], [related.memories,shareScope,sharingScope]);
   const visibleSuggestions = selected
     ? suggestions.filter(row=>row.status==='suggested').flatMap((suggestion) => {
       const target = memoryById(memories, suggestion.targetId);
@@ -247,6 +249,8 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
                 </div>
               )}
 
+              {related.loading && <p role="status" className="text-xs text-white/50">A preparar memórias ligadas…</p>}
+              {related.error && <p role="status" className="text-xs text-amber-200">Não foi possível preparar as ligações. <button type="button" onClick={related.retry} className="underline">Tentar novamente</button></p>}
               {connectedMemories.length > 0 && (
                 <div>
                   <p className="mb-2 flex items-center gap-1.5 text-xs uppercase tracking-wider text-white/40">
@@ -408,7 +412,8 @@ export const MemoryDetail: React.FC<MemoryDetailProps> = ({ onDelete, onSave, on
         </motion.div>
       )}
       {selected&&shareScope===sharingScope&&<ShareModal key="share-dialog" session={{...selected,updatedAt:selected.persistedUpdatedAt??selected.updatedAt}}
-        relatedSessions={memories.filter(row=>selected.connections.includes(row.id)).map(row=>({...row,updatedAt:row.persistedUpdatedAt??row.updatedAt}))}
+        relatedSessions={shareRelatedSessions}
+        relatedStatus={related.ready?'ready':related.loading?'loading':'unavailable'} onRetryRelated={related.retry}
         onClose={()=>setShareScope(null)} onOpenComms={onTransmit?()=>onTransmit(selected):undefined}/>}
     </AnimatePresence>
   );

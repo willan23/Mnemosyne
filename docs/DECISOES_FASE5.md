@@ -1,5 +1,13 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Relacionadas ordenadas no Worker — 13 de novembro de 2026
+
+As [memórias relacionadas](RELACIONADAS_ORDENADAS_2026-11-13.md) do detalhe/sidebar usam IDs e a ordem publicada, sem filter integral no UI. Mantêm oito/dez linhas, âmbito atual e subconjuntos explícitos. A partilha conserva o rascunho durante a preparação ligada e não admite um conjunto incompleto; pedidos cifrados já preparados continuam recuperáveis.
+
+Passaram **2325 testes frontend/241 ficheiros**, 85 focados/8, build/identidade, lint zero erros/21 avisos e 23 contratos. Chromium validou 100.000 linhas e 2.502 IDs de filtro, paridade, zero enumerações da origem na edição seguinte e projeção só de IDs, e repetiu lista/cena, contadores e teclado. Quatro ensaios sem pedidos externos; não são prova de Auth/nativos, memória representativa ou SLO. Backend/regras/auditorias são reutilizados por hashes.
+
+Continuam pendentes insights/grafos, carga/avaliação representativa, requisitos de rollout, CI e instaladores finais. Fase 5 e fases 0–6 abertas, **49 switches fechados e sem deploy**. Prova: related-memory-views-local-validation-20261113.json. Os blocos seguintes conservam a cronologia.
+
 ## Contadores e sidebar sem cópia integral — 13 de novembro de 2026
 
 Os [contadores e a sidebar](CONTADORES_E_SIDEBAR_2026-11-13.md) usam totais das raízes e a coleção autorizada original. A alternativa para insights/pesquisa conserva agora metadata de equipa, partilha, bloqueio e eliminação. Seleção e verificações por ID usam o índice. Relacionadas ordenadas e processamento de insights/grafos ainda precisam de migração.

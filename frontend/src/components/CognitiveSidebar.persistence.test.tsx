@@ -23,6 +23,7 @@ vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() 
 import toast from 'react-hot-toast';
 import { IncrementalMemoryPublication } from '../services/incrementalMemoryPublication';
 import { memoryById, type MemorySnapshot } from '../services/memorySnapshot';
+import { MemoryViewWorkerMock } from '../test/memoryViewWorkerMock';
 const memory: MemoryObject = { id: 'sidebar-synthetic', uid: 'alice', teamId: 'crew', text: 'Synthetic original',
   celestialType: 'planet', position: [0, 0, 0], embedding: [], connections: [], importance: 0.5,
   timestamp: 1, updatedAt: 10, persistedUpdatedAt: 10,persistedTitle:null,persistedStateDigest:'b'.repeat(64) };
@@ -31,8 +32,16 @@ function deferred() {
   const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-beforeEach(() => { vi.clearAllMocks();observed.insights=null;observed.web=null;records.clear();setMemoryCryptoMnemonic(words);useUniverseStore.setState({ memories: [{ ...memory }], selectedMemoryId: memory.id, deletingMemoryId: null, language: 'pt-pt' }); });
-afterEach(() => { cleanup();setMemoryCryptoMnemonic(null);vi.restoreAllMocks(); vi.clearAllTimers(); vi.useRealTimers(); useUniverseStore.setState({ memories: [], selectedMemoryId: null }); });
+beforeEach(() => { vi.clearAllMocks();vi.stubGlobal('Worker',MemoryViewWorkerMock);observed.insights=null;observed.web=null;records.clear();setMemoryCryptoMnemonic(words);useUniverseStore.setState({ memories: [{ ...memory }], selectedMemoryId: memory.id, deletingMemoryId: null, language: 'pt-pt' }); });
+afterEach(() => { cleanup();setMemoryCryptoMnemonic(null);vi.restoreAllMocks();vi.unstubAllGlobals(); vi.clearAllTimers(); vi.useRealTimers(); useUniverseStore.setState({ memories: [], selectedMemoryId: null }); });
+it('shows ten related rows in published order and releases the Worker outside the memory tab',async()=>{
+  const targets=Array.from({length:15},(_,index)=>({...memory,id:'related-'+index,title:'Related '+index})),source={...memory,connections:targets.map(row=>row.id).reverse()},rows=[source,...targets];
+  const publisher=new IncrementalMemoryPublication<MemoryObject>('asc');publisher.apply('source',{changed:rows.map(value=>({id:value.id,value})),removed:[],order:{reset:rows.map(row=>row.id),changes:[]}});
+  const snapshot=publisher.snapshot();vi.spyOn(Object.getPrototypeOf(snapshot),'filter').mockImplementation(()=>{throw Error('UI enumerated related vault');});useUniverseStore.setState({memories:snapshot,selectedMemoryId:memory.id});
+  const view=render(<CognitiveSidebar isOpen activeTab="memory" onClose={()=>{}}/>);await screen.findByText('Related 0');expect(screen.getByText('Related 9')).toBeInTheDocument();expect(screen.queryByText('Related 10')).toBeNull();
+  expect(screen.getByText('Related 0').compareDocumentPosition(screen.getByText('Related 9'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const worker=MemoryViewWorkerMock.instances.at(-1)!;view.rerender(<CognitiveSidebar isOpen activeTab="insights" onClose={()=>{}}/>);expect(worker.terminate).toHaveBeenCalledOnce();
+});
 it('reuses the scoped fallback collection and retains team, sharing, lock and deletion fields', () => {
   const publisher = new IncrementalMemoryPublication<MemoryObject>('asc');
   const protectedRow = {...memory,teamScopeAmbiguous:true,encLocked:true,sharedWithIds:['bob'],deletedAt:42};

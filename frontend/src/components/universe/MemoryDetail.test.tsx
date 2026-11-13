@@ -3,6 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MemoryDetail } from './MemoryDetail';
 import { useUniverseStore } from '../../store/universeStore';
 import type { MemoryObject } from '../../types/universe';
+import { IncrementalMemoryPublication } from '../../services/incrementalMemoryPublication';
+import { MemoryViewWorkerMock } from '../../test/memoryViewWorkerMock';
 
 vi.mock('../../firebase', () => ({ default: {}, auth: { currentUser: { uid: 'alice' } }, db: {}, storage: {} }));
 vi.mock('../../config/releaseGates',async original=>({...await original<typeof import('../../config/releaseGates')>(),TEAM_WRITES_ENABLED:true,PERSONAL_REVISION_WRITES_ENABLED:true}));
@@ -26,10 +28,19 @@ function deferred() {
   return { promise, resolve, reject };
 }
 beforeEach(() => {
+  vi.stubGlobal('Worker',MemoryViewWorkerMock);
   records.clear();setMemoryCryptoMnemonic(words);
   useUniverseStore.setState({ memories: [{ ...memory }], selectedMemoryId: memory.id, deletingMemoryId: null });
 });
-afterEach(() => { cleanup();setMemoryCryptoMnemonic(null);vi.restoreAllMocks(); vi.clearAllTimers(); vi.useRealTimers(); useUniverseStore.setState({ memories: [], selectedMemoryId: null }); });
+afterEach(() => { cleanup();setMemoryCryptoMnemonic(null);vi.restoreAllMocks();vi.unstubAllGlobals(); vi.clearAllTimers(); vi.useRealTimers(); useUniverseStore.setState({ memories: [], selectedMemoryId: null }); });
+it('renders the first eight related memories in published order without a UI filter over the vault',async()=>{
+  const targets=Array.from({length:15},(_,index)=>({...memory,id:'related-'+index,title:'Related '+index})),source={...memory,connections:targets.map(row=>row.id).reverse()},rows=[source,...targets];
+  const publisher=new IncrementalMemoryPublication<MemoryObject>('asc');publisher.apply('source',{changed:rows.map(value=>({id:value.id,value})),removed:[],order:{reset:rows.map(row=>row.id),changes:[]}});
+  const snapshot=publisher.snapshot();vi.spyOn(Object.getPrototypeOf(snapshot),'filter').mockImplementation(()=>{throw Error('UI enumerated related vault');});useUniverseStore.setState({memories:snapshot,selectedMemoryId:memory.id});
+  render(<MemoryDetail/>);await screen.findByText('Related 0');expect(screen.getByText('Related 7')).toBeInTheDocument();expect(screen.queryByText('Related 8')).toBeNull();
+  expect(screen.getByText('Related 0').compareDocumentPosition(screen.getByText('Related 7'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Related 3'}));expect(useUniverseStore.getState().selectedMemoryId).toBe('related-3');
+});
 
 it('retains a refused team draft and updates local content only after a successful acknowledgement', async () => {
   const first = deferred(); const second = deferred(); const save = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);

@@ -84,7 +84,7 @@ export class MemoryViewIndex {
   }
   query(options: MemoryViewOptions, now: number): MemoryViewSelection {
     if (!this.initialized || this.patch || !Number.isFinite(now)) throw fail(); this.validateOptions(options);
-    return options.mode === 'list' ? this.list(options) : this.scene(options, now);
+    return options.mode === 'list' ? this.list(options) : options.mode === 'related' ? this.related(options) : this.scene(options, now);
   }
   handle(input: MemoryViewRequest): MemoryViewSelection {
     try {
@@ -104,6 +104,9 @@ export class MemoryViewIndex {
     } else if (options.mode === 'scene') {
       if (options.activeId !== null && !memoryViewId(options.activeId) || options.taxonomy !== null && typeof options.taxonomy !== 'string' ||
           options.filteredIds !== null && (!Array.isArray(options.filteredIds) || !options.filteredIds.every(memoryViewId))) throw fail();
+    } else if (options.mode === 'related') {
+      if (!Array.isArray(options.filteredIds) || options.filteredIds.length > limits.documents || !options.filteredIds.every(memoryViewId) ||
+          !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > limits.documents) throw fail();
     } else throw fail();
   }
   private list(options: Extract<MemoryViewOptions, { mode: 'list' }>): MemoryViewSelection {
@@ -137,5 +140,11 @@ export class MemoryViewIndex {
     const connections = new Set(active?.connections ?? []), records = this.records, order = this.order;
     function* ranked() { let ordinal = 0; for (const id of order.values()) if (eligible(id)) yield { id, ordinal: ordinal++, score: getRenderPriority(records.get(id)!, options.activeId, connections, now) }; }
     return { count, ids: top(ranked(), limit, (a, b) => b.score - a.score || a.id.localeCompare(b.id)) };
+  }
+  private related(options: Extract<MemoryViewOptions, { mode: 'related' }>): MemoryViewSelection {
+    const filter = new Set(options.filteredIds!), ids: string[] = [];
+    let count = 0;
+    for (const id of this.order.values()) if (filter.has(id)) { count++; if (ids.length < options.limit) ids.push(id); }
+    return { count, ids };
   }
 }

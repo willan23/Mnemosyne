@@ -9,7 +9,7 @@ import {useSyncFeedback} from '../hooks/useSyncFeedback';
 import {buildCapsuleDeepLink} from '../utils/deepLinks';
 import {downloadMemory} from '../utils/export';
 import type {SessionData} from '../hooks/useSessions';
-interface ShareModalProps {session:SessionData|null;relatedSessions?:SessionData[];onClose:()=>void;onOpenComms?:()=>void}
+interface ShareModalProps {session:SessionData|null;relatedSessions?:SessionData[];relatedStatus?:'ready'|'loading'|'unavailable';onRetryRelated?:()=>void;onClose:()=>void;onOpenComms?:()=>void}
 function containKeys(event:React.KeyboardEvent<HTMLDialogElement>){
   event.stopPropagation();if(event.key!=='Tab'||event.defaultPrevented||event.ctrlKey||event.metaKey||event.altKey)return;
   const controls=Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button,input,textarea,select,a[href],[tabindex]'))
@@ -26,12 +26,14 @@ export function ShareModal(props:ShareModalProps){
   const scope=JSON.stringify([uid,session.id,session.teamId??null,session.updatedAt,feedback.epoch]);
   return <ShareDialog key={scope} {...props} session={session} capture={()=>feedback.capture(uid)}/>;
 }
-function ShareDialog({session,relatedSessions=[],onClose,onOpenComms,capture}:Omit<ShareModalProps,'session'>&{session:SessionData;capture:()=>()=>boolean}){
+function ShareDialog({session,relatedSessions=[],relatedStatus='ready',onRetryRelated,onClose,onOpenComms,capture}:Omit<ShareModalProps,'session'>&{session:SessionData;capture:()=>()=>boolean}){
   const dialog=useRef<HTMLDialogElement>(null),alive=useRef(false),busyRef=useRef(false),prepared=useRef<PreparedCapsulePublication|null>(null);
   const presentation=useRef<{pass:string;embed:boolean}|null>(null);
   const [busy,setBusy]=useState(false),[pending,setPending]=useState(false),[passphrase,setPassphrase]=useState(''),[days,setDays]=useState(7);
   const [linked,setLinked]=useState(false),[embed,setEmbed]=useState(false),[link,setLink]=useState(''),[savedPass,setSavedPass]=useState('');
   const [message,setMessage]=useState(''),[qr,setQr]=useState(''),[copied,setCopied]=useState(false);
+  const relatedView=useRef({sessions:relatedSessions,status:relatedStatus});
+  useLayoutEffect(()=>{relatedView.current={sessions:relatedSessions,status:relatedStatus};},[relatedSessions,relatedStatus]);
   const related=relatedSessions.filter(row=>row.id!==session.id&&!row.encLocked&&!row.teamScopeAmbiguous&&
     (row.teamId??null)===(session.teamId??null)&&(session.teamId||row.uid===session.uid)&&row.text.trim()).slice(0,12);
   useLayoutEffect(()=>{alive.current=true;const node=dialog.current;node?.showModal();return()=>{alive.current=false;prepared.current?.dispose();node?.close();};},[]);
@@ -39,8 +41,10 @@ function ShareDialog({session,relatedSessions=[],onClose,onOpenComms,capture}:Om
   const close=()=>{alive.current=false;prepared.current?.dispose();onClose();};
   const copy=async(value:string)=>{const current=capture();if(!alive.current||!current())return;try{await navigator.clipboard.writeText(value);if(alive.current&&current())setCopied(true);}catch{if(alive.current&&current())setMessage('Não foi possível copiar.');}};
   const send=async(mode:'publish'|'status'|'cancel')=>{
+    if(mode==='publish'&&!prepared.current&&linked&&relatedStatus!=='ready')return;
     if(busyRef.current)return;busyRef.current=true;setBusy(true);setMessage('');
-    const accountCurrent=capture(),current=()=>alive.current&&accountCurrent();
+    const accountCurrent=capture(),requireRelated=linked&&!prepared.current,capturedRelated=relatedSessions,
+      current=()=>alive.current&&accountCurrent()&&(!requireRelated||relatedView.current.status==='ready'&&relatedView.current.sessions===capturedRelated);
     try{
       if(!prepared.current){
         if(mode!=='publish')return;
@@ -58,7 +62,7 @@ function ShareDialog({session,relatedSessions=[],onClose,onOpenComms,capture}:Om
         prepared.current.dispose();prepared.current=null;presentation.current=null;setPending(false);setLink('');setSavedPass('');
       }else setMessage('Ainda não há confirmação. Podes retomar o mesmo pedido ou cancelá-lo.');
     }catch{if(current())setMessage('Não foi possível confirmar. Retoma o mesmo pedido ou consulta a gestão de cápsulas.');}
-    finally{busyRef.current=false;if(current())setBusy(false);}
+    finally{busyRef.current=false;if(alive.current&&accountCurrent())setBusy(false);}
   };
   const button='rounded-lg border border-white/15 px-3 py-2 text-sm disabled:opacity-40';
   return <dialog ref={dialog} aria-modal="true" aria-labelledby="capsule-dialog-title" onCancel={event=>{event.preventDefault();event.stopPropagation();close();}}
@@ -76,9 +80,10 @@ function ShareDialog({session,relatedSessions=[],onClose,onOpenComms,capture}:Om
             onChange={event=>setPassphrase(event.target.value)} className="w-full rounded-lg border border-white/15 bg-black/30 p-2"/></label>
           <label className="flex items-center gap-3"><span>Expira em</span><select aria-label="Prazo da cápsula" value={days} disabled={busy||pending} onChange={event=>setDays(Number(event.target.value))}
             className="rounded-lg bg-slate-800 p-2"><option value={1}>1 dia</option><option value={7}>7 dias</option><option value={30}>30 dias</option></select></label>
-          {related.length>0&&<label className="flex items-start gap-2"><input type="checkbox" checked={linked} disabled={busy||pending} onChange={event=>setLinked(event.target.checked)}/><span>Incluir {related.length} memória(s) ligada(s) do mesmo cofre.</span></label>}
+          {relatedStatus!=='ready'&&<p role="status" className="text-sm text-amber-200">{relatedStatus==='loading'?'A preparar memórias ligadas…':'Não foi possível preparar as memórias ligadas.'} {relatedStatus==='unavailable'&&onRetryRelated&&<button type="button" className={button} onClick={onRetryRelated}>Tentar novamente</button>}</p>}
+          {(related.length>0||linked)&&<label className="flex items-start gap-2"><input type="checkbox" checked={linked} disabled={busy||pending||relatedStatus!=='ready'} onChange={event=>setLinked(event.target.checked)}/><span>Incluir {related.length} memória(s) ligada(s) do mesmo cofre.</span></label>}
           <label className="flex items-start gap-2"><input type="checkbox" checked={embed} disabled={busy||pending} onChange={event=>setEmbed(event.target.checked)}/><span>Incluir a passphrase no fragmento do link. Qualquer pessoa com o URL completo poderá ler a cópia; o URL pode ficar no histórico do navegador.</span></label>
-          <button type="button" disabled={busy||!CAPSULE_PUBLICATION_ENABLED} onClick={()=>void send('publish')} className={button}>{busy?'A confirmar…':pending?'Retomar publicação':'Gerar cápsula cifrada'}</button>
+          <button type="button" disabled={busy||!CAPSULE_PUBLICATION_ENABLED||linked&&!pending&&relatedStatus!=='ready'} onClick={()=>void send('publish')} className={button}>{busy?'A confirmar…':pending?'Retomar publicação':'Gerar cápsula cifrada'}</button>
         </>:<>
           <label className="block space-y-1"><span>Link da cápsula confirmada</span><input readOnly value={link} className="w-full rounded-lg bg-black/30 p-2 text-sm"/></label>
           <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={()=>void copy(link)}>{copied?'Copiado':'Copiar link'}</button>

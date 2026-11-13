@@ -134,10 +134,11 @@ export class MemoryViewClient {
         }
         await this.exchange({ type: 'patch-end' }, guard, true);
       }
-      const filter = options.mode === 'scene' ? options.filteredIds : undefined, reuse = options.mode === 'scene' && this.filterSource !== undefined && filter === this.filterSource;
+      const filter = options.mode !== 'list' ? options.filteredIds : undefined, reuse = options.mode !== 'list' && this.filterSource !== undefined && filter === this.filterSource;
+      if (options.mode === 'related' && filter == null) throw unavailable();
       const filtered = reuse ? this.filterSet : filter ? new Set<string>() : null;
       if (filter && filter.length > limits.documents) throw unavailable();
-      await this.exchange({ type: 'query-start', options: options.mode === 'scene' ? { ...options, filteredIds: null } : options, now: Date.now(), filteredCount: reuse || filter === undefined || filter === null ? null : filter.length, reuseFilter: reuse }, guard, true);
+      await this.exchange({ type: 'query-start', options: options.mode !== 'list' ? { ...options, filteredIds: null } : options, now: Date.now(), filteredCount: reuse || filter === undefined || filter === null ? null : filter.length, reuseFilter: reuse }, guard, true);
       if (!reuse && filter) for (let index = 0; index < filter.length; index += limits.batch) {
         const ids = filter.slice(index, index + limits.batch); for (const id of ids) { if (!memoryViewId(id)) throw unavailable(); filtered!.add(id); }
         await this.exchange({ type: 'filter-chunk', ids }, guard, true); await this.yieldTask(); guard();
@@ -145,12 +146,13 @@ export class MemoryViewClient {
       const result = await this.exchange({ type: 'query-end' }, guard, false);
       const lookup = lookupView(memories, native, () => generation === this.generation && lookupEpoch === this.lookupEpoch);
       if (!Number.isSafeInteger(result.count) || (result.count as number) < 0 || (result.count as number) > memories.length || !Array.isArray(result.ids)) throw unavailable();
-      const limit = options.mode === 'list' ? options.limit : getUniverseRenderBudget(result.count as number).maxObjects;
+      const limit = options.mode === 'scene' ? getUniverseRenderBudget(result.count as number).maxObjects : options.limit;
+      if (options.mode === 'related' && (!filtered || (result.count as number) > filtered.size)) throw unavailable();
       if (result.ids.length !== Math.min(result.count as number, limit)) throw unavailable();
       const seen = new Set<string>(), selected: MemoryObject[] = [];
       for (const id of result.ids) {
         if (!memoryViewId(id) || seen.has(id)) throw unavailable(); const row = lookup.get(id);
-        if (!row || options.mode === 'scene' && (filtered && !filtered.has(id) || options.taxonomy && row.taxonomyLane !== options.taxonomy)) throw unavailable();
+        if (!row || options.mode !== 'list' && filtered && !filtered.has(id) || options.mode === 'scene' && options.taxonomy && row?.taxonomyLane !== options.taxonomy) throw unavailable();
         seen.add(id); selected.push(row);
       }
       this.references = native ?? new Map(); this.source = memories; this.filterSource = filter; this.filterSet = filtered;
