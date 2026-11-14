@@ -75,6 +75,9 @@ jobs:
       - name: Cognitive panels, held Worker ACK and scope retirement in Chromium
         run: node scripts/cognitive-panels-browser.cjs
         working-directory: .
+      - name: Shared orbital frames, hidden parents, cycles and scope retirement in WebGL
+        run: node scripts/orbit-layout-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .

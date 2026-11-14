@@ -1,5 +1,13 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Órbitas partilhadas e ciclos — 14 de novembro de 2026
+
+As [órbitas no Worker](ORBITAS_WORKER_2026-11-14.md) retiram dos frames as procuras de pais no cofre e partilham posições entre corpos, linhas, câmara, hover e constelações. Conservam as 138 amostras acíclicas capturadas da versão anterior, resolvem ciclos sem recursão e retiram frames/trabalho com o acesso. Uma edição de metadados projeta uma linha sem enumerar a origem; o desenho contínuo pausa durante preparação.
+
+Passaram **2406 testes frontend/251 ficheiros**, 45 focados/5, build/identidade, lint zero erros/21 avisos e 23 contratos. Sete ensaios browser sem pedidos externos, incluindo cena R3F real em WebGL/SwiftShader com 100 mil registos, quatro Workers terminados e pico de uma mensagem orbital em voo. Auth e origem são sintéticas; não substitui o SDK completo ou nativos.
+
+O arranque de 100 mil registos continua lento e variável; desempenho inicial/churn/memória, qualidade representativa, rollout, CI e instaladores finais continuam pendentes. Backend/regras/auditorias reutilizados por hashes; Google conservado sem inferência paga. Fases 0–6 abertas, **49 switches fechados, sem deploy**. Prova: orbit-layout-local-validation-20261114.json. Os blocos seguintes conservam a cronologia.
+
 ## Análise ativa e hover do Universo — 14 de novembro de 2026
 
 Os [recursos ativos da interface](ANALISE_ATIVA_E_HOVER_2026-11-14.md) suspendem insights enquanto o pulso está aberto, sem fechar a sidebar ou alterar editores. Reabrir inicia uma análise nova. O hover usa o lookup confirmado, sem procurar por ID no cofre durante render.

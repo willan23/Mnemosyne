@@ -3,7 +3,6 @@ import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import type { MemoryObject } from '../../types/universe';
 import { useUniverseStore } from '../../store/universeStore';
-import { getDynamicPosition } from '../../engines/celestialLayout';
 import { sampleArcPoint, writeArcLinePairs } from './connectionGeometry';
 import { useUniverseRuntime } from './universeRuntime';
 
@@ -25,7 +24,7 @@ export const ConnectionLines: React.FC<ConnectionLinesProps> = ({
   memories,
   maxConnections = 900,
 }) => {
-  const { lookupRef, quality } = useUniverseRuntime();
+  const { lookupRef, orbitRef, quality } = useUniverseRuntime();
   const segments = quality.connectionSegments;
   const maxPulses = quality.maxPulseSignals;
 
@@ -96,6 +95,10 @@ export const ConnectionLines: React.FC<ConnectionLinesProps> = ({
 
     const time = state.clock.getElapsedTime();
     const lookup = lookupRef.current;
+    const frame = orbitRef.current;
+    line.visible = frame.active();
+    if (pulseGroupRef.current) pulseGroupRef.current.visible = line.visible;
+    if (!line.visible) return;
     const { selectedMemoryId, hoveredMemoryId } = useUniverseStore.getState();
     const activeId = selectedMemoryId || hoveredMemoryId;
     const positions = positionAttr.array as Float32Array;
@@ -108,13 +111,15 @@ export const ConnectionLines: React.FC<ConnectionLinesProps> = ({
     for (const edge of edges) {
       const source = lookup.get(edge.sourceId);
       const target = lookup.get(edge.targetId);
-      if (!source || !target) {
+      const start = frame.get(edge.sourceId), end = frame.get(edge.targetId);
+      if (!source || !target || !start || !end) {
+        positions.fill(0, offset, offset + segments * 6);
         offset += segments * 6;
         continue;
       }
 
-      const [sx, sy, sz] = getDynamicPosition(source, memories, time, lookup);
-      const [ex, ey, ez] = getDynamicPosition(target, memories, time, lookup);
+      const [sx, sy, sz] = start;
+      const [ex, ey, ez] = end;
       writeArcLinePairs(positions, offset, sx, sy, sz, ex, ey, ez, segments);
 
       const isActive = activeId === edge.sourceId || activeId === edge.targetId;

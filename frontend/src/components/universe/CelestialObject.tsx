@@ -7,7 +7,6 @@ import type { MemoryObject } from '../../types/universe';
 import { CELESTIAL_CONFIGS } from '../../types/universe';
 import { useUniverseStore } from '../../store/universeStore';
 import type { UniverseDetailLevel } from '../../engines/celestialLayout';
-import { getDynamicPosition } from '../../engines/celestialLayout';
 import { createRingBands, type RingBand } from '../../engines/space3dBackdrop';
 import type { Attachment } from '../../types/attachments';
 import { useUniverseRuntime } from './universeRuntime';
@@ -44,7 +43,7 @@ export const CelestialObject: React.FC<CelestialObjectProps> = memo(({
   const meshRef = useRef<THREE.Mesh>(null);
   const glowMatRef = useRef<THREE.MeshBasicMaterial>(null);
   const timeRef = useRef(Math.random() * 100);
-  const { memoriesRef, lookupRef, sphereGeometry, glowGeometry, quality } = useUniverseRuntime();
+  const { orbitRef, sphereGeometry, glowGeometry, quality } = useUniverseRuntime();
 
   const isSelected = useUniverseStore((state) => state.selectedMemoryId === memory.id);
   const isSpawning = useUniverseStore(
@@ -91,12 +90,13 @@ export const CelestialObject: React.FC<CelestialObjectProps> = memo(({
     material.dispose();
   }, [material]);
 
-  useFrame((state, delta) => {
+  useFrame((_state, delta) => {
     timeRef.current += delta;
-    const time = state.clock.getElapsedTime();
 
     if (groupRef.current) {
-      const dynPos = getDynamicPosition(memory, memoriesRef.current, time, lookupRef.current);
+      const dynPos = orbitRef.current.get(memory.id);
+      groupRef.current.visible = Boolean(dynPos);
+      if (!dynPos) return;
       groupRef.current.position.set(dynPos[0], dynPos[1], dynPos[2]);
     }
 

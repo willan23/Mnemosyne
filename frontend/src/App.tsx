@@ -670,7 +670,7 @@ const App: React.FC = () => {
               ) : (
                 <div className="relative z-10 flex h-screen w-full flex-col overflow-hidden bg-transparent">
                   {/* 3D Universe Canvas as Core View */}
-                  {memoryView === 'universe' ? <Universe3D /> : (
+                  {memoryView === 'universe' ? <Universe3D readScope={cognitiveReadScope} /> : (
                     <MemoryListView memories={universeMemories} mode={memoryView}
                       selectedMemoryId={selectedMemoryId} onSelect={selectMemory} />
                   )}

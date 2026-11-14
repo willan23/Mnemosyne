@@ -4,7 +4,9 @@ import {
   buildCognitiveConstellations,
   getUniverseRenderBudget,
   rankMemoriesForRender,
+  getDynamicPosition,
 } from './celestialLayout';
+import golden from '../test/fixtures/orbit-golden.json';
 
 const memory = (overrides: Partial<MemoryObject> & Pick<MemoryObject, 'id'>): MemoryObject => ({
   id: overrides.id,
@@ -18,6 +20,25 @@ const memory = (overrides: Partial<MemoryObject> & Pick<MemoryObject, 'id'>): Me
   updatedAt: Date.now(),
   uid: 'user-1',
   ...overrides,
+});
+
+it.each(golden.cases)('preserves the frozen layout in the iterative compatibility helper: $name', fixture => {
+  vi.useFakeTimers(); vi.setSystemTime(golden.now);
+  try {
+    const rows = fixture.rows.map(row => memory({ ...row, celestialType: row.celestialType as MemoryObject['celestialType'], position: row.position as [number, number, number] })), lookup = new Map(rows.map(row => [row.id, row]));
+    for (const sample of fixture.samples) expect(rows.map(row => [row.id, getDynamicPosition(row, rows, sample.time, lookup)])).toEqual(sample.positions);
+  } finally { vi.useRealTimers(); }
+});
+it('keeps cyclic compatibility callers finite with the first published cycle node as anchor', () => {
+  const rows = [memory({ id: 'b', parentId: 'a', updatedAt: 0 }), memory({ id: 'a', parentId: 'b', updatedAt: 0 }), memory({ id: 'self', parentId: 'self', updatedAt: 0 })], lookup = new Map(rows.map(row => [row.id, row]));
+  for (const row of rows) expect(getDynamicPosition(row, rows, 2, lookup).every(Number.isFinite)).toBe(true);
+  expect(getDynamicPosition(rows[0], rows, 2, lookup)).toEqual(getDynamicPosition({ ...rows[0], parentId: undefined }, [], 2));
+});
+it('uses prepared constellation positions without following any raw connections', () => {
+  const rows = [memory({ id: 'a', semanticClusterId: 'semantic:prepared' }), memory({ id: 'b', semanticClusterId: 'semantic:prepared' }), memory({ id: 'omitted', semanticClusterId: 'semantic:prepared' })];
+  for (const row of rows) Object.defineProperty(row, 'connections', { get() { throw Error('Constellations followed raw parent candidates'); } });
+  const positions = new Map<string, readonly [number, number, number]>([['a', [0, 0, 0]], ['b', [4, 0, 0]]]);
+  expect(buildCognitiveConstellations(rows, 10, 0, positions)).toEqual([expect.objectContaining({ count: 2, center: [2, 0, 0], radius: 3.6 })]);
 });
 
 describe('celestial layout helpers', () => {

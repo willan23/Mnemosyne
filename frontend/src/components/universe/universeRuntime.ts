@@ -2,10 +2,11 @@ import { createContext, useContext, type MutableRefObject } from 'react';
 import type { SphereGeometry } from 'three';
 import type { MemoryObject } from '../../types/universe';
 import type { UniverseQualityProfile } from './qualityProfile';
+import type { OrbitPositionAccess } from '../../hooks/useOrbitLayout';
 
 export interface UniverseRuntime {
-  memoriesRef: MutableRefObject<readonly MemoryObject[]>;
   lookupRef: MutableRefObject<ReadonlyMap<string, MemoryObject>>;
+  orbitRef: MutableRefObject<OrbitPositionAccess>;
   sphereGeometry: SphereGeometry;
   glowGeometry: SphereGeometry;
   quality: UniverseQualityProfile;

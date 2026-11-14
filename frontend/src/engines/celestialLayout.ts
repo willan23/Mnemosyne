@@ -1,4 +1,5 @@
 import type { MemoryObject } from '../types/universe';
+import { orbitPosition, type OrbitPosition } from './orbitMath';
 
 export type UniverseDetailLevel = 'high' | 'medium' | 'low';
 
@@ -88,11 +89,12 @@ export function rankMemoriesForRender(
 export function buildCognitiveConstellations(
   memories: MemoryObject[],
   maxConstellations = 10,
-  time = 0
+  time = 0,
+  positions?: ReadonlyMap<string, OrbitPosition>,
 ): CognitiveConstellation[] {
   const groups = new Map<string, MemoryObject[]>();
 
-  for (const memory of memories) {
+  for (const memory of positions ? memories.filter(row => positions.has(row.id)) : memories) {
     const key = getConstellationKey(memory);
     const group = groups.get(key) || [];
     group.push(memory);
@@ -102,10 +104,10 @@ export function buildCognitiveConstellations(
   return [...groups.entries()]
     .filter(([, group]) => group.length > 1)
     .map(([id, group]) => {
-      const center = weightedCenter(group, memories, time);
+      const center = weightedCenter(group, memories, time, positions);
       const radius = Math.max(
         2.5,
-        Math.min(18, Math.max(...group.map((memory) => distance(center, getDynamicPosition(memory, memories, time)))) + 1.6)
+        Math.min(18, Math.max(...group.map((memory) => { const point = positions ? positions.get(memory.id) : getDynamicPosition(memory, memories, time); return point ? distance(center, point) : 0; })) + 1.6)
       );
 
       return {
@@ -164,15 +166,17 @@ function getConstellationLabel(id: string): string {
 function weightedCenter(
   memories: MemoryObject[],
   allMemories: readonly MemoryObject[],
-  time: number
+  time: number,
+  positions?: ReadonlyMap<string, OrbitPosition>,
 ): [number, number, number] {
   const center: [number, number, number] = [0, 0, 0];
   let totalWeight = 0;
 
   for (const memory of memories) {
     const weight = Math.max(0.2, memory.importance || 0.5);
+    const dynamicPos = positions ? positions.get(memory.id) : getDynamicPosition(memory, allMemories, time);
+    if (!dynamicPos) continue;
     totalWeight += weight;
-    const dynamicPos = getDynamicPosition(memory, allMemories, time);
     center[0] += dynamicPos[0] * weight;
     center[1] += dynamicPos[1] * weight;
     center[2] += dynamicPos[2] * weight;
@@ -187,107 +191,33 @@ function weightedCenter(
   ];
 }
 
-function distance(a: [number, number, number], b: [number, number, number]): number {
+function distance(a: OrbitPosition, b: OrbitPosition): number {
   const dx = a[0] - b[0];
   const dy = a[1] - b[1];
   const dz = a[2] - b[2];
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-function hashString(str: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < str.length; i += 1) {
-    hash ^= str.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+/** Compatibility helper for small callers. Scene frames consume Worker coordinates instead. */
+export function getDynamicPosition(memory: MemoryObject, allMemories: readonly MemoryObject[], time: number, lookup?: ReadonlyMap<string, MemoryObject>): [number, number, number] {
+  if (!Number.isFinite(time)) throw new Error('orbit_layout_unavailable');
+  const resolve = (value: MemoryObject): MemoryObject | null => {
+    let parent = value.parentId ? (lookup?.get(value.parentId) ?? allMemories.find(row => row.id === value.parentId)) ?? null : null;
+    if (!parent && value.celestialType === 'moon') parent = allMemories.find(row => row.celestialType === 'planet' && value.connections.includes(row.id)) ?? null;
+    else if (!parent && ['planet', 'star', 'comet'].includes(value.celestialType)) parent = allMemories.find(row => ['sun', 'black_hole', 'nebula'].includes(row.celestialType) && value.connections.includes(row.id)) ?? null;
+    return parent;
+  };
+  const seen = new Map<string, number>(), parents = new Map<string, MemoryObject | null>(), nodes: MemoryObject[] = [];
+  let cursor: MemoryObject | null = memory;
+  while (cursor && !seen.has(cursor.id)) { seen.set(cursor.id, nodes.length); nodes.push(cursor); const parent = resolve(cursor); parents.set(cursor.id, parent); cursor = parent; }
+  if (cursor) {
+    const order = new Map<string, number>(); let ordinal = 0; for (const row of allMemories) { if (!order.has(row.id)) order.set(row.id, ordinal); ordinal++; }
+    const cycle = nodes.slice(seen.get(cursor.id)!); let anchor = cycle[0];
+    for (const row of cycle) { const rank = order.get(row.id) ?? Infinity, best = order.get(anchor.id) ?? Infinity; if (rank < best || rank === best && row.id < anchor.id) anchor = row; }
+    parents.set(anchor.id, null);
   }
-  return hash >>> 0;
-}
-
-export function getDynamicPosition(
-  memory: MemoryObject,
-  allMemories: readonly MemoryObject[],
-  time: number,
-  lookup?: ReadonlyMap<string, MemoryObject>,
-): [number, number, number] {
-  const parentId = memory.parentId;
-  let parent = parentId
-    ? (lookup?.get(parentId) ?? allMemories.find((m) => m.id === parentId)) ?? null
-    : null;
-
-  if (!parent && memory.celestialType !== 'sun' && memory.celestialType !== 'nebula' && memory.celestialType !== 'black_hole') {
-    if (memory.celestialType === 'moon') {
-      parent = allMemories.find(
-        (m) => m.celestialType === 'planet' && memory.connections.includes(m.id)
-      ) || null;
-    } else if (memory.celestialType === 'planet' || memory.celestialType === 'star' || memory.celestialType === 'comet') {
-      parent = allMemories.find(
-        (m) =>
-          (m.celestialType === 'sun' || m.celestialType === 'black_hole' || m.celestialType === 'nebula') &&
-          memory.connections.includes(m.id)
-      ) || null;
-    }
-  }
-
-  const basePos = memory.position || [0, 0, 0];
-
-  if (!parent) {
-    const idHash = hashString(memory.id);
-    const driftSpeed = 0.04 + (idHash % 5) * 0.015;
-    const driftRadius = 0.12 + (idHash % 5) * 0.04;
-    const driftX = Math.sin(time * driftSpeed + idHash) * driftRadius;
-    const driftY = Math.cos(time * driftSpeed * 0.8 + idHash) * driftRadius;
-    const driftZ = Math.sin(time * driftSpeed * 1.2 + idHash) * driftRadius;
-    return [basePos[0] + driftX, basePos[1] + driftY, basePos[2] + driftZ];
-  }
-
-  const parentPos = getDynamicPosition(parent, allMemories, time, lookup);
-  const idHash = hashString(memory.id);
-
-  let orbitRadius = memory.orbitRadius;
-  if (!orbitRadius) {
-    if (memory.celestialType === 'moon') {
-      orbitRadius = 3.5 + (idHash % 20) / 10;
-    } else {
-      orbitRadius = 12.0 + (idHash % 80) / 10;
-    }
-  }
-
-  let orbitSpeed = memory.orbitSpeed;
-  if (!orbitSpeed) {
-    const direction = idHash % 2 === 0 ? 1 : -1;
-    if (memory.celestialType === 'moon') {
-      orbitSpeed = direction * (0.35 + (idHash % 15) / 50);
-    } else {
-      orbitSpeed = direction * (0.06 + (idHash % 10) / 100);
-    }
-  }
-
-  const importance = memory.importance || 0.5;
-  const ageDays = memory.updatedAt > 0 ? Math.max(0, (Date.now() - memory.updatedAt) / 86_400_000) : 365;
-  const recency = Math.max(0, 1 - ageDays / 180);
-
-  const decayFactor = 1.8 - 0.8 * recency - 0.4 * importance;
-  let adjustedRadius = orbitRadius * (1.2 - importance * 0.4) * decayFactor;
-
-  // Impor limites mínimos seguros para evitar colisões / sobreposições
-  if (memory.celestialType === 'moon') {
-    adjustedRadius = Math.max(adjustedRadius, 2.5);
-  } else {
-    adjustedRadius = Math.max(adjustedRadius, 8.5);
-  }
-  const adjustedSpeed = orbitSpeed * (0.8 + importance * 0.4);
-
-  const tilt = ((idHash % 30) - 15) * Math.PI / 180;
-  const angleOffset = idHash % 360;
-  const angle = time * adjustedSpeed + angleOffset;
-
-  const localX = Math.cos(angle) * adjustedRadius;
-  const localZ = Math.sin(angle) * adjustedRadius * Math.cos(tilt);
-  const localY = Math.sin(angle) * adjustedRadius * Math.sin(tilt);
-
-  return [
-    parentPos[0] + localX,
-    parentPos[1] + localY,
-    parentPos[2] + localZ,
-  ];
+  nodes.length = 0; cursor = memory; while (cursor) { nodes.push(cursor); cursor = parents.get(cursor.id) ?? null; }
+  let position: OrbitPosition | null = null; const now = Date.now();
+  for (let at = nodes.length - 1; at >= 0; at--) { const row = nodes[at]; position = orbitPosition({ id: row.id, celestialType: row.celestialType, position: row.position || [0, 0, 0], orbitRadius: row.orbitRadius ?? null, orbitSpeed: row.orbitSpeed ?? null, importance: row.importance, updatedAt: row.updatedAt }, position, time, now); if (!position.every(Number.isFinite)) throw new Error('orbit_layout_unavailable'); }
+  return [position![0], position![1], position![2]];
 }

@@ -13,7 +13,6 @@ import { getUniverseTheme } from '../../engines/universeThemes';
 import {
   buildCognitiveConstellations,
   getUniverseRenderBudget,
-  getDynamicPosition,
   type CognitiveConstellation,
 } from '../../engines/celestialLayout';
 import {
@@ -25,11 +24,14 @@ import {
 import { getUniverseQualityProfile, type UniverseQualityProfile } from './qualityProfile';
 import { UniverseRuntimeContext, useUniverseRuntime, type UniverseRuntime } from './universeRuntime';
 import { useMemoryView } from '../../hooks/useMemoryView';
-import type { MemoryViewOptions } from '../../services/memoryViewProtocol';
+import { memoryViewId, type MemoryViewOptions } from '../../services/memoryViewProtocol';
+import { memorySnapshotScopeActive } from '../../services/memorySnapshot';
+import type { MemoryReadScope } from '../../services/memoryReadScope';
+import { useOrbitLayout } from '../../hooks/useOrbitLayout';
 import { useTranslation } from '../../utils/translations';
 import { attachedSceneEvents } from '../../utils/attachedSceneEvents';
 
-function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile; selection: ReturnType<typeof useMemoryView> }) {
+function UniverseScene({ quality, selection, orbit }: { quality: UniverseQualityProfile; selection: ReturnType<typeof useMemoryView>; orbit: ReturnType<typeof useOrbitLayout> }) {
   const memories = useUniverseStore((state) => state.memories);
   const universeType = useUniverseStore((state) => state.universeType);
   const selectedMemoryId = useUniverseStore((state) => state.selectedMemoryId);
@@ -48,9 +50,6 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
   const scratchGalaxy = useRef(new THREE.Vector3(0, 55, 95));
   const scratchOrigin = useRef(new THREE.Vector3(0, 0, 0));
   const scratchIntro = useRef(new THREE.Vector3(0, 8, 28));
-
-  const memoriesRef = useRef(memories);
-  memoriesRef.current = memories;
 
   const lookup = selection.lookup;
   const lookupRef = useRef(lookup);
@@ -78,8 +77,9 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
   }, [quality.fogDensity, scene, theme.bg, theme.fog, theme.fogDensityMul]);
 
   useFrame((state, delta) => {
-    if (!controlsRef.current) return;
     const time = state.clock.getElapsedTime();
+    orbit.requestFrame(time, Date.now());
+    if (!controlsRef.current) return;
     const dt = Math.min(0.05, delta);
 
     if (isGalaxyView) {
@@ -95,7 +95,8 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
       const mem = lookupRef.current.get(selectedMemoryId);
       if (!mem) return;
 
-      const dynPosArray = getDynamicPosition(mem, memoriesRef.current, time, lookupRef.current);
+      const dynPosArray = orbit.positionsRef.current.get(mem.id);
+      if (!dynPosArray) return;
       const dynamicTarget = scratchTarget.current.set(dynPosArray[0], dynPosArray[1], dynPosArray[2]);
 
       if (!lastTrackedPosRef.current) {
@@ -139,7 +140,7 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
     }
   });
 
-  const budgetCount = selection.loading ? memories.length : selection.count;
+  const budgetCount = selection.loading && memorySnapshotScopeActive(memories) ? memories.length : selection.count;
   const renderBudget = useMemo(
     () => getUniverseRenderBudget(budgetCount),
     [budgetCount],
@@ -149,7 +150,7 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
     ? 'medium'
     : renderBudget.detail;
 
-  const visibleMemories = selection.memories;
+  const visibleMemories = useMemo(() => orbit.ready ? selection.memories.filter(memory => orbit.zeroTime.has(memory.id)) : [], [orbit.ready, orbit.zeroTime, selection.memories]);
 
   const constellations = useMemo(
     () =>
@@ -157,8 +158,9 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
         visibleMemories,
         renderBudget.detail === 'high' && !quality.reduceEffects ? 12 : 7,
         0,
+        orbit.zeroTime,
       ),
-    [quality.reduceEffects, renderBudget.detail, visibleMemories],
+    [orbit.zeroTime, quality.reduceEffects, renderBudget.detail, visibleMemories],
   );
 
   const sphereGeometry = useMemo(
@@ -180,13 +182,13 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
 
   const runtime = useMemo<UniverseRuntime>(
     () => ({
-      memoriesRef,
       lookupRef,
+      orbitRef: orbit.positionsRef,
       sphereGeometry,
       glowGeometry,
       quality,
     }),
-    [glowGeometry, quality, sphereGeometry],
+    [glowGeometry, orbit.positionsRef, quality, sphereGeometry],
   );
 
   return (
@@ -275,20 +277,17 @@ function MemoryHoverLabel({ lookup }: { lookup: ReadonlyMap<string, MemoryObject
   const hoveredId = useUniverseStore((state) => state.hoveredMemoryId);
   const selectedId = useUniverseStore((state) => state.selectedMemoryId);
   const groupRef = useRef<THREE.Group>(null);
-  const { memoriesRef, lookupRef } = useUniverseRuntime();
+  const { orbitRef } = useUniverseRuntime();
 
   const memory = hoveredId && hoveredId !== selectedId
     ? lookup.get(hoveredId) ?? null
     : null;
 
-  useFrame((state) => {
+  useFrame(() => {
     if (!groupRef.current || !memory) return;
-    const pos = getDynamicPosition(
-      memory,
-      memoriesRef.current,
-      state.clock.getElapsedTime(),
-      lookupRef.current,
-    );
+    const pos = orbitRef.current.get(memory.id);
+    groupRef.current.visible = Boolean(pos);
+    if (!pos) return;
     const config = CELESTIAL_CONFIGS[memory.celestialType];
     const scale = config.baseScale * (memory.scale || 1) * (memory.importance || 0.5) * 1.5;
     groupRef.current.position.set(pos[0], pos[1] + scale * 2.5, pos[2]);
@@ -471,14 +470,21 @@ function LoadingFallback() {
   return null;
 }
 
-export const Universe3D: React.FC = () => {
+export const Universe3D: React.FC<{ readScope: MemoryReadScope }> = ({ readScope }) => {
   const memories = useUniverseStore((state) => state.memories);
   const activeId = useUniverseStore((state) => state.selectedMemoryId);
+  const hoveredId = useUniverseStore((state) => state.hoveredMemoryId);
   const filteredIds = useUniverseStore((state) => state.filteredIds);
   const taxonomy = useUniverseStore((state) => state.taxonomyFilter);
   const options = useMemo<MemoryViewOptions>(() => ({ mode: 'scene', activeId, filteredIds, taxonomy }), [activeId, filteredIds, taxonomy]);
   const selection = useMemoryView(memories, options);
-  const quality = useMemo(() => getUniverseQualityProfile(memories.length), [memories.length]);
+  const memoryCount = memorySnapshotScopeActive(memories) ? memories.length : 0;
+  const visibleIds = useMemo(() => selection.memories.map(memory => memory.id), [selection.memories]);
+  const activeExtra = memoryViewId(activeId) && !visibleIds.includes(activeId) ? activeId : null;
+  const hoverExtra = memoryViewId(hoveredId) && hoveredId !== activeExtra && !visibleIds.includes(hoveredId) ? hoveredId : null;
+  const orbitIds = useMemo(() => Object.freeze([...visibleIds, ...(activeExtra ? [activeExtra] : []), ...(hoverExtra ? [hoverExtra] : [])]), [visibleIds, activeExtra, hoverExtra]);
+  const orbit = useOrbitLayout(memories, orbitIds, readScope, memoryCount > 0);
+  const quality = useMemo(() => getUniverseQualityProfile(memoryCount), [memoryCount]);
   const { t } = useTranslation();
 
   return (
@@ -486,7 +492,7 @@ export const Universe3D: React.FC = () => {
       <Canvas
         events={attachedSceneEvents}
         camera={{ position: [0, 18, 48], fov: 55, near: 0.1, far: 600 }}
-        frameloop="always"
+        frameloop={selection.loading || selection.error || !orbit.ready ? 'demand' : 'always'}
         dpr={quality.dpr}
         gl={{
           antialias: quality.antialias,
@@ -498,13 +504,13 @@ export const Universe3D: React.FC = () => {
         style={{ width: '100%', height: '100%', pointerEvents: 'auto' }}
       >
         <Suspense fallback={<LoadingFallback />}>
-          <UniverseScene quality={quality} selection={selection} />
+          <UniverseScene quality={quality} selection={selection} orbit={orbit} />
         </Suspense>
       </Canvas>
-      {(selection.loading || selection.error) && <p role={selection.error ? 'alert' : 'status'}
+      {(selection.loading || selection.error || orbit.loading || orbit.error) && <p role={selection.error || orbit.error ? 'alert' : 'status'}
         className="pointer-events-none absolute bottom-24 left-4 rounded-lg bg-black/70 px-3 py-2 text-xs text-slate-200">
-        {selection.error ? t('memoryViewUnavailable') : t('loading')}
-        {selection.error && <button type="button" onClick={selection.retry} className="pointer-events-auto ml-3 underline">{t('memoryViewRetry')}</button>}
+        {selection.error || orbit.error ? t('memoryViewUnavailable') : t('loading')}
+        {(selection.error || orbit.error) && <button type="button" onClick={() => { if (selection.error) selection.retry(); if (orbit.error) orbit.retry(); }} className="pointer-events-auto ml-3 underline">{t('memoryViewRetry')}</button>}
       </p>}
     </div>
   );
