@@ -923,6 +923,7 @@ const App: React.FC = () => {
                     onTabChange={setSidebarTab}
                     allSessions={allSessions}
                     readScope={cognitiveReadScope}
+                    analysisActive={!isPulseOpen}
                     onSaveMemory={saveMemory}
                     onDeleteMemory={deleteMemory}
                     onOpenTransmission={openTransmission}

@@ -8,7 +8,7 @@ import { useUniverseStore } from '../../store/universeStore';
 import { CelestialObject } from './CelestialObject';
 import { ConnectionLines } from './ConnectionLines';
 import { Space3DBackdrop } from './Space3DBackdrop';
-import { CELESTIAL_CONFIGS } from '../../types/universe';
+import { CELESTIAL_CONFIGS, type MemoryObject } from '../../types/universe';
 import { getUniverseTheme } from '../../engines/universeThemes';
 import {
   buildCognitiveConstellations,
@@ -252,7 +252,7 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
         />
       ))}
 
-      <MemoryHoverLabel />
+      <MemoryHoverLabel lookup={lookup} />
 
       <OrbitControls
         ref={controlsRef}
@@ -271,15 +271,14 @@ function UniverseScene({ quality, selection }: { quality: UniverseQualityProfile
   );
 }
 
-function MemoryHoverLabel() {
+function MemoryHoverLabel({ lookup }: { lookup: ReadonlyMap<string, MemoryObject> }) {
   const hoveredId = useUniverseStore((state) => state.hoveredMemoryId);
   const selectedId = useUniverseStore((state) => state.selectedMemoryId);
-  const memories = useUniverseStore((state) => state.memories);
   const groupRef = useRef<THREE.Group>(null);
   const { memoriesRef, lookupRef } = useUniverseRuntime();
 
   const memory = hoveredId && hoveredId !== selectedId
-    ? memories.find((item) => item.id === hoveredId) ?? null
+    ? lookup.get(hoveredId) ?? null
     : null;
 
   useFrame((state) => {

@@ -25,3 +25,11 @@ it('keeps a closed pulse idle, then displays a prepared pulse and navigates only
   view.rerender(<CognitivePulsePanel isOpen sessions={rows} uid={scope.uid} readScope={scope} onClose={close} onOpenMemory={open} onOpenInsights={()=>{}}/>);
   await waitFor(()=>expect(screen.queryByRole('status')).toBeNull());const card=screen.getByRole('button',{name:/3 memorias sem ligacoes/});fireEvent.click(card);expect(open).toHaveBeenCalledWith('m0');expect(close).toHaveBeenCalledOnce();
 });
+it('releases the covered insights projection before pulse starts and rebuilds it when pulse closes',async()=>{
+  let peak=0;vi.stubGlobal('Worker',class extends CognitiveAnalysisWorkerMock{constructor(){super();peak=Math.max(peak,CognitiveAnalysisWorkerMock.instances.filter(worker=>!worker.terminate.mock.calls.length).length);}});
+  const content=(pulse:boolean)=><><InsightsPanel sessions={rows} readScope={scope} enabled={!pulse} onMemoryClick={()=>{}}/><CognitivePulsePanel isOpen={pulse} sessions={rows} uid={scope.uid} readScope={scope} onClose={()=>{}} onOpenMemory={()=>{}} onOpenInsights={()=>{}}/></>;
+  const view=render(content(false));await screen.findAllByRole('button',{name:'Synthetic title 0'});const initial=CognitiveAnalysisWorkerMock.instances[0];
+  view.rerender(content(true));await screen.findByRole('button',{name:/3 memorias sem ligacoes/});expect(initial.terminate).toHaveBeenCalledOnce();expect(screen.queryByRole('button',{name:'Synthetic title 0'})).toBeNull();
+  const pulse=CognitiveAnalysisWorkerMock.instances[1];view.rerender(content(false));await screen.findAllByRole('button',{name:'Synthetic title 0'});expect(pulse.terminate).toHaveBeenCalledOnce();expect(CognitiveAnalysisWorkerMock.instances).toHaveLength(3);expect(peak).toBe(1);
+  view.unmount();expect(CognitiveAnalysisWorkerMock.instances.every(worker=>worker.terminate.mock.calls.length===1)).toBe(true);
+});

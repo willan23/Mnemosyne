@@ -4,7 +4,7 @@ import { CognitiveSidebar } from './CognitiveSidebar';
 import { useUniverseStore } from '../store/universeStore';
 import type { MemoryObject, MemorySaveCallback } from '../types/universe';
 const records=vi.hoisted(()=>new Map<string,unknown>());
-const observed=vi.hoisted(()=>({insights:null as unknown,web:null as unknown}));
+const observed=vi.hoisted(()=>({insights:null as unknown,web:null as unknown,enabled:undefined as boolean|undefined}));
 vi.mock('../firebase',()=>({default:{},db:{},storage:{},auth:{currentUser:{uid:'alice'}}}));
 vi.mock('firebase/auth',()=>({onAuthStateChanged:()=>()=>{}}));
 vi.mock('../config/releaseGates',async original=>({...await original<typeof import('../config/releaseGates')>(),TEAM_WRITES_ENABLED:true,PERSONAL_REVISION_WRITES_ENABLED:true}));
@@ -15,7 +15,7 @@ vi.mock('../services/memoryEditorDraftStore',()=>({memoryEditorDraftStore:{get:a
 import {setMemoryCryptoMnemonic} from '../services/memoryCrypto';
 const words=['abandon','ability','able','about','above','absent','absorb','abstract','absurd','abuse','access','accident'];
 vi.mock('./AttachmentPreviewGrid', () => ({ AttachmentPreviewGrid: () => null }));
-vi.mock('./InsightsPanel', () => ({ InsightsPanel: ({sessions}:{sessions:unknown}) => { observed.insights=sessions; return null; } }));
+vi.mock('./InsightsPanel', () => ({ InsightsPanel: ({sessions,enabled}:{sessions:unknown;enabled?:boolean}) => { observed.insights=sessions; observed.enabled=enabled; return null; } }));
 vi.mock('./WebResearchPanel', () => ({ WebResearchPanel: ({sessions}:{sessions:unknown}) => { observed.web=sessions; return null; } }));
 vi.mock('./TeamMemoryConnectionsPanel', () => ({ TeamMemoryConnectionsPanel: () => null }));
 vi.mock('../utils/export', () => ({ downloadMemory: vi.fn() }));
@@ -34,6 +34,13 @@ function deferred() {
 }
 beforeEach(() => { vi.clearAllMocks();vi.stubGlobal('Worker',MemoryViewWorkerMock);observed.insights=null;observed.web=null;records.clear();setMemoryCryptoMnemonic(words);useUniverseStore.setState({ memories: [{ ...memory }], selectedMemoryId: memory.id, deletingMemoryId: null, language: 'pt-pt' }); });
 afterEach(() => { cleanup();setMemoryCryptoMnemonic(null);vi.restoreAllMocks();vi.unstubAllGlobals(); vi.clearAllTimers(); vi.useRealTimers(); useUniverseStore.setState({ memories: [], selectedMemoryId: null }); });
+it('suspends only the insight analysis when its overlay is inactive and retains the current sidebar selection',()=>{
+  const close=vi.fn(),view=render(<CognitiveSidebar isOpen activeTab="insights" onClose={close}/>);
+  expect(observed.enabled).toBe(true);const source=observed.insights;
+  view.rerender(<CognitiveSidebar isOpen activeTab="insights" analysisActive={false} onClose={close}/>);
+  expect(observed.enabled).toBe(false);expect(observed.insights).toBe(source);expect(useUniverseStore.getState().selectedMemoryId).toBe(memory.id);expect(close).not.toHaveBeenCalled();
+  view.rerender(<CognitiveSidebar isOpen activeTab="insights" analysisActive onClose={close}/>);expect(observed.enabled).toBe(true);
+});
 it('shows ten related rows in published order and releases the Worker outside the memory tab',async()=>{
   const targets=Array.from({length:15},(_,index)=>({...memory,id:'related-'+index,title:'Related '+index})),source={...memory,connections:targets.map(row=>row.id).reverse()},rows=[source,...targets];
   const publisher=new IncrementalMemoryPublication<MemoryObject>('asc');publisher.apply('source',{changed:rows.map(value=>({id:value.id,value})),removed:[],order:{reset:rows.map(row=>row.id),changes:[]}});

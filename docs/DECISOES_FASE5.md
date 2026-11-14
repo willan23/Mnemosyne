@@ -1,5 +1,13 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Análise ativa e hover do Universo — 14 de novembro de 2026
+
+Os [recursos ativos da interface](ANALISE_ATIVA_E_HOVER_2026-11-14.md) suspendem insights enquanto o pulso está aberto, sem fechar a sidebar ou alterar editores. Reabrir inicia uma análise nova. O hover usa o lookup confirmado, sem procurar por ID no cofre durante render.
+
+Passaram **2364 testes frontend/247 ficheiros**, 144 focados/13, build/identidade, lint zero erros/21 avisos e 23 contratos. O ensaio dos componentes reais manteve insights montado e confirmou cinco Workers terminados e pico de um Worker de análise ativo ao abrir/fechar pulso. Seis ensaios browser sem pedidos externos. Auth é sintética; não comprova WebGL da cena completa ou nativos.
+
+Foram identificados scans de pais implícitos por frame e recursão sem proteção de ciclos em getDynamicPosition; a sua correção permanece necessária, juntamente com captura inicial/churn/memória, qualidade representativa, rollout, CI e instaladores finais. Backend/regras/auditorias reutilizados por hashes; Google conservado sem inferência paga. Fases 0–6 abertas, **49 switches fechados, sem deploy**. Prova: universe-runtime-local-validation-20261114.json. Os blocos seguintes conservam a cronologia.
+
 ## Insights e pulso no Worker — 13 de novembro de 2026
 
 Os [painéis de análise](ANALISE_COGNITIVA_WORKER_2026-11-13.md) usam projeção autorizada e transporte incremental confirmado, com vetores Float64 transferidos. O UI deixa de executar a classificação do cofre. Publicações durante uma confirmação são agregadas, e remoções/perda de acesso retiram o trabalho pendente. O Worker continua a percorrer candidatos; não há inferência cloud.

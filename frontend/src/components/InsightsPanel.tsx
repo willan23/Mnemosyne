@@ -9,6 +9,7 @@ import {useTranslation} from '../utils/translations';
 interface Props {
   sessions: readonly SessionData[];
   readScope: MemoryReadScope;
+  enabled?: boolean;
   onMemoryClick: (session: SessionData) => void;
   onClose?: () => void;
 }
@@ -114,10 +115,12 @@ const InsightCard: React.FC<{
   );
 };
 
-export const InsightsPanel: React.FC<Props> = ({ sessions, readScope, onMemoryClick, onClose }) => {
-  const {t}=useTranslation(),analysis=useCognitiveAnalysis(sessions,readScope,'insights');
+export const InsightsPanel: React.FC<Props> = ({ sessions, readScope, enabled = true, onMemoryClick, onClose }) => {
+  const {t}=useTranslation(),analysis=useCognitiveAnalysis(sessions,readScope,'insights',enabled);
   const data=analysis.analysis?.mode==='insights'?analysis.analysis:null,insights=data?.insights??[];
   const counts=data?.counts??{total:0,linked:0,contradictions:0,orphans:0};
+
+  if (!enabled) return null;
 
   return (
     <aside className="absolute bottom-28 right-3 top-20 z-40 flex w-[min(420px,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#020617]/90 text-white shadow-2xl shadow-cyan-950/25 backdrop-blur-2xl md:right-6 md:top-24">

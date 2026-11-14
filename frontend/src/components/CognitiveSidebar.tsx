@@ -70,6 +70,7 @@ interface CognitiveSidebarProps {
   onTabChange?: (tab: SidebarTab) => void;
   allSessions?: readonly SessionData[];
   readScope?: MemoryReadScope;
+  analysisActive?: boolean;
   onSaveMemory?: import('../types/universe').MemorySaveCallback;
   onDeleteMemory?: import('../types/universe').MemoryDeleteCallback;
   onOpenTransmission?: (
@@ -87,6 +88,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
   onTabChange,
   allSessions = [],
   readScope,
+  analysisActive = true,
   onSaveMemory,
   onDeleteMemory,
   onOpenTransmission,
@@ -575,6 +577,7 @@ export const CognitiveSidebar: React.FC<CognitiveSidebarProps> = ({
                 <InsightsPanel
                   sessions={sessionDataList}
                   readScope={readScope??personalReadScope}
+                  enabled={analysisActive}
                   onMemoryClick={(session) => {
                     selectMemory(session.id);
                     setTab('memory');
