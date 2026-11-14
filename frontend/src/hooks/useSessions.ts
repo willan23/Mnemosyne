@@ -231,7 +231,7 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
         setResourceState(retained.length ? { uid: user.uid, cryptoEpoch, teamIds, resources: retainedResources.capture() } : null);
         setLoadedScope(retained.length ? { uid: user.uid, cryptoEpoch, teamIds } : { uid: '', cryptoEpoch: -1, teamIds: null });
 
-        const publication = new IncrementalMemoryPublication<SessionData>('desc', { views: {
+        const publication = new IncrementalMemoryPublication<SessionData>('desc', { captureSources: true, views: {
             active: session => !session.deletedAt,
             legacy: session => session.uid === user.uid && !session.teamId && !session.deletedAt && !session.encrypted && Boolean(session.text.trim() || session.title?.trim()),
         } });
@@ -299,9 +299,12 @@ export const useSessions = (user: User | null, searchQuery: string, filters: Fil
                             teamScopeAmbiguous: data.teamId != null && !teamId, sharedWithIds: data.sharedWithIds }, readScope)) return null;
                         return mapSessionDoc({ id: docSnap.id, data: () => data });
                     });
-                    if (!active || currentRevision !== revision || !lease.isCurrent() || !lease.commit()) return;
+                    const current = () => active && currentRevision === revision && lease.isCurrent();
+                    if (!current()) return;
                     const patch = { ...lease, changed: lease.changed.map(({ id, value }) => ({ id, value: value && canReadCachedMemory(value, readScope) ? value : null })) };
-                    const delta = publication.apply(bucketKey, patch); semanticCorpus.apply(bucketKey, patch); publish(delta);
+                    await publication.applyControlled(bucketKey, patch, { isCurrent: current, beforeCommit: () => current() && lease.commit(), afterCommit: delta => {
+                        semanticCorpus.adoptPublicationSource(bucketKey, publication.captureSource(bucketKey), patch); publish(delta);
+                    } });
                 })().catch(() => {
                     if (!active || currentRevision !== revision) return;
                     clear();

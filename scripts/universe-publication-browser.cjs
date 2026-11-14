@@ -22,7 +22,7 @@ const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
     terminate(){terminated++;super.terminate();}
    }
    window.Worker=MeasuredWorker;
-   const publication=new IncrementalMemoryPublication('asc',{sourceBase:2}),semantic=new IndexedSemanticWriteCorpus({uid:'actor',teamIds:new Set()},id=>publication.get(id),undefined,{direction:'asc',sourceBase:2});
+   const publication=new IncrementalMemoryPublication('asc',{sourceBase:2,captureSources:true}),semantic=new IndexedSemanticWriteCorpus({uid:'actor',teamIds:new Set()},id=>publication.get(id),undefined,{direction:'asc',sourceBase:2});
    const ordered=publication.orderedValues.bind(publication);publication.orderedValues=(...args)=>{sourceIterations++;return ordered(...args);};
    const owner=new UniverseMemoryPublication({uid:'actor',publication,semantic,isCurrent:()=>current,teams:()=>new Set(),changed:()=>{},tombstones:new Set(),deletions:new Map()});
    const publish=()=>{const view=owner.snapshot();useUniverseStore.getState().loadMemories(view);return view;};

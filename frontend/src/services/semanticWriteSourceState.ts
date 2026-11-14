@@ -2,6 +2,7 @@ import { eraseMemoryNode, insertMemoryNode, memoryNode, memoryNodeAt, memoryNode
 import type { MemoryPublicationPatch } from './incrementalMemoryPublication';
 import { semanticWriteId } from './semanticWriteProtocol';
 import { INDEXED_SEMANTIC_WRITE_LIMITS as limits } from './indexedSemanticWriteProtocol';
+import type { PublicationSourceSnapshot } from './publicationSourceSnapshot';
 
 type IdNode = PersistentMemoryNode<{ id: string }>;
 const compareIds = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -22,11 +23,17 @@ export class SemanticWriteSourceState<T extends { id: string; timestamp: number 
   private order: IdNode | null = null;
   private byId: PersistentMemoryNode<{ id: string; value: T | null }> | null = null;
   private random: () => number;
+  private external: PublicationSourceSnapshot<T> | null = null;
   constructor(priority: number, random: () => number, ordinal: number) { this.priority = priority; this.random = random; this.ordinal = ordinal; }
-  get size(): number { return this.values.size; }
-  get(id: string): T | null | undefined { return this.values.get(id); }
-  entries(): IterableIterator<[string, T | null]> { return this.values.entries(); }
+  get size(): number { return this.external?.count ?? this.values.size; }
+  get(id: string): T | null | undefined { return this.external ? this.external.get(id) : this.values.get(id); }
+  *entries(): IterableIterator<[string, T | null]> { if (this.external) { for (const row of this.external.orderedRows()) yield [row.id, row.value]; } else yield* this.values.entries(); }
+  adopt(source: PublicationSourceSnapshot<T>): void {
+    if (!source.active() || source.priority !== this.priority || source.ordinal !== this.ordinal || !Number.isSafeInteger(source.count) || source.count < 0 || source.count > limits.documents) throw Error('semantic_write_unavailable');
+    this.external = source; this.values.clear(); this.ids.clear(); this.order = this.byId = null;
+  }
   capture(): SemanticWriteSourceSnapshot<T> {
+    if (this.external) return this.external;
     const order = this.order, byId = this.byId;
     return Object.freeze({ priority: this.priority, count: this.size, *orderedRows() {
       for (const { id } of memoryNodeRange(order, 0, memoryNodeCount(order))) { const value = memoryNodeById(byId, id); if (!value) throw Error('semantic_write_unavailable'); yield value.value; }
@@ -43,6 +50,16 @@ export class SemanticWriteSourceState<T extends { id: string; timestamp: number 
   private setValue(id: string, value: T | null): void { this.values.set(id, value); this.byId = insertMemoryNode(this.byId, memoryNode(Object.freeze({ id, value }), this.random()), compareIds); }
   private removeValue(id: string): void { if (!this.values.has(id)) return; this.values.delete(id); this.byId = eraseMemoryNode(this.byId, id, compareIds); }
   apply(patch: MemoryPublicationPatch<T>): void {
+    if (this.external) {
+      // Membership reprojection changes the read scope, not these immutable raw rows.
+      // A data mutation must adopt the publication's next version instead of rebuilding it here.
+      if (this.external.active() && patch && Array.isArray(patch.changed) && patch.changed.length <= limits.documents && Array.isArray(patch.removed) && !patch.removed.length && patch.order && patch.order.reset === undefined && Array.isArray(patch.order.changes) && !patch.order.changes.length) {
+        const seen = new Set<string>();
+        for (const row of patch.changed) { if (!row || !semanticWriteId(row.id) || seen.has(row.id) || row.value !== null && (!row.value || typeof row.value !== 'object' || row.value.id !== row.id) || this.external.get(row.id) !== row.value) throw Error('semantic_write_unavailable'); seen.add(row.id); }
+        return;
+      }
+      throw Error('semantic_write_unavailable');
+    }
     if (!patch || !Array.isArray(patch.changed) || patch.changed.length > limits.documents || !Array.isArray(patch.removed) || patch.removed.length > limits.documents ||
         !patch.order || !Array.isArray(patch.order.changes) || patch.order.changes.length > limits.documents ||
         patch.order.reset !== undefined && (!Array.isArray(patch.order.reset) || patch.order.reset.length > limits.documents)) throw Error('semantic_write_unavailable');

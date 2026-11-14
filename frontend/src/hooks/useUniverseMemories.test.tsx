@@ -172,6 +172,22 @@ it('local semantic refresh uses the indexed source, excludes other scopes and do
   expect(ids).toEqual(['allowed']);const content=await state.apply.mock.calls[0][0].prepare(()=>{});expect(content.metadata).toMatchObject({embedding:[1],processingMethod:'universe:manual-edit+local-embedding'});expect(content.metadata.connections).toBeUndefined();
   expect(worker.postMessage.mock.calls.filter(([message])=>message.type==='init')).toHaveLength(1);view.unmount();expect(worker.terminate).toHaveBeenCalledOnce();
 });
+it('keeps the initial universe source when a later SDK delta overtakes its held publication', async () => {
+  renderHook(() => useUniverseMemories()); act(() => state.auth?.({ uid: 'alice' }));
+  let resume!: () => void, first = true;
+  const gate = new Promise<void>(resolve => { resume = resolve; }), apply = IncrementalMemoryPublication.prototype.applyControlled;
+  const spy = vi.spyOn(IncrementalMemoryPublication.prototype, 'applyControlled').mockImplementation(function (this: IncrementalMemoryPublication<{ id: string; timestamp: number }>, ...args) {
+    if (first && args[0] === 'personal') { first = false; return gate.then(() => apply.apply(this, args)); }
+    return apply.apply(this, args);
+  });
+  try {
+    const docs = Array.from({ length: 300 }, (_, at) => document('p' + at)); await act(async () => state.listeners[0].next({ docs })); await waitFor(() => expect(spy).toHaveBeenCalledOnce());
+    await act(async () => state.listeners[0].next(delta({ type: 'modified', doc: document('p50', { text: 'latest universe edit' }), oldIndex: 50, newIndex: 50 })));
+    await waitFor(() => expect(lastMemories()).toHaveLength(300)); expect(lastMemories().find(row => row.id === 'p50')?.text).toBe('latest universe edit');
+    await act(async () => resume()); expect(lastMemories()).toHaveLength(300); expect(lastMemories().find(row => row.id === 'p50')?.text).toBe('latest universe edit');
+  } finally { resume(); spy.mockRestore(); }
+});
+
 it('published capture uses the ascending winning view, while personal and team edits keep their own listener variants',async()=>{
   const worker=new HookIndexWorker();vi.stubGlobal('Worker',vi.fn(function(){return worker;}));
   const view=renderHook(()=>useUniverseMemories());act(()=>state.auth?.({uid:'alice'}));

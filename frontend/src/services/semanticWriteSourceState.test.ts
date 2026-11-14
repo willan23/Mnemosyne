@@ -1,9 +1,27 @@
 import { expect, it } from 'vitest';
 import { SemanticWriteSourceState } from './semanticWriteSourceState';
-import type { MemoryPublicationPatch } from './incrementalMemoryPublication';
+import { IncrementalMemoryPublication, type MemoryPublicationPatch } from './incrementalMemoryPublication';
 
 type Row = { id: string; timestamp: number; text?: string; embedding?: number[] };
 const reset = (rows: Row[]): MemoryPublicationPatch<Row> => ({ changed: rows.map(value => ({ id: value.id, value })), removed: [], order: { reset: rows.map(value => value.id), changes: [] } });
+
+it('adopts an immutable publication version without enumerating rows or rebuilding metadata', () => {
+  let reads = 0;
+  const rows = Array.from({ length: 10000 }, (_, at) => ({ id: 'n' + at, get timestamp() { reads++; return at; }, get text() { throw Error('Read text'); }, get embedding(): number[] { throw Error('Read vector'); } }));
+  const publication = new IncrementalMemoryPublication<Row>('asc', { captureSources: true }); publication.apply('source', reset(rows), 7);
+  const first = publication.captureSource('source')!, state = new SemanticWriteSourceState<Row>(7, () => 1, first.ordinal); reads = 0; state.adopt(first);
+  expect(reads).toBe(0); expect(state.capture()).toBe(first); expect(state.size).toBe(10000); expect(state.get('n5000')).toBe(rows[5000]); expect([...state.entries()][0][0]).toBe('n0'); expect(reads).toBe(0);
+  const changed = { id: 'n5000', timestamp: 5000 }; publication.apply('source', { changed: [{ id: changed.id, value: changed }], removed: [], order: { changes: [] } });
+  reads = 0; state.adopt(publication.captureSource('source')!); expect(reads).toBe(0); expect(first.get('n5000')).toBe(rows[5000]); expect(state.get('n5000')).toBe(changed); publication.clear();
+});
+
+it('permits unchanged membership reprojection but refuses data writes into an adopted version', () => {
+  const publication = new IncrementalMemoryPublication<Row>('asc', { captureSources: true }), original = { id: 'a', timestamp: 1 }; publication.apply('source', reset([original]));
+  const state = new SemanticWriteSourceState<Row>(0, () => 1, 0); state.adopt(publication.captureSource('source')!);
+  state.apply({ changed: [{ id: 'a', value: original }], removed: [], order: { changes: [] } }); expect(state.get('a')).toBe(original);
+  expect(() => state.apply(reset([{ id: 'new', timestamp: 2 }]))).toThrow('semantic_write_unavailable'); expect(state.get('a')).toBe(original);
+  publication.clear(); expect(() => state.get('a')).toThrow('memory_publication_unavailable');
+});
 
 it('captures 10000 raw references without reading fields and preserves the exact prior version after metadata and order deltas', () => {
   let timestampReads = 0, seed = 1;

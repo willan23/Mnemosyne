@@ -7,7 +7,8 @@ import { SEMANTIC_WRITE_LIMITS as limits, semanticWriteId, type SemanticWriteCan
 import type { SemanticWriteOptions, SemanticWriteSelection } from './semanticWriteClient';
 import { INDEXED_SEMANTIC_WRITE_LIMITS as capacity, type IndexedSemanticDocument, type IndexedSemanticWriteMessage } from './indexedSemanticWriteProtocol';
 import { SemanticWriteSourceState, type SemanticWriteSourceSnapshot } from './semanticWriteSourceState';
-import { eraseMemoryNode, insertMemoryNode, memoryNode, memoryNodeCount, memoryNodeRange, type PersistentMemoryNode } from './persistentMemoryTree';
+import { eraseMemoryNode, insertMemoryNode, memoryNode, memoryNodeById, memoryNodeCount, memoryNodeRange, type PersistentMemoryNode } from './persistentMemoryTree';
+import type { PublicationSourceSnapshot } from './publicationSourceSnapshot';
 
 type Candidate = SemanticWriteCandidate & { timestamp: number };
 type Pending<T> = { type: 'patch'; source: string; key: string; patch: MemoryPublicationPatch<T>; priority: number } | { type: 'remove'; source: string } | { type: 'exclude'; source: string; key: string; changes: Map<string, boolean>; inFlight?: boolean };
@@ -88,6 +89,23 @@ export class IndexedSemanticWriteCorpus<T extends Candidate> {
       const before = state.size; state.apply(patch); this.retainedReferences += state.size - before; this.revision++;
       this.sourceVersions = insertMemoryNode(this.sourceVersions, memoryNode(Object.freeze({ id: this.versionId(state), key: source, version: state.capture() }), this.random()), compareKeys);
       if (this.retainedReferences > capacity.retainedReferences) throw fail();
+      if (this.needsRebuild) return;
+      this.enqueue({ type: 'patch', source: this.source(source), key: source, patch, priority: state.priority }, this.patchWeight(patch));
+    } catch { this.clear(); }
+  }
+  /** The publication already prepared this source; retain its immutable roots in O(1). */
+  adoptPublicationSource(source: string, snapshot: PublicationSourceSnapshot<T> | undefined, patch: MemoryPublicationPatch<T>): void {
+    if (this.closed) return;
+    try {
+      if (!semanticWriteId(source) || !snapshot || snapshot.key !== source || !snapshot.active() || !Number.isFinite(snapshot.priority) || !Number.isSafeInteger(snapshot.ordinal) || snapshot.ordinal < 0) throw fail();
+      const ordinalOwner = memoryNodeById(this.sourceVersions, String(snapshot.ordinal).padStart(16, '0'))?.value.key; if (ordinalOwner !== undefined && ordinalOwner !== source) throw fail();
+      let state = this.currentSources.get(source); const lateOrdinal = !state && snapshot.ordinal < this.nextSourceOrdinal;
+      if (!state) { state = new SemanticWriteSourceState<T>(snapshot.priority, this.random, snapshot.ordinal); this.currentSources.set(source, state); this.retainedReferences++; }
+      else if (state.priority !== snapshot.priority || state.ordinal !== snapshot.ordinal) throw fail();
+      const before = state.size; state.adopt(snapshot); this.retainedReferences += state.size - before; this.nextSourceOrdinal = Math.max(this.nextSourceOrdinal, snapshot.ordinal + 1); this.revision++;
+      this.sourceVersions = insertMemoryNode(this.sourceVersions, memoryNode(Object.freeze({ id: this.versionId(state), key: source, version: state.capture() }), this.random()), compareKeys);
+      if (this.retainedReferences > capacity.retainedReferences) throw fail();
+      if (lateOrdinal && !this.needsRebuild) { const hot = Boolean(this.worker || this.flushScheduled); this.needsRebuild = true; this.pending = []; this.pendingChanges = 0; this.retireTransport(); if (hot) this.scheduleFlush(); }
       if (this.needsRebuild) return;
       this.enqueue({ type: 'patch', source: this.source(source), key: source, patch, priority: state.priority }, this.patchWeight(patch));
     } catch { this.clear(); }

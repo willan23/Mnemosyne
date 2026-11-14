@@ -9,6 +9,12 @@ declare const commitBrand: unique symbol;
 export type UniverseViewCommit = object & { readonly [commitBrand]: true };
 export interface UniverseDeletionRecord { id: string; teamId: string | null; revision: number }
 export interface UniverseAuthorityValue { memory: MemoryObject | null; tombstone: boolean; revision: number }
+export interface UniversePublicationControl {
+  isCurrent(): boolean;
+  beforeCommit?: () => boolean;
+  beforeAuthority?: () => void;
+  afterCommit?: () => void;
+}
 type CreateCommit = { kind: 'create'; owner: UniverseMemoryPublication; id: string; memory: MemoryObject | null; cancelled: boolean; consumed: boolean; afterSequence: number };
 type DeleteCommit = { kind: 'delete'; owner: UniverseMemoryPublication; id: string; teamId: string | null; revision: number; digest: string; phase: 'issued' | 'staged' | 'finished' };
 type Commit = CreateCommit | DeleteCommit;
@@ -44,12 +50,16 @@ export class UniverseMemoryPublication {
       ? { changes: [{ id: memory.id, type: 'added' as const, oldIndex: -1, newIndex: this.options.publication.sourceSize(overlaySource) }] } : { changes: [] };
     const patch = { changed: [{ id: memory.id, value: memory }], removed: [], order };
     this.overlays.set(memory.id, { kind, memory, afterSequence });
-    this.options.publication.apply(overlaySource, patch, overlayPriority); this.options.semantic.apply(overlaySource, patch, overlayPriority);
+    this.applyProjection(overlaySource, patch, overlayPriority);
   }
   private dropOverlay(id: string): void {
     const position = this.options.publication.sourcePosition(overlaySource, id); this.overlays.delete(id); if (position === undefined) return;
     const patch = { changed: [], removed: [id], order: { changes: [{ id, type: 'removed' as const, oldIndex: position, newIndex: -1 }] } };
-    this.options.publication.apply(overlaySource, patch, overlayPriority); this.options.semantic.apply(overlaySource, patch, overlayPriority);
+    this.applyProjection(overlaySource, patch, overlayPriority);
+  }
+  private applyProjection(key: string, patch: MemoryPublicationPatch<MemoryObject>, priority?: number): void {
+    this.options.publication.apply(key, patch, priority);
+    this.options.semantic.adoptPublicationSource(key, this.options.publication.captureSource(key), patch);
   }
   private cancelCreates(id: string): void { for (const issued of this.issuedCreates.get(id) ?? []) { issued.cancelled = true; issued.memory = null; } if (this.overlays.get(id)?.kind === 'create') this.dropOverlay(id); }
   private dropDeletion(record: UniverseDeletionRecord): void {
@@ -65,6 +75,21 @@ export class UniverseMemoryPublication {
   apply(key: string, patch: MemoryPublicationPatch<MemoryObject>, values: ReadonlyMap<string, UniverseAuthorityValue>, sequence: number): void {
     if (!this.active()) return;
     this.denied.delete(key);
+    this.reconcileAuthority(key, patch, values);
+    this.applyProjection(key, patch, key === 'legacy' ? 0 : key === 'personal' ? 1 : undefined);
+    this.finishAuthority(key, sequence);
+  }
+  async applyControlled(key: string, patch: MemoryPublicationPatch<MemoryObject>, values: ReadonlyMap<string, UniverseAuthorityValue>, sequence: number, control: UniversePublicationControl): Promise<void> {
+    await this.options.publication.applyControlled(key, patch, {
+      isCurrent: () => this.active() && control.isCurrent(), priority: key === 'legacy' ? 0 : key === 'personal' ? 1 : undefined,
+      beforeCommit: control.beforeCommit,
+      afterCommit: () => {
+        this.denied.delete(key); control.beforeAuthority?.(); this.reconcileAuthority(key, patch, values);
+        this.options.semantic.adoptPublicationSource(key, this.options.publication.captureSource(key), patch); this.finishAuthority(key, sequence); control.afterCommit?.();
+      },
+    });
+  }
+  private reconcileAuthority(key: string, patch: MemoryPublicationPatch<MemoryObject>, values: ReadonlyMap<string, UniverseAuthorityValue>): void {
     const touched = new Set([...patch.changed.map(row => row.id), ...patch.removed, ...patch.order.changes.map(row => row.id)]);
     if (patch.order.reset) for (const id of patch.order.reset) touched.add(id);
     const removed = new Set(patch.removed);
@@ -84,8 +109,8 @@ export class UniverseMemoryPublication {
         else if (value?.memory) { for (const issued of this.issuedCreates.get(id) ?? []) issued.memory = null; if (this.overlays.get(id)?.kind === 'create') this.dropOverlay(id); }
       }
     }
-    this.options.publication.apply(key, patch, key === 'legacy' ? 0 : key === 'personal' ? 1 : undefined);
-    this.options.semantic.apply(key, patch, key === 'legacy' ? 0 : key === 'personal' ? 1 : undefined);
+  }
+  private finishAuthority(key: string, sequence: number): void {
     if (key === 'personal') for (const [id, overlay] of this.overlays) if (overlay.kind === 'create' && sequence > overlay.afterSequence && !this.options.publication.sourceValue('personal', id)) this.dropOverlay(id);
   }
   removeSource(key: string): void {

@@ -24,19 +24,47 @@ class IndexWorker extends EventTarget {
 }
 const live: IndexedSemanticWriteCorpus<Row>[] = [];
 afterEach(() => { for (const owner of live.splice(0)) owner.clear(); vi.useRealTimers(); });
-function fixture(teamIds = ['team-a'], options: { direction?: 'asc' | 'desc'; sourceBase?: number; yieldTask?: () => Promise<void> } = {}) {
-  const publication = new IncrementalMemoryPublication<Row>(options.direction ?? 'desc', { sourceBase: options.sourceBase }), worker = new IndexWorker(), workers = [worker]; let created = 0;
+function fixture(teamIds = ['team-a'], options: { direction?: 'asc' | 'desc'; sourceBase?: number; yieldTask?: () => Promise<void>; captureSources?: boolean; publicationYieldTask?: () => Promise<void> } = {}) {
+  const publication = new IncrementalMemoryPublication<Row>(options.direction ?? 'desc', { sourceBase: options.sourceBase, captureSources: options.captureSources, yieldTask: options.publicationYieldTask }), worker = new IndexWorker(), workers = [worker]; let created = 0;
   const createWorker = () => { if (created++ === 0) return worker as unknown as Worker; const next = new IndexWorker(); workers.push(next); return next as unknown as Worker; };
   const corpus = new IndexedSemanticWriteCorpus<Row>({ uid: 'alice', teamIds: new Set(teamIds) }, id => publication.get(id), createWorker, options); live.push(corpus);
   const apply = (source: string, patch: MemoryPublicationPatch<Row>, priority?: number) => { publication.apply(source, patch, priority); corpus.apply(source, patch, priority); };
+  const adopt = (source: string, patch: MemoryPublicationPatch<Row>, priority?: number) => { publication.apply(source, patch, priority); corpus.adoptPublicationSource(source, publication.captureSource(source), patch); };
   const snapshot = async () => {
     let result: Row[] = []; await publication.publish(() => true, values => { result = values; });
     // Selecting an indexed source must never enumerate it, even on its second use.
     const source = new Proxy(result, { get(target, key, receiver) { if (key === Symbol.iterator) throw Error('Enumerated published corpus'); return Reflect.get(target, key, receiver); } });
     corpus.associate(source); return source;
   };
-  return { publication, worker, workers, corpus, apply, snapshot };
+  return { publication, worker, workers, corpus, apply, adopt, snapshot };
 }
+
+it('adopts prepared sources without reading vectors and projects only one changed adopted row', async () => {
+  const f = fixture([], { captureSources: true }); let reads = 0, historical = true;
+  const rows = Array.from({ length: 1000 }, (_, at) => Object.defineProperty(row('n' + at), 'embedding', { get() { if (!historical) throw Error('Read unchanged vector'); reads++; return [1, 0]; } }));
+  const patch = reset(rows); f.publication.apply('personal', patch); f.corpus.adoptPublicationSource('personal', f.publication.captureSource('personal'), patch); expect(reads).toBe(0);
+  await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') }); expect(reads).toBe(1000); reads = 0; historical = false;
+  const changed = Object.defineProperty(row('n500'), 'embedding', { get() { reads++; return [0, 1]; } }), delta = { changed: [{ id: changed.id, value: changed }], removed: [], order: { changes: [] } };
+  f.adopt('personal', delta); expect(reads).toBe(0); const result = await selectSemanticWriteNeighbors([0, 1], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') });
+  expect(reads).toBe(1); expect(result.neighbors[0].candidate).toBe(changed);
+});
+
+it('withdraws an adopted team projection without reading its vector after membership loss', async () => {
+  const f = fixture(['team-a'], { captureSources: true }); let allowed = true, reads = 0;
+  const team = Object.defineProperty(row('team', { uid: 'bob', teamId: 'team-a' }), 'embedding', { get() { if (!allowed) throw Error('Read revoked vector'); reads++; return [1, 0]; } });
+  f.adopt('crew', reset([team])); expect((await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice', 'team-a') })).count).toBe(1);
+  allowed = false; f.corpus.setTeams(new Set()); expect((await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') })).count).toBe(0); expect(reads).toBe(1);
+});
+
+it('rebuilds source precedence when an earlier reserved source commits after a live indexed source', async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }), paused = vi.fn(() => gate), f = fixture([], { captureSources: true, publicationYieldTask: paused });
+  const patch = reset(Array.from({ length: 300 }, (_, at) => row('n' + at, { uid: at ? 'other' : 'alice' })));
+  const pending = f.publication.applyControlled('first', patch, { isCurrent: () => true, priority: 7, afterCommit: () => f.corpus.adoptPublicationSource('first', f.publication.captureSource('first'), patch) });
+  await vi.waitFor(() => expect(paused).toHaveBeenCalled()); f.adopt('second', reset([row('second')]), 7);
+  expect((await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') })).neighbors.map(hit => hit.candidate.id)).toEqual(['second']);
+  release(); await pending; const result = await selectSemanticWriteNeighbors([1, 0], await f.snapshot(), { eligible: semanticCandidateEligibility('alice') });
+  expect(result.neighbors.map(hit => hit.candidate.id)).toEqual(['n0', 'second']); expect(f.workers).toHaveLength(2); expect(f.workers[0].terminate).toHaveBeenCalledOnce();
+});
 
 describe('persistent semantic write corpus', () => {
   it('keeps an ascending merged view and the separate listener order and variant in one Worker', async () => {

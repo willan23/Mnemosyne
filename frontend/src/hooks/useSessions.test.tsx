@@ -262,6 +262,20 @@ describe('session cache authorization', () => {
     await waitFor(() => expect(result.current.sessions.map(row => row.id)).toEqual(['bob']));
     expect(oldReads).toBe(8); expect(Array.from(result.current.allSessions).every(row => row.uid === 'bob')).toBe(true);
   });
+  it('retains the complete initial lease when a later SDK edit arrives before publication commits', async () => {
+    const { result } = renderHook(() => useSessions(alice, '', filters)); let resume!: () => void, first = true;
+    const gate = new Promise<void>(resolve => { resume = resolve; }), apply = IncrementalMemoryPublication.prototype.applyControlled;
+    const spy = vi.spyOn(IncrementalMemoryPublication.prototype, 'applyControlled').mockImplementation(function (this: IncrementalMemoryPublication<{ id: string; timestamp: number }>, ...args) {
+      if (first && args[0] === 'personal') { first = false; return gate.then(() => apply.apply(this, args)); }
+      return apply.apply(this, args);
+    });
+    try {
+      const docs = Array.from({ length: 300 }, (_, at) => doc('p' + at)); await act(async () => state.listeners[0]({ docs })); await waitFor(() => expect(spy).toHaveBeenCalledOnce());
+      const next = [...docs]; next[50] = doc('p50', { text: 'latest edit' }); await act(async () => state.listeners[0]({ docs: next, changedIds: ['p50'] }));
+      await waitFor(() => expect(result.current.sessions).toHaveLength(300)); expect(result.current.sessions.find(row => row.id === 'p50')?.text).toBe('latest edit');
+      await act(async () => resume()); expect(result.current.sessions).toHaveLength(300); expect(result.current.sessions.find(row => row.id === 'p50')?.text).toBe('latest edit');
+    } finally { resume(); spy.mockRestore(); }
+  });
   it('routes a mixed persisted snapshot by actual model without requiring a local profile selection', async () => {
     const vector = new Array(384).fill(0); vector[0] = 1;
     state.embed.mockResolvedValue(vector);

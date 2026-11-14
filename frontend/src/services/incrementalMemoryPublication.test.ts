@@ -260,3 +260,104 @@ it('fails closed if an existing source priority changes or a source key is empty
   expect(() => publisher.apply('source', empty(), 3)).toThrow('memory_publication_unavailable'); expect(publisher.count).toBe(0);
   expect(() => publisher.apply('', empty())).toThrow('memory_publication_unavailable'); expect(await published(publisher)).toEqual([]);
 });
+
+it('captures canonical raw source versions without following later value or order mutations', () => {
+  const publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true });
+  const a = value('a'), b = value('b'); publisher.apply('source', reset([a, b]), 7);
+  publisher.apply('source', { changed: [{ id: 'c', value: null }], removed: [], order: { changes: [{ id: 'c', type: 'added', oldIndex: -1, newIndex: 2 }] } });
+  const first = publisher.captureSource('source')!;
+  publisher.apply('source', modified(value('b', 2, 'revised'), 1, 0));
+  const second = publisher.captureSource('source')!;
+  expect(first.count).toBe(3); expect(first.priority).toBe(7); expect(first.ordinal).toBe(0);
+  expect([...first.orderedRows()]).toEqual([{ id: 'a', value: a }, { id: 'b', value: b }, { id: 'c', value: null }]);
+  expect([...second.orderedRows()].map(row => row.id)).toEqual(['b', 'a', 'c']); expect(second.get('b')?.text).toBe('revised'); expect(first.get('b')).toBe(b);
+  publisher.removeSource('source'); expect([...first.orderedRows()]).toHaveLength(3); expect(publisher.captureSource('source')).toBeUndefined(); publisher.clear();
+});
+
+it('preserves source ordinal gaps and retains only the canonical IDs after a reset', () => {
+  const publisher = new IncrementalMemoryPublication<Value>('asc', { sourceBase: 2, captureSources: true });
+  publisher.apply('removed', reset([value('x')])); publisher.removeSource('removed'); publisher.apply('current', reset([value('a'), value('b')]));
+  const before = publisher.captureSource('current')!; publisher.apply('current', reset([value('fresh')]));
+  const after = publisher.captureSource('current')!; expect(after.ordinal).toBe(1); expect(after.priority).toBe(3); expect(after.count).toBe(1); expect(after.get('a')).toBeUndefined();
+  expect([...after.orderedRows()].map(row => row.id)).toEqual(['fresh']); expect([...before.orderedRows()].map(row => row.id)).toEqual(['a', 'b']); publisher.clear();
+});
+
+it('retires held raw source lookups and iterators with the publication scope', () => {
+  const publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true }); publisher.apply('source', reset([value('a'), value('b')]));
+  const captured = publisher.captureSource('source')!, iterator = captured.orderedRows(); expect(iterator.next().value?.id).toBe('a'); publisher.clear();
+  expect(captured.active()).toBe(false); expect(() => captured.get('b')).toThrow('memory_publication_unavailable'); expect(() => iterator.next()).toThrow('memory_publication_unavailable');
+  publisher.apply('fresh', reset([value('fresh')])); expect(captured.active()).toBe(false); expect(publisher.captureSource('fresh')?.get('fresh')?.id).toBe('fresh'); publisher.clear();
+});
+
+it('publishes a prepared source atomically and rebases other sources, exclusions and local overrides', async () => {
+  const gate = deferred(), pause = vi.fn(() => gate.promise), publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true, yieldTask: pause }), reference = new FullMergeReference('asc');
+  const legacy = reset([value('legacy'), value('shared')]); publisher.apply('legacy', legacy, 0); reference.apply('legacy', legacy, 0);
+  const old = publisher.snapshot(), rows = Array.from({ length: 300 }, (_, at) => value('n' + at)), patch = reset(rows), beforeCommit = vi.fn(() => true), afterCommit = vi.fn();
+  const pending = publisher.applyControlled('personal', patch, { isCurrent: () => true, priority: 1, beforeCommit, afterCommit });
+  await vi.waitFor(() => expect(pause).toHaveBeenCalled()); expect([...publisher.snapshot()]).toEqual(reference.rows()); expect(publisher.captureSource('personal')).toBeUndefined(); expect(beforeCommit).not.toHaveBeenCalled();
+  const other = reset([value('other')]), local = reset([value('n6', 1, 'local winner')]);
+  publisher.apply('team', other, 2); publisher.apply('local', local, 100); publisher.exclude('personal', 'n5', true); publisher.exclude('legacy', 'shared', true);
+  const liveBefore = [...publisher.snapshot()], previous = publisher.snapshot(); gate.resolve(); const delta = await pending;
+  reference.apply('personal', patch, 1); reference.apply('team', other, 2); reference.apply('local', local, 100); reference.exclude('personal', 'n5', true); reference.exclude('legacy', 'shared', true);
+  expect([...publisher.snapshot()]).toEqual(reference.rows()); assertDelta(delta, liveBefore, reference.rows()); expect([...old].map(row => row.id)).toEqual(['legacy', 'shared']);
+  expect(memorySnapshotDelta(previous, publisher.snapshot())).toBeUndefined(); expect(beforeCommit).toHaveBeenCalledOnce(); expect(afterCommit).toHaveBeenCalledOnce(); publisher.clear();
+});
+
+it('cancels held preparation on scope retirement without waiting for the underlying scheduler', async () => {
+  const gate = deferred(), pause = vi.fn(() => gate.promise), publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true, yieldTask: pause });
+  publisher.apply('old', reset([value('old')])); const raw = publisher.captureSource('old')!, previous = publisher.snapshot();
+  const pending = publisher.applyControlled('new', reset(Array.from({ length: 300 }, (_, at) => value('n' + at))), { isCurrent: () => true }), rejected = expect(pending).rejects.toThrow('memory_publication_unavailable');
+  await vi.waitFor(() => expect(pause).toHaveBeenCalled()); publisher.clear(); await rejected;
+  expect(raw.active()).toBe(false); expect(() => previous.get('old')).toThrow(); publisher.apply('fresh', reset([value('fresh')])); gate.resolve(); await Promise.resolve();
+  expect([...publisher.snapshot()].map(row => row.id)).toEqual(['fresh']); publisher.clear();
+});
+
+it('keeps a later synchronous write to the prepared source when the old transaction is cancelled', async () => {
+  const gate = deferred(), pause = vi.fn(() => gate.promise), publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true, yieldTask: pause });
+  publisher.apply('source', reset([value('a'), value('b')]));
+  const pending = publisher.applyControlled('source', reset(Array.from({ length: 300 }, (_, at) => value('n' + at))), { isCurrent: () => true }), rejected = expect(pending).rejects.toThrow('memory_publication_unavailable');
+  await vi.waitFor(() => expect(pause).toHaveBeenCalled()); const latest = value('a', 1, 'latest'); publisher.apply('source', modified(latest, 0, 0)); await rejected;
+  gate.resolve(); await Promise.resolve(); expect([...publisher.snapshot()]).toEqual([latest, value('b')]); publisher.clear();
+});
+
+it('does not lose a mutation performed by a commit callback and does not expose malformed private state', async () => {
+  const publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true, yieldTask: async () => {} }); publisher.apply('live', reset([value('live')]));
+  await expect(publisher.applyControlled('new', reset(Array.from({ length: 300 }, (_, at) => value('n' + at))), { isCurrent: () => true, beforeCommit: () => { publisher.apply('other', reset([value('other')])); return true; } })).rejects.toThrow();
+  expect([...publisher.snapshot()].map(row => row.id)).toEqual(['live', 'other']);
+  const invalid = reset(Array.from({ length: 300 }, (_, at) => value('n' + at))); invalid.order.reset = [...invalid.order.reset!, 'n0'];
+  await expect(publisher.applyControlled('bad', invalid, { isCurrent: () => true })).rejects.toThrow(); expect([...publisher.snapshot()].map(row => row.id)).toEqual(['live', 'other']); publisher.clear();
+});
+
+it('retains reserved source precedence when a newer guarded request replaces initial preparation', async () => {
+  const gate = deferred(), pause = vi.fn(() => gate.promise), publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true, yieldTask: pause }); let active = true;
+  const pending = publisher.applyControlled('first', reset(Array.from({ length: 300 }, (_, at) => value('n' + at))), { isCurrent: () => active }), rejected = expect(pending).rejects.toThrow();
+  await vi.waitFor(() => expect(pause).toHaveBeenCalled()); publisher.apply('second', reset([value('second')])); active = false; gate.resolve(); await rejected;
+  await publisher.applyControlled('first', reset(Array.from({ length: 300 }, (_, at) => value('n' + at))), { isCurrent: () => true });
+  expect(publisher.captureSource('first')?.priority).toBe(0); expect(publisher.captureSource('first')?.ordinal).toBe(0); expect(publisher.captureSource('second')?.ordinal).toBe(1);
+  expect([...publisher.snapshot()].at(-1)?.id).toBe('second'); publisher.clear();
+});
+
+it.each(['asc', 'desc'] as const)('matches the full merge oracle across large controlled %s resets and synchronous mutations', async direction => {
+  const publisher = new IncrementalMemoryPublication<Value>(direction, { sourceBase: 2, captureSources: true, yieldTask: async () => {} }), reference = new FullMergeReference(direction, 2);
+  let seed = 731; const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
+  const keys = ['first', 'second', 'third'];
+  for (let step = 0; step < 40; step++) {
+    const key = keys[random() % keys.length], ids = Array.from({ length: 120 }, (_, at) => 'n' + ((at + step * 17) % 200));
+    for (let at = ids.length - 1; at > 0; at--) { const to = random() % (at + 1); [ids[at], ids[to]] = [ids[to], ids[at]]; }
+    const patch: MemoryPublicationPatch<Value> = { changed: ids.map(id => ({ id, value: random() % 7 === 0 ? null : value(id, random() % 4, key + ':' + step) })), removed: [], order: { reset: ids, changes: [] } };
+    const before = reference.rows(), delta = await publisher.applyControlled(key, patch, { isCurrent: () => true }); reference.apply(key, patch);
+    expect([...publisher.snapshot()]).toEqual(reference.rows()); assertDelta(delta, before, reference.rows());
+    const id = ids[random() % ids.length], excluded = step % 3 !== 0; publisher.exclude(key, id, excluded); reference.exclude(key, id, excluded);
+    if (step % 9 === 8) { const removed = keys[(keys.indexOf(key) + 1) % keys.length]; publisher.removeSource(removed); reference.removeSource(removed); }
+    expect([...publisher.snapshot()]).toEqual(reference.rows());
+  }
+  publisher.clear();
+});
+
+it('bounds replay backlog and preserves the visible state when excess concurrent mutations cancel preparation', async () => {
+  const gate = deferred(), pause = vi.fn(() => gate.promise), publisher = new IncrementalMemoryPublication<Value>('asc', { captureSources: true, yieldTask: pause }); publisher.apply('live', reset([value('live')]));
+  const pending = publisher.applyControlled('new', reset(Array.from({ length: 300 }, (_, at) => value('n' + at))), { isCurrent: () => true }), rejected = expect(pending).rejects.toThrow();
+  await vi.waitFor(() => expect(pause).toHaveBeenCalled());
+  for (let at = 0; at < 20_100; at++) publisher.exclude('new', 'n0', at % 2 === 0);
+  await rejected; expect([...publisher.snapshot()].map(row => row.id)).toEqual(['live']); gate.resolve(); publisher.clear();
+});

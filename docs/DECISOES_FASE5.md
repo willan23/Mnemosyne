@@ -1,5 +1,13 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Publicação inicial atómica — 14 de novembro de 2026
+
+A [publicação inicial](PUBLICACAO_ATOMICA_2026-11-14.md) prepara fontes grandes em estado privado com pausas e adoção conjunta. A vista anterior continua utilizável; alterações pequenas concorrentes são reproduzidas, e retirada de acesso cancela a preparação. O corpus semântico adota as mesmas raízes imutáveis sem um segundo percurso síncrono. Os dois hooks reais confirmam o lease SDK apenas no commit e conservam a recuperação perante snapshots sobrepostos.
+
+Passaram **2432 testes frontend/251 ficheiros**, 172 focados/6, build/identidade, lint zero erros/21 avisos e 23 contratos. Dez ensaios browser sem pedidos externos. Com 100.000 notas/vetores sintéticos e Worker real, verificou atomicidade, criação/eliminação concorrentes, retirada e uma projeção por edição; publicação 4140.4 ms e intervalo máximo de heartbeat 66.5 ms. Não é aceitação de SDK/cofre, aplicação completa, modelos ou dispositivos.
+
+Continuam captura SDK real, cópias/reconciliações O(N), arranque/churn/memória em aplicação completa, qualidade representativa e rollout. Backend/regras/auditorias reutilizados por hashes; Google conservado sem inferência paga. Fases 0–6 abertas, **49 switches fechados e sem deploy**. Prova: atomic-publication-local-validation-20261114.json. Os blocos seguintes conservam a cronologia.
+
 ## Mapeamento controlado dos snapshots — 14 de novembro de 2026
 
 O [mapeamento inicial](MAPEAMENTO_SNAPSHOTS_2026-11-14.md) passa a oito trabalhos em curso por listener/geração, com pausas e coleta em blocos de 128. Documentos ainda em fila deixam de ser lidos quando são removidos, substituídos ou retirados com a conta/chaves. Conservam-se ordem, leases completos, deltas e recuperação.

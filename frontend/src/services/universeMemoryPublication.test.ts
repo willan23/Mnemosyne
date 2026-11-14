@@ -24,10 +24,10 @@ const row = (id: string, extra: Partial<MemoryObject> = {}): MemoryObject => ({ 
   celestialType: 'planet', position: [0, 0, 0], importance: .5, connections: [], embedding: [1, 0], embeddingModel: CURRENT_EMBEDDING_SPACE, ...extra });
 const live: Array<() => void> = [];
 afterEach(() => { useUniverseStore.getState().loadMemories([]); for (const clear of live.splice(0)) clear(); localStorage.clear(); vi.restoreAllMocks(); });
-function fixture(deletions = new Map<string, UniverseDeletionRecord>()) {
+function fixture(deletions = new Map<string, UniverseDeletionRecord>(), yieldTask?: () => Promise<void>) {
   let current = true, sequence = 0;
   const teams = new Set(['crew', 'other']), tombstones = new Set<string>(), changed = vi.fn();
-  const publication = new IncrementalMemoryPublication<MemoryObject>('asc', { sourceBase: 2 }), worker = new IndexWorker();
+  const publication = new IncrementalMemoryPublication<MemoryObject>('asc', { sourceBase: 2, captureSources: true, yieldTask }), worker = new IndexWorker();
   const semantic = new IndexedSemanticWriteCorpus<MemoryObject>({ uid: 'alice', teamIds: teams }, id => publication.get(id), () => worker as unknown as Worker, { direction: 'asc', sourceBase: 2 });
   const owner = new UniverseMemoryPublication({ uid: 'alice', publication, semantic, isCurrent: () => current, teams: () => teams, changed, tombstones, deletions });
   live.push(() => { owner.clear(); publication.clear(); semantic.clear(); });
@@ -51,6 +51,21 @@ it('requires genuine scope confirmations and uses their captured creation rather
   expect((await f.query()).count).toBe(1);
   const before = f.changed.mock.calls.length; useUniverseStore.getState().addMemory(row('confirmed'), token); expect(f.changed).toHaveBeenCalledTimes(before);
   expect(localStorage.getItem('mnemosyne-universe-preferences')).not.toContain('Synthetic');
+});
+
+it('reconciles local creation and deletion receipts received during a controlled personal snapshot', async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }), paused = vi.fn(() => gate), f = fixture(new Map(), paused);
+  const deleted = row('n7'); f.put('personal', [deleted]); f.put('legacy', [row('legacy')]);
+  const rows = Array.from({ length: 300 }, (_, at) => row('n' + at)), patch = { changed: rows.map(value => ({ id: value.id, value })), removed: [], order: { reset: rows.map(value => value.id), changes: [] } };
+  const values = new Map(rows.map(memory => [memory.id, { memory, tombstone: false, revision: 10 }])); f.owner.observedSnapshot('personal', 100);
+  const pending = f.owner.applyControlled('personal', patch, values, 100, { isCurrent: () => true, afterCommit: () => { f.publish(); } });
+  await vi.waitFor(() => expect(paused).toHaveBeenCalled());
+  const create = f.owner.created(row('draft', { text: 'local draft' }), 'n6')!; useUniverseStore.getState().addMemory(row('n6'), create);
+  const later = f.owner.created(row('later'), 'later')!; useUniverseStore.getState().addMemory(row('later'), later);
+  const remove = f.owner.deleted(deleted, 20)!; expect(useUniverseStore.getState().startDeletion('n7', 'supernova', remove)).toBe(true); useUniverseStore.getState().removeMemory('n7', remove);
+  expect((await f.query()).count).toBe(3); release(); await pending;
+  const final = useUniverseStore.getState().memories; expect(final).toHaveLength(301); expect(final.find(value => value.id === 'n6')).toBe(rows[6]); expect(final.some(value => value.id === 'n7')).toBe(false); expect(final.some(value => value.id === 'later')).toBe(true);
+  expect((await f.query()).count).toBe(301); expect(new Set(final.map(value => value.id)).size).toBe(final.length);
 });
 it('reconciles SDK before and after the creation acknowledgement without duplicate IDs or lost bindings', async () => {
   const f = fixture(), captured = row('placeholder'), authoritative = row('actual', { text: 'Authoritative', persistedStateDigest: 'b'.repeat(64) });

@@ -221,7 +221,7 @@ export function useUniverseMemories(accountReady = true) {
     publicationRef.current?.clear(); semanticCorpusRef.current?.clear();
     unsubscribeRefs.current.forEach((unsubscribe) => unsubscribe());
     const epoch = ++subscriptionEpochRef.current;
-    const publication = new IncrementalMemoryPublication<MemoryObject>('asc', { sourceBase: 2 });
+    const publication = new IncrementalMemoryPublication<MemoryObject>('asc', { sourceBase: 2, captureSources: true });
     publicationRef.current = publication;
     const semanticCorpus = new IndexedSemanticWriteCorpus<MemoryObject>({ uid, teamIds: new Set() }, id => publication.get(id), undefined, { direction: 'asc', sourceBase: 2 });
     semanticCorpusRef.current = semanticCorpus;
@@ -287,22 +287,16 @@ export function useUniverseMemories(accountReady = true) {
           const tombstone = data.deletedAt != null;
           return { memory: data.deletedAt ? null : await fromFirestore(data, docSnap.id, uid), tombstone, legacyPlaintext: false, revision: toMillis(data.updatedAt ?? data.deletedAt ?? data.timestamp, 0) };
         });
-        if (!isCurrent() || revision !== sessionsRevision || !lease.isCurrent()) return;
-        if (!lease.commit()) return;
-        if (lease.order.reset) {
-          for (const id of personalTombstonesRef.current) { personalTombstonesRef.current.delete(id); exclude(id, false); }
-        }
-        for (const id of lease.removed) {
-          personalTombstonesRef.current.delete(id);
-          exclude(id, false);
-        }
-        for (const { id, value } of lease.changed) {
-          if (value.tombstone) personalTombstonesRef.current.add(id); else personalTombstonesRef.current.delete(id);
-          exclude(id, value.tombstone);
-        }
-        local.apply('personal', universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), revision);
-        publishMemories();
-        setIsLoading(false);
+        const current = () => isCurrent() && revision === sessionsRevision && lease.isCurrent(); if (!current()) return;
+        await local.applyControlled('personal', universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), revision, {
+          isCurrent: current, beforeCommit: () => current() && lease.commit(),
+          beforeAuthority: () => {
+            if (lease.order.reset) for (const id of personalTombstonesRef.current) { personalTombstonesRef.current.delete(id); exclude(id, false); }
+            for (const id of lease.removed) { personalTombstonesRef.current.delete(id); exclude(id, false); }
+            for (const { id, value } of lease.changed) { if (value.tombstone) personalTombstonesRef.current.add(id); else personalTombstonesRef.current.delete(id); exclude(id, value.tombstone); }
+          },
+          afterCommit: () => { publishMemories(); setIsLoading(false); },
+        });
       })().catch(() => { if (revision === sessionsRevision) clearSessions(); });
     }, clearSessions);
 
@@ -333,21 +327,17 @@ export function useUniverseMemories(accountReady = true) {
           return { memory: await fromFirestore(data, docSnap.id, uid), tombstone: false,
             legacyPlaintext: isLegacyNestedMemoryCandidate(data, uid), revision: toMillis(data.updatedAt ?? data.timestamp, 0) };
         });
-        if (!isCurrent() || revision !== legacyRevision || !lease.isCurrent()) return;
-        if (!lease.commit()) return;
-        if (lease.order.reset) { legacyFlags.clear(); legacyCount = 0; }
-        for (const id of lease.removed) {
-          legacyCount -= Number(legacyFlags.get(id) ?? false);
-          legacyFlags.delete(id);
-        }
-        for (const { id, value } of lease.changed) {
-          legacyCount += Number(value.legacyPlaintext) - Number(legacyFlags.get(id) ?? false);
-          legacyFlags.set(id, value.legacyPlaintext);
-        }
-        setLegacyPlaintextCount(legacyCount);
-        local.apply('legacy', universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), revision);
-        publishMemories();
-        setIsLoading(false);
+        const current = () => isCurrent() && revision === legacyRevision && lease.isCurrent(); if (!current()) return;
+        await local.applyControlled('legacy', universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), revision, {
+          isCurrent: current, beforeCommit: () => current() && lease.commit(),
+          beforeAuthority: () => {
+            if (lease.order.reset) { legacyFlags.clear(); legacyCount = 0; }
+            for (const id of lease.removed) { legacyCount -= Number(legacyFlags.get(id) ?? false); legacyFlags.delete(id); }
+            for (const { id, value } of lease.changed) { legacyCount += Number(value.legacyPlaintext) - Number(legacyFlags.get(id) ?? false); legacyFlags.set(id, value.legacyPlaintext); }
+            setLegacyPlaintextCount(legacyCount);
+          },
+          afterCommit: () => { publishMemories(); setIsLoading(false); },
+        });
       })().catch(() => { if (revision === legacyRevision) clearLegacy(); });
     }, clearLegacy);
 
@@ -424,12 +414,11 @@ export function useUniverseMemories(accountReady = true) {
               if (!teamCurrent()) throw new Error('Team snapshot changed');
               return { memory: await fromFirestore(data, docSnap.id, uid), tombstone: false, legacyPlaintext: false, revision: toMillis(data.updatedAt ?? data.timestamp, 0) };
             });
-            if (!teamCurrent() || snapshotRevision !== revision || !lease.isCurrent()) return;
-            if (!lease.commit()) return;
-            local.apply(`team:${team.id}`, universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), snapshotRevision);
-            publishMemories();
-            setIsLoading(false);
-            if (loadedEpochs.size) { loadedEpochs.clear(); notifyTeamKeysUpdated(); }
+            const current = () => teamCurrent() && snapshotRevision === revision && lease.isCurrent(); if (!current()) return;
+            await local.applyControlled(`team:${team.id}`, universeBucketPatch(lease), new Map(lease.changed.map(({ id, value }) => [id, value])), snapshotRevision, {
+              isCurrent: current, beforeCommit: () => current() && lease.commit(), afterCommit: () => { publishMemories(); setIsLoading(false); },
+            });
+            if (teamCurrent() && loadedEpochs.size) { loadedEpochs.clear(); notifyTeamKeysUpdated(); }
           })().catch(() => { if (snapshotRevision === revision) clearTeam(); });
         }, clearTeam);
         teamQueryUnsubsRef.current.push(() => {
