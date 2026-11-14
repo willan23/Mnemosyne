@@ -1,5 +1,11 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Perfil do SDK e do transporte — 14 de novembro de 2026
+
+O [diagnóstico com SDK real](PERFIL_SDK_FIRESTORE_2026-11-14.md) identificou 5.000 mensagens/documentos recebidos numa edição de uma única nota, cerca de 46 MB neste emulador, embora o hook mapeie apenas a nota alterada. Cinco perfis com emulador novo verificaram carga/edição/logout. O long polling forçado não eliminou esse volume e não foi ativado no produto.
+
+O ensaio de 100.000 notas, o desempenho/estabilidade da aplicação completa e dispositivos continuam por aceitar. As pausas observadas não justificam atribuir o problema apenas à publicação atómica, nem generalizar o comportamento do emulador a produção. Qualidade representativa, instaladores e rollout também permanecem pendentes. As fontes/artefactos anteriores estão intactos; 2.432 testes frontend/251 ficheiros e restante validação são reutilizados por hashes, sem nova execução. Fases 0–6 abertas, 49 gates falsos, sem deploy. Prova: sdk-profile-local-validation-20261114.json. Os blocos seguintes conservam a cronologia.
+
 ## Publicação inicial atómica — 14 de novembro de 2026
 
 A [publicação inicial](PUBLICACAO_ATOMICA_2026-11-14.md) prepara fontes grandes em estado privado com pausas e adoção conjunta. A vista anterior continua utilizável; alterações pequenas concorrentes são reproduzidas, e retirada de acesso cancela a preparação. O corpus semântico adota as mesmas raízes imutáveis sem um segundo percurso síncrono. Os dois hooks reais confirmam o lease SDK apenas no commit e conservam a recuperação perante snapshots sobrepostos.

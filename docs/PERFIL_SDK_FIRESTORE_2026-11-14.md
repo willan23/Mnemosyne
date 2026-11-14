@@ -1,0 +1,23 @@
+# Perfil do SDK e do transporte Firestore — 14 de novembro de 2026
+
+O piloto funcional anterior confirmou os hooks com 5.000 notas, mas observou pausas de heartbeat até cerca de 1,3 segundos. Cinco ensaios de diagnóstico recolheram perfis de CPU e tarefas longas, sempre com emulador novo por hook/tentativa, Auth/Firestore reais, fontes de produção intactas e dados/atores sintéticos. Cada nota tem envelope cifrado distinto e um vetor próprio de 384 dimensões. A criação dos dados está fora da medição; o tempo de edição inclui construção de novo envelope e o RPC Admin local. A amostragem de CPU e a recolha de rede perturbam os tempos: não são SLO, comparação estatística ou aceitação da aplicação completa.
+
+| Ensaio de sessões, 5.000 notas | Transporte padrão | Long polling forçado, só no instrumento |
+| --- | ---: | ---: |
+| Carga inicial | 7932.9 ms | 6018.1 ms |
+| Maior intervalo de heartbeat inicial | 1857.0 ms | 1362.5 ms |
+| Edição, incluindo o RPC local | 3582.8 ms | 2323.5 ms |
+| Mapeamentos da edição no hook | 1 | 1 |
+| Bytes de resposta recebidos durante a edição | 45826749 | 45799130 |
+
+A instrumentação CDP conta bytes recebidos, sem guardar corpos, cookies ou tokens. Uma quinta execução contou as mensagens já analisadas pelo JSON.parse do SDK: a carga recebeu 5.000 mensagens/IDs distintos e a edição recebeu novamente **5.000 mensagens/IDs distintos**, com 45803502 caracteres analisados. O hook mapeou só a nota modificada, verificou o texto novo e manteve a vista anterior imutável. O contador retém apenas o total de mensagens e o tamanho do conjunto de IDs nos relatórios, sem copiar conteúdos de notas. Este resultado local explica por que uma edição pequena ainda coincide com trabalho volumoso do SDK; não demonstra que o backend de produção tenha o mesmo comportamento.
+
+Os perfis de ambos os hooks mostram custo significativo em processamento de eventos/documentos do Firestore, parsing WebChannel e GC. O perfil inicial de sessões também identifica trabalho próprio em canonicalSyncState/metadados derivados. As edições têm poucas amostras no código de publicação da aplicação, ao contrário do SDK. Tempos inclusivos podem sobrepor-se e não devem ser somados; a amostragem não atribui todo o tempo de espera, trabalho nativo ou memória a uma função. Capturas e perfis completos ficam na evidência privada, vinculados aos bundles por hashes.
+
+As cinco execuções concluíram a carga, a edição com uma leitura e o logout com invalidação dos handles antigos; não repetiram churn ou consulta semântica, já cobertos no piloto funcional anterior. Nesta execução com emuladores novos não surgiram avisos de backlog nos logs nem erros de console do browser. A diferença relativamente aos avisos do piloto anterior é compatível com problemas após terminar listeners, mas a causa desses avisos não foi provada. Há relatos primários relacionados em [Firebase #5197](https://github.com/firebase/firebase-tools/issues/5197) e [Firebase #11290](https://github.com/firebase/firebase-tools/issues/11290).
+
+A opção pública [experimentalForceLongPolling](https://firebase.google.com/docs/reference/js/firestore.firestoresettings#firestoresettingsexperimentalforcelongpolling) foi comparada apenas no instrumento, sem alterar os outros parâmetros ou reduzir os dados. Não eliminou a receção de cerca de 46 MB numa edição. A variação dos tempos entre uma execução de cada braço não justifica alterar a configuração de produção. O transporte e o código do produto permanecem conservados.
+
+O ensaio real de 100.000 notas continua **não aceite**: o emulador abortou com 10001 mensagens pendentes antes de completar essa validação. Não se elevou esse limite, não se truncou o ensaio e não se promoveu o diagnóstico de 5.000 a aceitação de 100.000. É necessário validar o transporte/destino isolado de grande volume e, depois, a aplicação completa, pressão de memória, churn prolongado e dispositivos representativos. Qualidade por idioma/modelo, instaladores finais e rollout também permanecem pendentes.
+
+O risco investigado é bloquear a interface durante leitura/indexação de um cofre grande. A instrumentação usa apenas projeto demo e rede local, sem credenciais do operador, inferência paga ou dados reais do cofre. A alteração deste incremento é documental; não muda schema, rules, índices, TTL ou dados de produção e não requer migração. Rollback documental: repor o candidato anterior. Os 2.432 testes frontend/251 ficheiros, 172 focados/6, dez ensaios browser e restantes validações da prova pai são conservados por hashes, sem repetir essas baterias. Fases 0–6 abertas, 49 gates falsos, PR em rascunho, sem merge/deploy. Prova: sdk-profile-local-validation-20261114.json e W:/real/mnemosyne-launch-evidence/sdk-profile-20261114/.
