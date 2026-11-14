@@ -1,5 +1,13 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Mapeamento controlado dos snapshots — 14 de novembro de 2026
+
+O [mapeamento inicial](MAPEAMENTO_SNAPSHOTS_2026-11-14.md) passa a oito trabalhos em curso por listener/geração, com pausas e coleta em blocos de 128. Documentos ainda em fila deixam de ser lidos quando são removidos, substituídos ou retirados com a conta/chaves. Conservam-se ordem, leases completos, deltas e recuperação.
+
+Passaram **2413 testes frontend/251 ficheiros**, 109 focados/3, build/identidade, lint zero erros/21 avisos e 23 contratos. Oito ensaios browser sem pedidos externos. Com 100.000 envelopes sintéticos e criptografia real, confirmou oito trabalhos em curso e uma leitura numa edição. SDK/Auth são sintéticos; não é aceitação de aplicação completa ou nativos.
+
+A publicação inicial continua síncrona e significativa; atomicidade da preparação/publicação, SDK real, churn/memória, qualidade representativa, rollout, CI e instaladores finais continuam pendentes. Backend/regras/auditorias reutilizados por hashes; Google conservado sem inferência paga. Fases 0–6 abertas, **49 switches fechados e sem deploy**. Prova: snapshot-mapping-local-validation-20261114.json. Os blocos seguintes conservam a cronologia.
+
 ## Órbitas partilhadas e ciclos — 14 de novembro de 2026
 
 As [órbitas no Worker](ORBITAS_WORKER_2026-11-14.md) retiram dos frames as procuras de pais no cofre e partilham posições entre corpos, linhas, câmara, hover e constelações. Conservam as 138 amostras acíclicas capturadas da versão anterior, resolvem ciclos sem recursão e retiram frames/trabalho com o acesso. Uma edição de metadados projeta uma linha sem enumerar a origem; o desenho contínuo pausa durante preparação.

@@ -242,13 +242,25 @@ describe('session cache authorization', () => {
     });
     try {
       await act(async () => state.listeners[0]({ docs: Array.from({ length: 300 }, (_, i) => doc('p' + i)) }));
-      expect(spy).toHaveBeenCalledOnce();
+      await waitFor(() => expect(spy).toHaveBeenCalledOnce());
       rerender({ user: { uid: 'bob' } as User });
       await act(async () => resume());
       expect(Array.from(result.current.allSessions)).toEqual([]);
       await act(async () => state.listeners[1]({ docs: [doc('bob', { uid: 'bob' })] }));
       await waitFor(() => expect(result.current.sessions.map(row => row.id)).toEqual(['bob']));
     } finally { spy.mockRestore(); }
+  });
+  it('stops queued document reads when the account changes during the first mapping batch', async () => {
+    const { result, rerender } = renderHook(({ user }) => useSessions(user, '', filters), { initialProps: { user: alice } });
+    let oldReads = 0;
+    act(() => {
+      state.listeners[0]({ docs: Array.from({ length: 1000 }, (_, i) => ({ id: 'old' + i, data: () => { oldReads++; return { uid: 'alice', teamId: null, text: 'Synthetic private text', timestamp: i }; } })) });
+      rerender({ user: { uid: 'bob' } as User });
+    });
+    expect(oldReads).toBe(8);
+    await act(async () => state.listeners[1]({ docs: [doc('bob', { uid: 'bob' })] }));
+    await waitFor(() => expect(result.current.sessions.map(row => row.id)).toEqual(['bob']));
+    expect(oldReads).toBe(8); expect(Array.from(result.current.allSessions).every(row => row.uid === 'bob')).toBe(true);
   });
   it('routes a mixed persisted snapshot by actual model without requiring a local profile selection', async () => {
     const vector = new Array(384).fill(0); vector[0] = 1;

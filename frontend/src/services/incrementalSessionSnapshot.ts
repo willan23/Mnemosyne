@@ -1,3 +1,6 @@
+import { createCognitiveAnalysisYield as createControlledYield } from './cognitiveAnalysisYield';
+import { cancelQueuedSnapshotMapping, readSnapshotMapping, SnapshotMappingQueue, SNAPSHOT_MAPPING_LIMITS, type SnapshotMapping } from './snapshotMappingQueue';
+
 export type SessionSnapshotChangeType = 'added' | 'modified' | 'removed';
 
 export interface SessionSnapshotChange<D extends { id: string }> {
@@ -30,7 +33,7 @@ export interface SessionSnapshotLease<T> {
 /** Full rebuilds use one reset; only subsequent uncommitted movements consume this budget. */
 export const INCREMENTAL_SESSION_SNAPSHOT_LIMITS = Object.freeze({ pendingOrderChanges: 20_000 });
 const unavailable = () => new Error('incremental_snapshot_unavailable');
-type Entry<T> = { promise: Promise<T> };
+type Entry<T> = SnapshotMapping<T>;
 
 /** Per-listener cache; reset it whenever account, keys or team scope changes. */
 export class IncrementalSessionSnapshot<T> {
@@ -46,6 +49,13 @@ export class IncrementalSessionSnapshot<T> {
   private initialized = false;
   private generation = 0;
   private revision = 0;
+  private mappings: SnapshotMappingQueue<T>;
+  private controlled = createControlledYield();
+  private readonly options: { yieldTask?: () => Promise<void> };
+  constructor(options: { yieldTask?: () => Promise<void> } = {}) {
+    this.options = options;
+    this.mappings = new SnapshotMappingQueue<T>(options.yieldTask);
+  }
 
   /** Retire cached plaintext/promises and every outstanding lease. */
   reset(): void {
@@ -55,6 +65,8 @@ export class IncrementalSessionSnapshot<T> {
   }
 
   private invalidate(): void {
+    this.mappings.retire(); this.mappings = new SnapshotMappingQueue<T>(this.options.yieldTask);
+    this.controlled.cancel(); this.controlled = createControlledYield();
     // Keep IDs only so recovery can remove records omitted by its replacement snapshot.
     for (const id of this.entries.keys()) this.recoveryIds.add(id);
     for (const id of this.removed) this.recoveryIds.add(id);
@@ -66,16 +78,15 @@ export class IncrementalSessionSnapshot<T> {
 
   private mapChanged<D extends { id: string }>(doc: D, mapper: (doc: D) => Promise<T>): void {
     const id = doc.id;
-    let promise: Promise<T>;
-    try { promise = Promise.resolve(mapper(doc)); }
-    catch (error) { promise = Promise.reject(error); }
-    const entry = { promise }, generation = this.generation;
-    this.entries.set(id, entry);
-    this.dirty.add(id); this.removed.delete(id);
-    void promise.catch(() => {
-      // Replaced/removed work cannot destroy a newer value or a later vault scope.
+    const previous = this.entries.get(id); if (previous) cancelQueuedSnapshotMapping(previous);
+    const generation = this.generation;
+    const entry = this.mappings.enqueue(id, () => mapper(doc), () => {
+      // A replaced/removed failure cannot retire the newer mapping or vault scope.
       if (generation === this.generation && this.entries.get(id) === entry) this.invalidate();
     });
+    if (generation !== this.generation) throw unavailable();
+    this.entries.set(id, entry);
+    this.dirty.add(id); this.removed.delete(id);
   }
 
   private rebuild<D extends { id: string }>(snapshot: SessionSnapshotInput<D>, mapper: (doc: D) => Promise<T>): void {
@@ -108,6 +119,7 @@ export class IncrementalSessionSnapshot<T> {
         if (type === 'removed' || oldIndex !== newIndex) this.ids.splice(oldIndex, 1);
       } else throw unavailable();
       if (type === 'removed') {
+        cancelQueuedSnapshotMapping(this.entries.get(id)!);
         this.entries.delete(id); this.dirty.delete(id); this.removed.add(id);
       } else {
         if (type === 'added' || oldIndex !== newIndex) this.ids.splice(newIndex, 0, id);
@@ -129,11 +141,18 @@ export class IncrementalSessionSnapshot<T> {
     try {
       if (this.initialized) this.applyChanges(snapshot, mapper);
       else this.rebuild(snapshot, mapper);
-      const pending = [...this.dirty].map(id => ({ id, entry: this.entries.get(id)! }));
+      const pending = Array.from(this.dirty, id => this.entries.get(id)!);
       const removed = [...this.removed];
       const order = { ...(this.orderReset ? { reset: this.orderReset } : {}), changes: this.movements.map(change => ({ ...change })) };
-      const changed = await Promise.all(pending.map(async ({ id, entry }) => ({ id, value: await entry.promise })));
       const isCurrent = () => generation === this.generation && revision === this.revision;
+      const changed: SessionSnapshotLease<T>['changed'] = [];
+      for (let at = 0; at < pending.length; at += SNAPSHOT_MAPPING_LIMITS.batch) {
+        changed.push(...await Promise.all(pending.slice(at, at + SNAPSHOT_MAPPING_LIMITS.batch).map(async entry => ({ id: entry.id, value: await readSnapshotMapping(entry) }))));
+        if (at + SNAPSHOT_MAPPING_LIMITS.batch < pending.length) {
+          await (this.options.yieldTask?.() ?? this.controlled.yieldTask());
+          if (!isCurrent()) throw unavailable();
+        }
+      }
       let committed = false;
       return { changed, removed, order, isCurrent, commit: () => {
         if (committed || !isCurrent()) return false;

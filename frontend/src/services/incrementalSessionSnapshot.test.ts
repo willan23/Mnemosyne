@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { IncrementalSessionSnapshot, INCREMENTAL_SESSION_SNAPSHOT_LIMITS,
   type SessionSnapshotChange, type SessionSnapshotInput, type SessionSnapshotLease } from './incrementalSessionSnapshot';
+import { SNAPSHOT_MAPPING_LIMITS } from './snapshotMappingQueue';
 
 it('preserves unchanged decrypted objects and vectors and remaps changed documents only', async () => {
   const cache = new IncrementalSessionSnapshot<{ id: string; embedding: number[] }>();
@@ -265,4 +266,66 @@ it('a full reset of 100000 documents does not consume the incremental movement b
   expect(mapper).toHaveBeenCalledTimes(100_000); expect(firstSnapshot.docChanges).not.toHaveBeenCalled(); expect(first.commit()).toBe(true);
   const next = await cache.prepare(delta([change('modified', 'n99999', 99_999, 99_999, 'edited')]), mapper);
   expect(next.changed).toEqual([{ id: 'n99999', value: 'edited' }]); expect(next.order.changes).toHaveLength(1);
+});
+
+it('bounds mapper concurrency and yields tasks while collecting a complete initial lease in source order', async () => {
+  let running = 0, peak = 0, started = 0, yields = 0;
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: async () => { yields++; } });
+  const docs = Array.from({ length: 1000 }, (_, at) => document('m' + at));
+  const pending = cache.prepare(snapshot(docs), async doc => {
+    started++; running++; peak = Math.max(peak, running); await Promise.resolve(); running--; return doc.id;
+  });
+  expect(started).toBe(SNAPSHOT_MAPPING_LIMITS.concurrency);
+  const lease = await pending;
+  expect(peak).toBe(SNAPSHOT_MAPPING_LIMITS.concurrency); expect(started).toBe(1000); expect(yields).toBeGreaterThan(0);
+  expect(lease.changed.map(row => row.value)).toEqual(docs.map(row => row.id)); expect(lease.commit()).toBe(true); cache.reset();
+});
+
+it('does not read removed or replaced queued documents and rejects their obsolete large lease', async () => {
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: async () => {} }), hold = deferred<void>(); let obsoleteReads = 0;
+  const docs = Array.from({ length: 10 }, (_, at) => document('m' + at));
+  for (const doc of docs.slice(8)) Object.defineProperty(doc, 'text', { get() { obsoleteReads++; throw Error('Read obsolete queued document'); } });
+  const mapper = async (doc: Doc) => { await hold.promise; return doc.text!; };
+  const initial = cache.prepare(snapshot(docs), mapper), rejected = expect(initial).rejects.toThrow('incremental_snapshot_unavailable');
+  const next = cache.prepare(delta([change('removed', 'm9', 9, -1), change('modified', 'm8', 8, 8, 'new-m8')]), mapper);
+  hold.resolve(); const lease = await next; await rejected;
+  expect(obsoleteReads).toBe(0); expect(lease.changed.map(row => row.value)).toEqual([...docs.slice(0, 8).map(row => row.id), 'new-m8']);
+  expect(lease.removed).toEqual(['m9']); expect(applyOrder(lease.order)).toEqual(docs.slice(0, 9).map(row => row.id)); expect(lease.commit()).toBe(true); cache.reset();
+});
+
+it('retires queued reads on reset and allows a new generation while old native mappings are still pending', async () => {
+  const cache = new IncrementalSessionSnapshot<string>(), hold = deferred<void>(); let reads = 0;
+  const initial = cache.prepare(snapshot(Array.from({ length: 1000 }, (_, at) => document('old' + at))), async doc => { reads++; await hold.promise; return doc.id; });
+  const rejected = expect(initial).rejects.toThrow('incremental_snapshot_unavailable');
+  expect(reads).toBe(8); cache.reset(); const fresh = await cache.prepare(snapshot([document('fresh')]), mapText); await rejected;
+  expect(fresh.changed).toEqual([{ id: 'fresh', value: 'fresh' }]); expect(fresh.commit()).toBe(true); hold.resolve();
+  await Promise.resolve(); await Promise.resolve(); expect(reads).toBe(8); expect((await cache.prepare(delta([]), mapText)).changed).toEqual([]); cache.reset();
+});
+
+it('one current mapper failure cancels all queued reads and rebuilds the next complete snapshot', async () => {
+  const cache = new IncrementalSessionSnapshot<string>(); let reads = 0;
+  const failed = cache.prepare(snapshot(Array.from({ length: 1000 }, (_, at) => document('m' + at))), async doc => { reads++; if (doc.id === 'm0') throw Error('failed mapping'); return doc.id; });
+  await expect(failed).rejects.toThrow('failed mapping'); expect(reads).toBe(8);
+  const recovered = await cache.prepare(snapshot([document('m500', 'recovered')]), mapText);
+  expect(recovered.changed).toEqual([{ id: 'm500', value: 'recovered' }]); expect(recovered.removed).toHaveLength(999); expect(recovered.commit()).toBe(true); cache.reset();
+});
+
+it('coalesces snapshots during queued initial mapping without losing a later edit, removal or insertion', async () => {
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: async () => {} }), hold = deferred<void>(), counts = new Map<string, number>();
+  const mapper = async (doc: Doc) => { const key = doc.text!; counts.set(key, (counts.get(key) ?? 0) + 1); await hold.promise; return key; };
+  const docs = Array.from({ length: 1000 }, (_, at) => document('m' + at));
+  const initial = cache.prepare(snapshot(docs), mapper), firstRejected = expect(initial).rejects.toThrow('incremental_snapshot_unavailable');
+  const edited = cache.prepare(delta([change('modified', 'm500', 500, 500, 'edited')]), mapper), editedRejected = expect(edited).rejects.toThrow('incremental_snapshot_unavailable');
+  const latest = cache.prepare(delta([change('removed', 'm600', 600, -1), change('added', 'new', -1, 999, 'new')]), mapper);
+  hold.resolve(); const lease = await latest; await Promise.all([firstRejected, editedRejected]);
+  const expected = docs.filter(row => row.id !== 'm600').map(row => row.id === 'm500' ? 'edited' : row.id).concat('new');
+  expect(lease.changed.map(row => row.value)).toEqual(expected); expect(applyOrder(lease.order)).toEqual(docs.filter(row => row.id !== 'm600').map(row => row.id).concat('new'));
+  expect(counts.has('m500') || counts.has('m600')).toBe(false); expect(counts.get('edited')).toBe(1); expect(counts.get('new')).toBe(1); expect(lease.removed).toEqual(['m600']); expect(lease.commit()).toBe(true); cache.reset();
+});
+
+it('does not insert an old entry when a mapper synchronously retires its generation', async () => {
+  const cache = new IncrementalSessionSnapshot<string>();
+  await expect(cache.prepare(snapshot([document('old')]), async () => { cache.reset(); return 'old'; })).rejects.toThrow('incremental_snapshot_unavailable');
+  const fresh = await cache.prepare(snapshot([document('fresh')]), mapText);
+  expect(fresh.changed).toEqual([{ id: 'fresh', value: 'fresh' }]); expect(fresh.order.reset).toEqual(['fresh']); expect(fresh.commit()).toBe(true); cache.reset();
 });

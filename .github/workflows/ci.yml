@@ -78,6 +78,9 @@ jobs:
       - name: Shared orbital frames, hidden parents, cycles and scope retirement in WebGL
         run: node scripts/orbit-layout-browser.cjs
         working-directory: .
+      - name: Bounded snapshot mapping with 100000 real encrypted synthetic memories
+        run: node scripts/snapshot-mapping-browser.cjs
+        working-directory: .
       - name: Private local memory activity, concurrency and export in Chromium
         run: node scripts/local-memory-activity-browser.cjs
         working-directory: .
