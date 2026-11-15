@@ -329,3 +329,86 @@ it('does not insert an old entry when a mapper synchronously retires its generat
   const fresh = await cache.prepare(snapshot([document('fresh')]), mapText);
   expect(fresh.changed).toEqual([{ id: 'fresh', value: 'fresh' }]); expect(fresh.order.reset).toEqual(['fresh']); expect(fresh.commit()).toBe(true); cache.reset();
 });
+
+it('returns control after one metadata batch before reading the remaining initial IDs', async () => {
+  const gate = deferred<void>(), seen = new Set<string>(); let first = true, docsReads = 0, mapped = 0;
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: () => { if (first) { first = false; return gate.promise; } return Promise.resolve(); } });
+  const docs = Array.from({ length: 1000 }, (_, at) => ({ get id() { seen.add('m' + at); return 'm' + at; } }));
+  const pending = cache.prepare({ get docs() { docsReads++; return docs; }, docChanges() { throw Error('initial changes'); } }, async doc => { mapped++; return doc.id; });
+  expect(seen.size).toBe(SNAPSHOT_MAPPING_LIMITS.batch); expect(mapped).toBe(8); expect(docsReads).toBe(1);
+  await Promise.resolve(); await Promise.resolve(); expect(mapped).toBe(8);
+  gate.resolve(); const lease = await pending; expect(lease.changed.map(row => row.value)).toEqual(Array.from({ length: 1000 }, (_, at) => 'm' + at));
+  expect(lease.commit()).toBe(true); cache.reset();
+});
+
+it('queues delta metadata while initial IDs are being captured and skips superseded queued document bodies', async () => {
+  const gate = deferred<void>(), counts = new Map<string, number>(); let first = true;
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: () => { if (first) { first = false; return gate.promise; } return Promise.resolve(); } });
+  const mapper = async (doc: Doc) => { counts.set(doc.text!, (counts.get(doc.text!) ?? 0) + 1); return doc.text!; };
+  const initial = cache.prepare(snapshot(Array.from({ length: 1000 }, (_, at) => document('m' + at))), mapper), rejected = expect(initial).rejects.toThrow('incremental_snapshot_unavailable');
+  const updated = delta([change('modified', 'm500', 500, 500, 'new-m500'), change('removed', 'm600', 600, -1)]);
+  const latest = cache.prepare(updated, mapper); expect(updated.docChanges).not.toHaveBeenCalled();
+  gate.resolve(); const lease = await latest; await rejected;
+  expect(counts.has('m500') || counts.has('m600')).toBe(false); expect(counts.get('new-m500')).toBe(1);
+  expect(lease.changed).toHaveLength(999); expect(lease.removed).toEqual(['m600']); expect(lease.commit()).toBe(true); cache.reset();
+});
+
+it('reset rejects paused and queued preparation without waiting for an external scheduler to resume', async () => {
+  const gate = deferred<void>(); let reads = 0;
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: () => gate.promise });
+  const initial = cache.prepare(snapshot(Array.from({ length: 1000 }, (_, at) => document('old' + at))), async doc => { reads++; return doc.id; });
+  const firstRejected = expect(initial).rejects.toThrow('incremental_snapshot_unavailable'), queued = delta([]);
+  const next = cache.prepare(queued, mapText), nextRejected = expect(next).rejects.toThrow('incremental_snapshot_unavailable');
+  cache.reset(); await Promise.all([firstRejected, nextRejected]); expect(queued.docChanges).not.toHaveBeenCalled();
+  const fresh = await cache.prepare(snapshot([document('fresh')]), mapText); expect(fresh.changed).toEqual([{ id: 'fresh', value: 'fresh' }]); expect(fresh.commit()).toBe(true);
+  gate.resolve(); await Promise.resolve(); await Promise.resolve(); expect(reads).toBe(8); expect((await cache.prepare(delta([]), mapText)).changed).toEqual([]); cache.reset();
+});
+
+it('abandons an overtaken metadata copy while retaining the complete source for the next delta', async () => {
+  const gate = deferred<void>(), entered = deferred<void>(), seen = new Set<string>(), counts = new Map<string, number>(); let held = false, docsReads = 0;
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: () => {
+    if (seen.size === 1000 && !held) { held = true; entered.resolve(); return gate.promise; } return Promise.resolve();
+  } });
+  const docs = Array.from({ length: 1000 }, (_, at) => ({ get id() { seen.add('m' + at); return 'm' + at; }, text: 'm' + at }));
+  const mapper = async (doc: Doc) => { counts.set(doc.text!, (counts.get(doc.text!) ?? 0) + 1); return doc.text!; };
+  const initial = cache.prepare({ get docs() { docsReads++; return docs; }, docChanges: () => [] }, mapper), rejected = expect(initial).rejects.toThrow('incremental_snapshot_unavailable');
+  await entered.promise;
+  const latest = cache.prepare(delta([change('modified', 'm500', 500, 500, 'edited')]), mapper); gate.resolve();
+  const lease = await latest; await rejected; expect(docsReads).toBe(1); expect(lease.changed).toHaveLength(1000); expect(lease.order.reset).toHaveLength(1000);
+  expect(lease.changed.find(row => row.id === 'm500')?.value).toBe('edited'); expect(counts.has('m500')).toBe(false); expect(lease.commit()).toBe(true); cache.reset();
+});
+
+it('bounds queued snapshots and retires their unread input on overflow before recovering', async () => {
+  const gate = deferred<void>(), cache = new IncrementalSessionSnapshot<string>({ yieldTask: () => gate.promise }), inputs: ReturnType<typeof delta>[] = [];
+  const pending = [cache.prepare(snapshot(Array.from({ length: 1000 }, (_, at) => document('old' + at))), mapText).then(() => false, () => true)];
+  for (let at = 1; at < INCREMENTAL_SESSION_SNAPSHOT_LIMITS.pendingSnapshots; at++) {
+    const input = delta([]); inputs.push(input); pending.push(cache.prepare(input, mapText).then(() => false, () => true));
+  }
+  await expect(cache.prepare(delta([]), mapText)).rejects.toThrow('incremental_snapshot_unavailable');
+  expect((await Promise.all(pending)).every(Boolean)).toBe(true); for (const input of inputs) expect(input.docChanges).not.toHaveBeenCalled();
+  cache.reset(); const fresh = await cache.prepare(snapshot([document('fresh')]), mapText); expect(fresh.changed).toEqual([{ id: 'fresh', value: 'fresh' }]); expect(fresh.commit()).toBe(true);
+  gate.resolve(); await Promise.resolve(); cache.reset();
+});
+
+it('a queued correction replaces a failed initial mapper before stable metadata is admitted', async () => {
+  const gate = deferred<void>(); let first = true;
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: () => { if (first) { first = false; return gate.promise; } return Promise.resolve(); } });
+  const mapper = async (doc: Doc) => { if (doc.text === 'm0') throw Error('superseded failure'); return doc.text!; };
+  const initial = cache.prepare(snapshot(Array.from({ length: 1000 }, (_, at) => document('m' + at))), mapper), rejected = expect(initial).rejects.toThrow('incremental_snapshot_unavailable');
+  const latest = cache.prepare(delta([change('modified', 'm0', 0, 0, 'corrected')]), mapper); gate.resolve();
+  const lease = await latest; await rejected; expect(lease.changed[0]).toEqual({ id: 'm0', value: 'corrected' }); expect(lease.changed).toHaveLength(1000); expect(lease.commit()).toBe(true); cache.reset();
+});
+
+it('an invalid movement after a task boundary retires the old lease and recovers from the full SDK view', async () => {
+  const cache = new IncrementalSessionSnapshot<string>({ yieldTask: async () => {} }); const previous = await cache.prepare(snapshot([document('a'), document('b')]), mapText); previous.commit();
+  const changes = Array.from({ length: 300 }, () => change('modified', 'a', 0, 0, 'pending')); changes[299] = change('modified', 'b', 0, 0);
+  await expect(cache.prepare(delta(changes), mapText)).rejects.toThrow('incremental_snapshot_unavailable'); expect(previous.isCurrent()).toBe(false);
+  const fresh = await cache.prepare(snapshot([document('b', 'recovered')]), mapText); expect(fresh.changed).toEqual([{ id: 'b', value: 'recovered' }]); expect(fresh.removed).toEqual(['a']); expect(fresh.commit()).toBe(true); cache.reset();
+});
+
+it('a document ID getter cannot insert an old row into a synchronously replaced generation', async () => {
+  const cache = new IncrementalSessionSnapshot<string>(); let first = true;
+  const doc = { get id() { if (first) { first = false; cache.reset(); } return 'old'; }, text: 'old' };
+  await expect(cache.prepare(snapshot([doc]), mapText)).rejects.toThrow('incremental_snapshot_unavailable');
+  const fresh = await cache.prepare(snapshot([document('fresh')]), mapText); expect(fresh.changed).toEqual([{ id: 'fresh', value: 'fresh' }]); expect(fresh.order.reset).toEqual(['fresh']); expect(fresh.commit()).toBe(true); cache.reset();
+});

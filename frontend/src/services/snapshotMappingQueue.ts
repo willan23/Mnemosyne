@@ -46,6 +46,7 @@ export class SnapshotMappingQueue<T> {
   private running = 0;
   private started = 0;
   private paused = false;
+  private holds = 0;
   private readonly owner: Owner<T> = { retired: false, work: new Map(), waiting: new Set() };
   private readonly controlled = createControlledYield();
   private readonly yieldTask: () => Promise<void>;
@@ -56,6 +57,12 @@ export class SnapshotMappingQueue<T> {
     this.owner.work.set(job, { work, failed });
     if (this.tail) this.tail.next = job; else this.head = job;
     this.tail = job; this.drain(); return job;
+  }
+  /** Metadata ingestion may pause new reads without interrupting native work in flight. */
+  hold(): () => void {
+    if (this.owner.retired) throw unavailable();
+    this.holds++; let released = false;
+    return () => { if (released) return; released = true; this.holds--; this.drain(); };
   }
   retire(): void {
     if (this.owner.retired) return;
@@ -80,7 +87,7 @@ export class SnapshotMappingQueue<T> {
     this.drain();
   }
   private drain(): void {
-    if (this.owner.retired || this.paused) return;
+    if (this.owner.retired || this.paused || this.holds) return;
     while (this.head && this.running < SNAPSHOT_MAPPING_LIMITS.concurrency && this.started < SNAPSHOT_MAPPING_LIMITS.batch) {
       const job = this.head; this.head = job.next; job.next = null; if (!this.head) this.tail = null;
       if (job.state !== 'queued') continue;

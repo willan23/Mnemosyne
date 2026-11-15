@@ -84,6 +84,9 @@ jobs:
       - name: Retire queued snapshot reads and preserve a fresh generation in Chromium
         run: node scripts/snapshot-retirement-browser.cjs
         working-directory: .
+      - name: Controlled snapshot metadata, overlapping deltas and scope retirement in Chromium
+        run: node scripts/controlled-snapshot-capture-browser.cjs
+        working-directory: .
       - name: Atomic initial publication, concurrent receipts and scope retirement with 100000 memories
         run: node scripts/atomic-publication-browser.cjs
         working-directory: .

@@ -95,12 +95,14 @@ import { IncrementalMemoryPublication } from '../services/incrementalMemoryPubli
 import { stageUniverseDeletion } from '../services/universeMemoryPublication';
 function delayPublications() {
   const publish = IncrementalMemoryPublication.prototype.publishSnapshot;
+  const pending = new Set<() => void>(); let settled = 0;
   vi.spyOn(IncrementalMemoryPublication.prototype, 'publishSnapshot').mockImplementation(async function(isCurrent, deliver) {
     const snapshot = this.snapshot();
-    if (snapshot.length >= 300) await new Promise<void>(resolve => setTimeout(resolve, 0));
+    if (snapshot.length >= 300) { await new Promise<void>(resolve => pending.add(resolve)); settled++; }
     if (!isCurrent() || this.snapshot() !== snapshot) return false;
     return publish.call(this, isCurrent, deliver);
   });
+  return { pending: () => pending.size, settled: () => settled, release: () => { for (const resolve of pending) resolve(); pending.clear(); } };
 }
 class HookIndexWorker extends EventTarget {
   index = new IndexedSemanticWriteIndex();
@@ -558,11 +560,11 @@ it('issues a scoped deletion confirmation only after a committed server revision
 
 it.each(['key-refresh', 'account-change', 'logout', 'unmount'] as const)(
   'retires a yielding publication synchronously on %s', async reason => {
-    vi.useFakeTimers();
-    delayPublications();
+    const publications = delayPublications();
     const view = renderHook(() => useUniverseMemories());
     act(() => state.auth?.({ uid: 'alice' }));
     await act(async () => state.listeners[0].next({ docs: largeDocuments() }));
+    await waitFor(() => expect(publications.pending()).toBe(1));
     expect(state.resolve).toHaveBeenCalledTimes(300);
     expect(lastIds()).toEqual([]);
 
@@ -574,7 +576,8 @@ it.each(['key-refresh', 'account-change', 'logout', 'unmount'] as const)(
     });
     expect(lastIds()).toEqual([]);
     const retiredAt = state.load.mock.calls.length;
-    await act(async () => { await vi.runAllTimersAsync(); });
+    await act(async () => publications.release());
+    await waitFor(() => expect(publications.settled()).toBe(1));
     expect(state.load).toHaveBeenCalledTimes(retiredAt);
     expect(lastIds()).toEqual([]);
   },
@@ -582,16 +585,19 @@ it.each(['key-refresh', 'account-change', 'logout', 'unmount'] as const)(
 
 it.each(['membership', 'listener-error'] as const)(
   'removes revoked team rows immediately while a large replacement view yields (%s)', async reason => {
-    vi.useFakeTimers();
-    delayPublications();
+    const publications = delayPublications();
     renderHook(() => useUniverseMemories());
     act(() => state.auth?.({ uid: 'alice' }));
     await act(async () => state.listeners[0].next({ docs: largeDocuments() }));
-    await act(async () => { await vi.runAllTimersAsync(); });
+    await waitFor(() => expect(publications.pending()).toBe(1));
+    await act(async () => publications.release());
+    await waitFor(() => expect(lastMemories()).toHaveLength(300));
     expect(lastMemories()).toHaveLength(300);
     act(() => state.teams[0]([{ id: 'crew' }]));
     await act(async () => state.listeners[2].next(snapshot('team-private', 'crew')));
-    await act(async () => { await vi.runAllTimersAsync(); });
+    await waitFor(() => expect(publications.pending()).toBeGreaterThan(0));
+    await act(async () => publications.release());
+    await waitFor(() => expect(lastIds()).toContain('team-private'));
     expect(lastIds()).toContain('team-private');
 
     act(() => {
@@ -599,22 +605,26 @@ it.each(['membership', 'listener-error'] as const)(
       else state.listeners[2].error();
     });
     expect(lastIds()).toEqual([]);
-    await act(async () => { await vi.runAllTimersAsync(); });
+    await waitFor(() => expect(publications.pending()).toBeGreaterThan(0));
+    await act(async () => publications.release());
+    await waitFor(() => expect(lastMemories()).toHaveLength(300));
     expect(lastMemories()).toHaveLength(300);
     expect(lastIds()).not.toContain('team-private');
   },
 );
 
 it('delivers only the latest delta when a prior large publication is yielding', async () => {
-  vi.useFakeTimers();
-  delayPublications();
+  const publications = delayPublications();
   renderHook(() => useUniverseMemories());
   act(() => state.auth?.({ uid: 'alice' }));
   await act(async () => state.listeners[0].next({ docs: largeDocuments() }));
+  await waitFor(() => expect(publications.pending()).toBe(1));
   await act(async () => state.listeners[0].next(delta({
     type: 'modified', doc: document('large-299', { timestamp: 0, text: 'Latest large row' }), oldIndex: 299, newIndex: 299,
   })));
-  await act(async () => { await vi.runAllTimersAsync(); });
+  await waitFor(() => expect(publications.pending()).toBe(2));
+  await act(async () => publications.release());
+  await waitFor(() => expect(lastMemories()).toHaveLength(300));
 
   const completeViews = state.load.mock.calls.filter(call => call[0].length === 300);
   expect(completeViews).toHaveLength(1);

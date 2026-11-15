@@ -57,3 +57,18 @@ it('reports an active mapping failure once even when its value has several colle
   const first = expect(readSnapshotMapping(job)).rejects.toThrow('failed'), second = expect(readSnapshotMapping(job)).rejects.toThrow('failed');
   hold.reject(Error('failed')); await Promise.all([first, second]); expect(failure).toHaveBeenCalledOnce(); queue.retire();
 });
+
+it('pauses queued reads until every metadata hold is released and releases each hold only once', async () => {
+  const queue = new SnapshotMappingQueue<string>(), first = queue.hold(), second = queue.hold(), seen: string[] = [];
+  const jobs = Array.from({ length: 12 }, (_, at) => queue.enqueue('n' + at, async () => { seen.push('n' + at); return 'n' + at; }, () => {}));
+  first(); first(); await Promise.resolve(); expect(seen).toEqual([]);
+  second(); expect(await readSnapshotMapping(jobs[11])).toBe('n11');
+  expect(seen).toEqual(Array.from({ length: 12 }, (_, at) => 'n' + at)); queue.retire();
+});
+
+it('a retired metadata hold can never start a read even when it is released later', async () => {
+  const queue = new SnapshotMappingQueue<string>(), release = queue.hold(), read = vi.fn(async () => 'old');
+  const job = queue.enqueue('old', read, () => {}), rejected = expect(readSnapshotMapping(job)).rejects.toThrow('incremental_snapshot_unavailable');
+  queue.retire(); release(); release(); await rejected; expect(read).not.toHaveBeenCalled();
+  expect(() => queue.hold()).toThrow('incremental_snapshot_unavailable');
+});

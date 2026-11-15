@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Preparação controlada dos snapshots — 15 de novembro de 2026
+
+A [preparação dos snapshots](PREPARACAO_SNAPSHOTS_2026-11-15.md) reparte metadata em blocos de 128, aplica deltas recebidos pela ordem do SDK e suspende novas leituras enquanto a preparação cede o controlo. A fila tem limite de 64 snapshots e retira o âmbito se excedido. Reset rejeita inputs pendentes mesmo com scheduler suspenso. No ensaio sintético de 100.000 documentos, o retorno passou de 91.6 para 3.4 ms, com 128 IDs visitados inicialmente. Não é aceitação de materialização/transporte SDK ou aplicação completa.
+
+Passaram 2.447 testes frontend/252 ficheiros, 126 focados/4, dez novos, build/identidade, lint zero erros/21 avisos, 23 contratos e quatro ensaios Chromium, incluindo 100.000 envelopes cifrados reais. Zero pedidos externos. Continuam recuperação de falhas, SDK/cofre completo, qualidade representativa, dispositivos, instaladores e rollout. Backend/Rules/auditorias conservados por hashes, sem nova execução. Fases 0–6 abertas, 49 gates falsos, sem deploy. Prova: controlled-capture-local-validation-20261115.json. Os blocos seguintes conservam a cronologia.
+
 ## Retirada dos snapshots — 15 de novembro de 2026
 
 A [retirada da fila](RETIRADA_SNAPSHOTS_2026-11-15.md) deixa de percorrer todos os trabalhos em espera e o reset explícito deixa de recolher IDs que descartaria. Coletores em espera rejeitam, trabalhos não observados rejeitam ao serem consultados e resultados nativos antigos não podem publicar no âmbito novo. No ensaio sintético de 100.000 documentos, o reset passou de 229.9 para 0.5 ms nesta máquina; isto não aceita desempenho do SDK/aplicação completa ou dispositivos.
