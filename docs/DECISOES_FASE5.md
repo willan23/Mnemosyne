@@ -1,5 +1,11 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Abstenção extractiva em avaliação — 15 de novembro de 2026
+
+A [experiência QA local](ABSTENCAO_QA_LOCAL_2026-11-15.md) conserva o candidato de resposta ausente e limita trechos ao mesmo documento. O piloto de oito pares passou, mas 5.388 contextos/316 perguntas conhecidas rejeitaram a opção: nenhuma variante isolada cumpriu a calibração, mesmo na auditoria exata. Uma combinação de diagnóstico com relevância passou calibração, mas falhou seis critérios posteriores. Não foi integrada nem substituiu os critérios/política anteriores. Não é um novo teste cego.
+
+Passaram 51 testes Node, oito novos, lint zero erros/21 avisos e 23 contratos. Assets públicos fixados/verificados; inferência offline, zero chamadas de fornecedor. Runtime/artefactos e os 2.447 testes frontend/ensaios anteriores são conservados por hashes, sem repetição. Qualidade, grande volume/SDK, memória/dispositivos, instaladores e rollout continuam abertos. Fases 0–6 abertas, 49 gates falsos, sem deploy. Prova: answerability-local-validation-20261115.json. Os blocos seguintes conservam a cronologia.
+
 ## Leitores atuais com SDK real — 15 de novembro de 2026
 
 A [revalidação dos leitores](VALIDACAO_SDK_LEITORES_2026-11-15.md) passou quatro percursos separados de 5.000 notas com Auth/Firestore SDKs reais e criptografia de produção. Cada hook confirmou carga completa, uma edição, índice e logout; nos dois percursos normais verificou ainda 200 alterações. Nos dois concorrentes, uma edição SDK publicou antes de libertar um resultado inicial; o lease antigo terminou obsoleto, não pôde fazer commit nem restaurou dados. A primeira tentativa do instrumento, interrompida por exigir rejeição em vez de aceitar lease obsoleto, foi conservada.
