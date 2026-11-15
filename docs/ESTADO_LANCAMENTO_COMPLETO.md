@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Leitores atuais com SDK real — 15 de novembro de 2026
+
+A [revalidação dos leitores](VALIDACAO_SDK_LEITORES_2026-11-15.md) passou quatro percursos separados de 5.000 notas com Auth/Firestore SDKs reais e criptografia de produção. Cada hook confirmou carga completa, uma edição, índice e logout; nos dois percursos normais verificou ainda 200 alterações. Nos dois concorrentes, uma edição SDK publicou antes de libertar um resultado inicial; o lease antigo terminou obsoleto, não pôde fazer commit nem restaurou dados. A primeira tentativa do instrumento, interrompida por exigir rejeição em vez de aceitar lease obsoleto, foi conservada.
+
+Zero pedidos externos, exceções/avisos de browser ou overflow nos quatro ensaios aprovados. Pausas iniciais de 703.4/1146.4 ms e heap continuam sem aceitação; não é o ensaio online de 100.000 notas ou aplicação/dispositivos completos. Runtime/artefactos intactos; 2.447 testes frontend e restante validação conservados por hashes, sem repetição. Fases 0–6 abertas, 49 gates falsos, sem deploy. Prova: sdk-readers-local-validation-20261115.json. Os blocos seguintes conservam a cronologia.
+
 ## Preparação controlada dos snapshots — 15 de novembro de 2026
 
 A [preparação dos snapshots](PREPARACAO_SNAPSHOTS_2026-11-15.md) reparte metadata em blocos de 128, aplica deltas recebidos pela ordem do SDK e suspende novas leituras enquanto a preparação cede o controlo. A fila tem limite de 64 snapshots e retira o âmbito se excedido. Reset rejeita inputs pendentes mesmo com scheduler suspenso. No ensaio sintético de 100.000 documentos, o retorno passou de 91.6 para 3.4 ms, com 128 IDs visitados inicialmente. Não é aceitação de materialização/transporte SDK ou aplicação completa.
