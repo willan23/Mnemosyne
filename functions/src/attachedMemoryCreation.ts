@@ -1,4 +1,5 @@
 import * as admin from 'firebase-admin';
+import { storedEmbeddingMetadata } from './embeddingStorage';
 import { liveAccountInTransaction } from './accountAccess';
 import * as functions from 'firebase-functions/v1';
 import { createHash } from 'node:crypto';
@@ -85,7 +86,7 @@ export async function executeCreateAttachedMemory(uid: string, value: unknown, d
     const usage = nextUsageAfterMemoryCreate(profile.data()?.usage, new Date(now));
     const result: Outcome = { sessionId: input.sessionId, digest: digest(input), status: 'committed', createdAt: now };
     records.forEach(record => touchAttachmentReference(tx, db, record, now));
-    tx.create(db.doc(`sessions/${input.sessionId}`), { ...input.metadata, uid, teamId: input.teamId, ...(team ? { keyEpoch: input.keyEpoch, keyId: input.keyId } : {}),
+    tx.create(db.doc(`sessions/${input.sessionId}`), { ...storedEmbeddingMetadata(input.metadata), uid, teamId: input.teamId, ...(team ? { keyEpoch: input.keyEpoch, keyId: input.keyId } : {}),
       text: '', title: null, enc: input.enc, timestamp: now, updatedAt: now, attachments: records.map(attachmentDescriptor), creationReceiptId: input.sessionId });
     tx.update(profile.ref, { usage: { ...usage, updatedAt: now } });
     tx.create(db.doc(`memoryUsageReceipts/${input.sessionId}`), { v: 1, uid, sessionId: input.sessionId, ...usage, createdAt: now });

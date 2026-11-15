@@ -1,4 +1,5 @@
 import * as admin from 'firebase-admin';
+import { storedEmbeddingMetadata } from './embeddingStorage';
 import * as functions from 'firebase-functions/v1';
 import {createHash} from 'node:crypto';
 import {recordMemorySupersession} from './memorySupersession';
@@ -51,7 +52,7 @@ export async function executePersonalRevision(uid:string,value:unknown,mode:'app
     const revision=Math.max(now,input.baseline.revision+1);if(!syncInteger(revision))throw fail();
     const metadata=Object.fromEntries(['tags','category','attachments','embedding','embeddingModel','connections','semanticClusterId','position','importance','celestialType','processingMethod'].filter(key=>before[key]!==undefined).map(key=>[key,before[key]]));
     tx.create(versionRef,{...metadata,text:'',title:null,enc:input.priorEnc,attachments:before.attachments??null,previousUpdatedAt:input.baseline.revision,createdAt:revision,editorUid:uid});
-    tx.update(ref,{text:'',title:null,enc:input.enc,...input.metadata,updatedAt:revision,learning:{...before.learning,revisedAt:revision},nodes:null,links:null,generatedPrompt:null,generatedImagePrompt:null});
+    tx.update(ref,{text:'',title:null,enc:input.enc,...storedEmbeddingMetadata(input.metadata),updatedAt:revision,learning:{...before.learning,revisedAt:revision},nodes:null,links:null,generatedPrompt:null,generatedImagePrompt:null});
     recordMemorySupersession(tx,db,uid,{operationId:input.operationId,memoryId:input.baseline.sessionId,
       previousRevision:input.baseline.revision,revision,versionId:versionRef.id,source:'personal-revision'});
     const committed:PersonalRevisionOutcome={...result,status:'committed',revision,createdAt:now};tx.create(receiptRef,{v:1,uid,...committed});tx.set(budgetRef,{v:1,uid,day,...consumed,updatedAt:now});return committed;

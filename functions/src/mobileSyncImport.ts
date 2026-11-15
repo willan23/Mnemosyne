@@ -1,4 +1,5 @@
 import * as admin from 'firebase-admin';
+import { storedEmbeddingMetadata } from './embeddingStorage';
 import * as functions from 'firebase-functions/v1';
 import {createHash} from 'node:crypto';
 import {attachmentActorIdValid} from './attachmentEnvelope';
@@ -138,7 +139,7 @@ export async function executeSyncImportBatch(uid: string, value: unknown, deps =
       const provenance = {syncedFromDeviceId: input.deviceId, syncedFromEnvelopeId: input.envelopeId, syncedAt: now, updatedAt};
       if (create) {
         const metadata = change.action === 'conflict' ? {...change.metadata, tags: Array.from(new Set([...(change.metadata?.tags as string[] || []), 'sync-conflict'])), originalMemoryId: change.sessionId, conflictReason: 'local-newer-or-same-revision'} : change.metadata;
-        tx.create(ref, {...metadata, uid, teamId: null, text: '', title: null, enc: change.enc, timestamp: change.action === 'conflict' ? now : change.timestamp, ...provenance, creationReceiptId: ref.id,
+        tx.create(ref, {...storedEmbeddingMetadata(metadata ?? {}), uid, teamId: null, text: '', title: null, enc: change.enc, timestamp: change.action === 'conflict' ? now : change.timestamp, ...provenance, creationReceiptId: ref.id,
           ...(change.action === 'tombstone' ? {deletedAt: updatedAt, deletedByDeviceId: input.deviceId} : {})});
         tx.create(db.doc(`memoryCreationReceipts/${ref.id}`), {v: 1, kind: 'mobile-sync', uid, teamId: null, sessionId: ref.id, envelopeId: input.envelopeId, index, digest, status: 'committed', createdAt: now});
         if (change.action !== 'tombstone') {
@@ -149,8 +150,9 @@ export async function executeSyncImportBatch(uid: string, value: unknown, deps =
         const metadata = Object.fromEntries(['tags','category','attachments','embedding','embeddingModel','connections','semanticClusterId','position','importance','celestialType','processingMethod'].filter(key => old![key] !== undefined).map(key => [key, old![key]]));
         const versionRef = ref.collection('versions').doc(syncConflictId(input.envelopeId, index));
         tx.create(versionRef, {...metadata, text: '', title: null, enc: old!.enc, attachments: old!.attachments ?? null, previousUpdatedAt: revision(old!), createdAt: updatedAt, editorUid: uid});
+        const nextMetadata = storedEmbeddingMetadata(change.metadata ?? {});
         tx.update(ref, change.action === 'delete' ? {deletedAt: updatedAt, deletedByDeviceId: input.deviceId, ...provenance}
-          : {...Object.fromEntries(SYNC_MEMORY_METADATA_FIELDS.map(key => [key, change.metadata?.[key] ?? admin.firestore.FieldValue.delete()])),
+          : {...Object.fromEntries(SYNC_MEMORY_METADATA_FIELDS.map(key => [key, nextMetadata[key] ?? admin.firestore.FieldValue.delete()])),
             enc: change.enc, text: '', title: null, nodes: null, links: null, generatedPrompt: null, generatedImagePrompt: null, ...provenance});
       }
     }

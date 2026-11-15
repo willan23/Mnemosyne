@@ -1,4 +1,5 @@
 import * as admin from 'firebase-admin';
+import { readStoredEmbedding, storedEmbeddingMetadata } from './embeddingStorage';
 import * as functions from 'firebase-functions/v1';
 import {createHash} from 'node:crypto';
 import {attachmentActorIdValid} from './attachmentEnvelope';
@@ -20,8 +21,7 @@ function parsed<T>(parse:(value:unknown)=>T,value:unknown):T {try{return parse(v
 
 /** Preserve missing/null markers exactly; never relabel an unversioned historic vector. */
 function storedIndex(row:FirebaseFirestore.DocumentData) {
-  if(row.embedding!=null&&(!Array.isArray(row.embedding)||row.embedding.length>4096||
-    !row.embedding.every((x:unknown)=>typeof x==='number'&&Number.isFinite(x))))throw fail();
+  if(row.embedding!=null&&readStoredEmbedding(row.embedding)===null)throw fail();
   if(row.embeddingModel!=null&&(typeof row.embeddingModel!=='string'||row.embeddingModel.length>256))throw fail();
   return Object.fromEntries(['embedding','embeddingModel'].filter(key=>Object.prototype.hasOwnProperty.call(row,key)).map(key=>[key,row[key]]));
 }
@@ -78,7 +78,7 @@ export async function executeEmbeddingIndexRevision(uid:string,value:unknown,mod
     if(syncDocumentStateHash(snapshot)!==base.stateHash||syncStateHash(before)!==base.stateDigest||
       contentDigest(before)!==base.contentDigest||(before.updatedAt??before.timestamp)!==base.revision)throw fail('aborted');
     let next:FirebaseFirestore.DocumentData,restoredIndex:FirebaseFirestore.DocumentData|undefined;
-    if(input.change.kind==='publish')next={embedding:input.change.vector,embeddingModel:input.change.space};
+    if(input.change.kind==='publish')next=storedEmbeddingMetadata({embedding:input.change.vector,embeddingModel:input.change.space});
     else {
       const history=await tx.get(session.collection('versions').doc(input.change.versionId)),old=history.data();
       if(!history.exists||!old||old.uid!==uid||old.teamId!==null||old.embeddingIndex?.v!==1||

@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Vetores compactos e compatibilidade de recuperação — 15 de novembro de 2026
+
+A [representação JSON dos vetores](ARMAZENAMENTO_VETORES_2026-11-15.md), já legível pelos leitores, reduziu a heap retida da página de 172,39 MB para 82,27 MB na comparação controlada de 5.000 notas, com todas as coordenadas preservadas. A conversão foi integrada apenas na persistência do documento atual, depois da validação/digest; RPCs/vistas continuam numéricos e os arquivos conservam o valor anterior exato. Recuperação, histórico, sincronização e ledger aceitam ambos os formatos.
+
+Passaram 2.450 testes frontend, 65 focados, 626 backend (um Rules omitido nesse comando), build/identidade, lint zero erros/21 avisos, 51 de recuperação e 23 contratos. Dois ensaios online de 5.000 notas com Rules reais confirmaram os hooks, 3,84 milhões de coordenadas, edições/índice/logout e recusa de leitura fora da conta. O ensaio JSON de 100.000 carregou a cache mas parou por orçamento de heap durante mapeamento, sem vista completa. Não há aceitação de grande volume ou latência, nem conversão retroativa de dados existentes. Fases 0–6 incompletas, 49 gates falsos, sem deploy. Prova: embedding-storage-local-validation-20261115.json. Os blocos seguintes conservam a cronologia.
+
 ## Integridade de vetores e limite da cache — 15 de novembro de 2026
 
 A [correção do parser backend](CACHE_SDK_E_VETORES_2026-11-15.md) rejeita o vetor inteiro em vez de remover coordenadas inválidas e criar falsas correspondências cosine. Quatro regressões reproduzidas antes/corrigidas depois; build TypeScript, 25 focados e 618 testes backend passaram, um Rules omitido sem emulador. Frontend e verificações anteriores conservados por hashes, sem repetição.

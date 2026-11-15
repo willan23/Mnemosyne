@@ -50,3 +50,12 @@ it('late sharing, stale displayed digests, cursor scope mismatch and wrong vault
   f.page.mockImplementationOnce(async()=>{Object.assign(f.row,{sharedWithIds:['bob']});return{rows:[],tail:null};});await expect(loadEmbeddingIndexHistory(f.input,f.historyDeps)).rejects.toThrow();delete (f.row as Record<string,unknown>).sharedWithIds;
   setMemoryCryptoMnemonic([...words].reverse());await expect(loadEmbeddingIndexHistory(f.input,f.historyDeps)).rejects.toThrow();
 });
+
+it('reads rollback metadata from JSON vector archives without exposing their coordinates',async()=>{
+  const f=await historyFixture();
+  (f.archive as Record<string,unknown>).embedding='[-0,0.5]';
+  const result=await loadEmbeddingIndexHistory(f.input,f.historyDeps);
+  expect(result.entries[0]).toMatchObject({dimensions:2,rollbackAllowed:true});
+  expect(result.invalid).toBe(0);
+  expect(JSON.stringify(result)).not.toContain('[-0,0.5]');
+});

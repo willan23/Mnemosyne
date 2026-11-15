@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readStoredEmbedding } from './embeddingStorage';
 import { isDeepStrictEqual } from 'node:util';
 import * as admin from 'firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -16,8 +17,9 @@ export function sessionEventKinds(before: SnapshotData, after: SnapshotData): Me
     if (!after || (after.deletedAt != null && before?.deletedAt == null)) kinds.push('delete');
     else if (!before) kinds.push('write');
     else if (!isDeepStrictEqual(before, after)) kinds.push('update');
-    if (after && after.deletedAt == null && Array.isArray(after.embedding) && after.embedding.length > 0
-        && (!isDeepStrictEqual(before?.embedding, after.embedding)
+    const afterVector = readStoredEmbedding(after?.embedding);
+    if (after && after.deletedAt == null && afterVector && afterVector.length > 0
+        && (!isDeepStrictEqual(readStoredEmbedding(before?.embedding), afterVector)
             || before?.embeddingModel !== after.embeddingModel)) kinds.push('index');
     return kinds;
 }

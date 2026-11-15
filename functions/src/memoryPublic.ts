@@ -6,6 +6,8 @@
  * the product app) and are used only for cosine search.
  */
 
+import { readStoredEmbedding } from './embeddingStorage';
+
 export const PLAINTEXT_REFUSED_MESSAGE =
   'Zero-knowledge: o servidor não aceita texto em claro. Envia o envelope cifrado enc: { v, iv, ct } gerado no cliente.';
 
@@ -77,21 +79,7 @@ export interface MemoryApi {
 }
 
 export function parseEmbedding(value: unknown): number[] {
-  if (Array.isArray(value)) {
-    // Removing a coordinate changes the vector space and can create a false
-    // cosine match with another embedding dimension.
-    return value.every((item) => typeof item === 'number' && Number.isFinite(item))
-      ? value as number[]
-      : [];
-  }
-  if (typeof value === 'string') {
-    try {
-      return parseEmbedding(JSON.parse(value) as unknown);
-    } catch {
-      return [];
-    }
-  }
-  return [];
+  return readStoredEmbedding(value) ?? [];
 }
 
 const LEGACY_EMBEDDING_SPACE = 'Xenova/all-MiniLM-L6-v2@legacy-main';

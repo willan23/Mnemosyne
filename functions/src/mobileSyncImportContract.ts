@@ -1,4 +1,5 @@
 /** Shared pure contract: client preparation and server admission use the same canonical state. */
+import { readStoredEmbedding } from './embeddingStorage';
 export const MOBILE_SYNC_BATCH_SIZE = 10;
 export const MAX_SYNC_CONNECTIONS = 2500;
 export interface SyncCipher {v: 1; iv: string; ct: string}
@@ -49,6 +50,11 @@ export function parseSyncMetadata(value: unknown): Record<string, unknown> {
 export function normalizedSyncMetadata(value: unknown): Record<string, unknown> {
   const data = record(value);
   const selected = Object.fromEntries(SYNC_MEMORY_METADATA_FIELDS.filter(key => data[key] != null).map(key => [key,data[key]]));
+  if (typeof selected.embedding === 'string') {
+    const vector = readStoredEmbedding(selected.embedding);
+    if (vector === null) throw invalid();
+    selected.embedding = vector;
+  }
   // A model label without a nonempty vector does not describe an embedding in the client view.
   if (!('embedding' in selected) || (Array.isArray(selected.embedding) && selected.embedding.length === 0)) {delete selected.embedding;delete selected.embeddingModel;}
   return parseSyncMetadata({tags:[],connections:[],...selected});

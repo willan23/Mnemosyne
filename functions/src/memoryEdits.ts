@@ -1,4 +1,5 @@
 import * as admin from 'firebase-admin';
+import { storedEmbeddingMetadata } from './embeddingStorage';
 import * as functions from 'firebase-functions/v1';
 import {createHash} from 'node:crypto';
 import {recordMemorySupersession} from './memorySupersession';
@@ -71,7 +72,7 @@ export async function executeMemoryEdit(uid:string,value:unknown,mode:'apply'|'s
     const user=budget(userSnapshot,true),team=teamRef?budget(teamSnapshot,false):null;if(user.operations>MEMORY_EDIT_DAILY_LIMITS.operations||user.cipherBytes>MEMORY_EDIT_DAILY_LIMITS.cipherBytes||team&&(team.operations>MEMORY_EDIT_DAILY_LIMITS.teamOperations||team.cipherBytes>MEMORY_EDIT_DAILY_LIMITS.teamCipherBytes))throw fail('resource-exhausted');
     const revision=Math.max(now,base.revision+1);if(!syncInteger(revision))throw fail();const metadata=Object.fromEntries(ARCHIVE_FIELDS.filter(key=>before[key]!==undefined).map(key=>[key,before[key]]));
     tx.create(versionRef,{...metadata,uid:before.uid,timestamp:before.timestamp,teamId:base.teamId,text:'',title:null,enc:input.priorEnc,...(base.kind==='team'?{keyEpoch:base.priorKeyEpoch,keyId:base.priorKeyId}:{}),previousUpdatedAt:before.updatedAt??before.timestamp,createdAt:revision,editorUid:uid});
-    const changes=input.operation==='edit'?{enc:input.enc,...input.metadata,...(base.kind==='team'?{keyEpoch:base.keyEpoch,keyId:base.keyId}:{}),...(before.learning?{learning:{...before.learning,revisedAt:revision}}:{})}:{enc:input.priorEnc,deletedAt:revision};
+    const changes=input.operation==='edit'?{enc:input.enc,...storedEmbeddingMetadata(input.metadata),...(base.kind==='team'?{keyEpoch:base.keyEpoch,keyId:base.keyId}:{}),...(before.learning?{learning:{...before.learning,revisedAt:revision}}:{})}:{enc:input.priorEnc,deletedAt:revision};
     const update={...changes,text:'',title:null,updatedAt:revision,lastVersionId:versionRef.id,nodes:null,links:null,generatedPrompt:null,generatedImagePrompt:null};
     tx.update(sessionRef,update);
     if(input.operation==='edit')recordMemorySupersession(tx,db,uid,{operationId:input.operationId,memoryId:base.sessionId,

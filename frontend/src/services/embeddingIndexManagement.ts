@@ -1,4 +1,5 @@
 import {collection,doc,getDocFromServer,getDocsFromServer,limit,orderBy,query,startAfter,type QueryDocumentSnapshot} from 'firebase/firestore';
+import { readStoredEmbedding } from '../../../functions/src/embeddingStorage';
 import {db} from '../firebase';
 import type {SessionData} from '../hooks/useSessions';
 import {PERSONAL_REVISION_WRITES_ENABLED} from '../config/releaseGates';
@@ -86,10 +87,10 @@ export async function loadEmbeddingIndexHistory(input:{uid:string;id:string;view
       try{const marker=row.embeddingIndex as Record<string,unknown>;
         if(!id.startsWith('embedding-index-')||!attachmentIdValid(id.slice(16))||marker.v!==1||marker.operationId!==id.slice(16)||!['publish','rollback'].includes(String(marker.kind))||!syncHashValid(marker.contentDigest)||
           row.uid!==captured.uid||row.teamId!==null||row.text!==''||row.title!=null||!syncInteger(row.createdAt)||row.createdAt>8.64e15||!syncInteger(row.previousUpdatedAt)||
-          row.embedding!=null&&(!Array.isArray(row.embedding)||row.embedding.length>4096||!Array.from(row.embedding).every(x=>typeof x==='number'&&Number.isFinite(x)))||
+          row.embedding!=null&&readStoredEmbedding(row.embedding)===null||
           row.embeddingModel!=null&&(typeof row.embeddingModel!=='string'||row.embeddingModel.length>256))throw fail();
         parseSyncCipher(row.enc);const archivedDigest=await contentDigest(row);guard();if(archivedDigest!==marker.contentDigest)throw fail();
-        entries.push({versionId:id,createdAt:row.createdAt,previousRevision:row.previousUpdatedAt,space:embeddingSpaceOf(row.embeddingModel),dimensions:Array.isArray(row.embedding)?row.embedding.length:0,rollbackAllowed:archivedDigest===digest});
+        entries.push({versionId:id,createdAt:row.createdAt,previousRevision:row.previousUpdatedAt,space:embeddingSpaceOf(row.embeddingModel),dimensions:readStoredEmbedding(row.embedding)?.length??0,rollbackAllowed:archivedDigest===digest});
       }catch{guard();invalid++;}
     }
     const after=await deps.read(captured.id);guard();personalRow(after,captured.uid);if(await embeddingIndexViewDigest(after)!==captured.viewDigest)throw fail();guard();

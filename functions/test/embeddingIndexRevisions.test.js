@@ -27,7 +27,7 @@ test('index contract admits only the exact reviewed multilingual profile and bou
 });
 test('index publication archives exact cipher and metadata, preserves graph and attachments, and charges only once on replay',async()=>{
   const f=fixture(),input=await f.request(),before=structuredClone(f.docs.get('sessions/note')),result=await service.executeEmbeddingIndexRevision('alice',input,'apply',f.deps),after=f.docs.get('sessions/note');
-  assert.equal(result.status,'committed');assert.deepEqual(after.embedding,vector());assert.equal(after.embeddingModel,contract.EMBEDDING_INDEX_TARGET_SPACE);
+  assert.equal(result.status,'committed');assert.equal(after.embedding,JSON.stringify(vector()));assert.deepEqual(JSON.parse(after.embedding),vector());assert.equal(after.embeddingModel,contract.EMBEDDING_INDEX_TARGET_SPACE);
   for(const key of Object.keys(before).filter(k=>!['embedding','embeddingModel','updatedAt','lastVersionId'].includes(k)))assert.deepEqual(after[key],before[key],key);
   const archive=f.docs.get('sessions/note/versions/'+result.versionId);for(const key of Object.keys(before))assert.deepEqual(archive[key],before[key],key);
   assert.equal(Object.hasOwn(archive,'embeddingModel'),false);const receipt=f.docs.get('embeddingIndexRevisions/'+first);
@@ -36,7 +36,7 @@ test('index publication archives exact cipher and metadata, preserves graph and 
   const quota=[...f.docs.entries()].find(([p])=>p.startsWith('embeddingIndexBudgets/'))[1];assert.equal(quota.operations,1);assert(quota.vectorBytes>0&&quota.archiveBytes>0);
 });
 test('index rollback restores missing and null markers exactly without restoring any unrelated metadata',async()=>{
-  for(const index of [{},{embedding:null,embeddingModel:null},{embedding:[.5,.5]},{embedding:[1,0],embeddingModel:'older-unknown-space'}]){
+  for(const index of [{},{embedding:null,embeddingModel:null},{embedding:[.5,.5]},{embedding:[1,0],embeddingModel:'older-unknown-space'},{embedding:'[0.5,0.5]',embeddingModel:'older-unknown-space'},{embedding:'[]'}]){
     const f=fixture(index),firstResult=await service.executeEmbeddingIndexRevision('alice',await f.request(),'apply',f.deps);
     f.docs.get('sessions/note').connections=['new-peer'];f.touch();
     const input=await f.request({kind:'rollback',versionId:firstResult.versionId},second),result=await service.executeEmbeddingIndexRevision('alice',input,'apply',f.deps),after=f.docs.get('sessions/note');

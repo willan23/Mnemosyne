@@ -1,4 +1,5 @@
 import * as admin from 'firebase-admin';
+import { storedEmbeddingMetadata } from './embeddingStorage';
 import * as functions from 'firebase-functions/v1';
 import {createHash} from 'node:crypto';
 import {recordMemorySupersession} from './memorySupersession';
@@ -67,7 +68,7 @@ export async function executeTeamRevision(uid:string,value:unknown,mode:'apply'|
     const user=budget(userRow,true),team=budget(teamRow,false);if(user.revisions>TEAM_REVISION_DAILY_LIMITS.revisions||user.cipherBytes>TEAM_REVISION_DAILY_LIMITS.cipherBytes||team.revisions>TEAM_REVISION_DAILY_LIMITS.teamRevisions||team.cipherBytes>TEAM_REVISION_DAILY_LIMITS.teamCipherBytes)throw fail('resource-exhausted');
     const revision=Math.max(now,input.baseline.revision+1);if(!syncInteger(revision))throw fail();const metadata=Object.fromEntries(TEAM_REVISION_ARCHIVE_FIELDS.filter(key=>before.row[key]!==undefined).map(key=>[key,before.row[key]]));
     tx.create(versionRef,{...metadata,uid:before.row.uid,timestamp:before.row.timestamp,teamId:input.baseline.teamId,keyEpoch:before.priorKeyEpoch,keyId:before.priorKeyId,text:'',title:null,enc:input.priorEnc,previousUpdatedAt:before.row.updatedAt??before.row.timestamp,createdAt:revision,editorUid:uid});
-    tx.update(sessionRef,{text:'',title:null,enc:input.enc,...input.metadata,keyEpoch:input.baseline.keyEpoch,keyId:input.baseline.keyId,updatedAt:revision,lastVersionId:versionRef.id,...(before.row.learning?{learning:{...before.row.learning,revisedAt:revision}}:{}),nodes:null,links:null,generatedPrompt:null,generatedImagePrompt:null});
+    tx.update(sessionRef,{text:'',title:null,enc:input.enc,...storedEmbeddingMetadata(input.metadata),keyEpoch:input.baseline.keyEpoch,keyId:input.baseline.keyId,updatedAt:revision,lastVersionId:versionRef.id,...(before.row.learning?{learning:{...before.row.learning,revisedAt:revision}}:{}),nodes:null,links:null,generatedPrompt:null,generatedImagePrompt:null});
     recordMemorySupersession(tx,db,uid,{operationId:input.operationId,memoryId:input.baseline.sessionId,
       previousRevision:input.baseline.revision,revision,versionId:versionRef.id,source:'team-revision'});
     const result={...base,status:'committed' as const,revision,createdAt:now};tx.create(ref,{v:1,uid,authorUid:input.baseline.authorUid,ownerUid:input.baseline.ownerUid,...result});tx.create(auditRef,{v:1,type:'memory_revised',actorUid:uid,teamId:input.baseline.teamId,sessionId:input.baseline.sessionId,versionId:versionRef.id,revision,createdAt:now});tx.set(userBudget,{v:1,uid,teamId:input.baseline.teamId,day,...user,updatedAt:now});tx.set(teamBudget,{v:1,teamId:input.baseline.teamId,day,...team,updatedAt:now});return result;
