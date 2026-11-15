@@ -81,6 +81,9 @@ jobs:
       - name: Bounded snapshot mapping with 100000 real encrypted synthetic memories
         run: node scripts/snapshot-mapping-browser.cjs
         working-directory: .
+      - name: Retire queued snapshot reads and preserve a fresh generation in Chromium
+        run: node scripts/snapshot-retirement-browser.cjs
+        working-directory: .
       - name: Atomic initial publication, concurrent receipts and scope retirement with 100000 memories
         run: node scripts/atomic-publication-browser.cjs
         working-directory: .

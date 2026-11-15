@@ -59,17 +59,19 @@ export class IncrementalSessionSnapshot<T> {
 
   /** Retire cached plaintext/promises and every outstanding lease. */
   reset(): void {
-    this.invalidate();
+    this.invalidate(false);
     this.recoveryIds.clear();
     this.pending.clear();
   }
 
-  private invalidate(): void {
+  private invalidate(recover = true): void {
     this.mappings.retire(); this.mappings = new SnapshotMappingQueue<T>(this.options.yieldTask);
     this.controlled.cancel(); this.controlled = createControlledYield();
     // Keep IDs only so recovery can remove records omitted by its replacement snapshot.
-    for (const id of this.entries.keys()) this.recoveryIds.add(id);
-    for (const id of this.removed) this.recoveryIds.add(id);
+    if (recover) {
+      for (const id of this.entries.keys()) this.recoveryIds.add(id);
+      for (const id of this.removed) this.recoveryIds.add(id);
+    }
     this.entries.clear(); this.dirty.clear(); this.removed.clear();
     this.ids = []; this.orderReset = undefined; this.movements = [];
     this.initialized = false;

@@ -1,5 +1,11 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Retirada dos snapshots — 15 de novembro de 2026
+
+A [retirada da fila](RETIRADA_SNAPSHOTS_2026-11-15.md) deixa de percorrer todos os trabalhos em espera e o reset explícito deixa de recolher IDs que descartaria. Coletores em espera rejeitam, trabalhos não observados rejeitam ao serem consultados e resultados nativos antigos não podem publicar no âmbito novo. No ensaio sintético de 100.000 documentos, o reset passou de 229.9 para 0.5 ms nesta máquina; isto não aceita desempenho do SDK/aplicação completa ou dispositivos.
+
+Passaram 2.437 testes frontend/252 ficheiros, 116 focados/4, build/identidade, lint zero erros/21 avisos, 23 contratos e três ensaios Chromium, incluindo 100.000 envelopes cifrados reais. Zero pedidos externos. Permanecem preparação inicial/SDK, recuperação de falhas, qualidade representativa, dispositivos, instaladores e rollout. Backend/Rules/auditorias anteriores conservados por hashes, sem repetição. Fases 0–6 abertas, 49 gates falsos, sem deploy. Prova: snapshot-retirement-local-validation-20261115.json. Os blocos seguintes conservam a cronologia.
+
 ## Seleção de evidência em avaliação — 15 de novembro de 2026
 
 A [política experimental de ligações](SELECAO_EVIDENCIA_POR_LIGACOES_2026-11-15.md) distingue nomes compostos e conserva a ordem semântica quando o grafo não tem suporte suficiente. Nos resultados já observados, recuperou toda a evidência dos 12 casos multi-hop. O replay usa scores históricos, sem nova inferência; não é um novo teste cego. Cinco dos nove critérios de qualidade continuam a falhar e a política não foi integrada na aplicação.
