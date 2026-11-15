@@ -1,5 +1,11 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Seleção de evidência em avaliação — 15 de novembro de 2026
+
+A [política experimental de ligações](SELECAO_EVIDENCIA_POR_LIGACOES_2026-11-15.md) distingue nomes compostos e conserva a ordem semântica quando o grafo não tem suporte suficiente. Nos resultados já observados, recuperou toda a evidência dos 12 casos multi-hop. O replay usa scores históricos, sem nova inferência; não é um novo teste cego. Cinco dos nove critérios de qualidade continuam a falhar e a política não foi integrada na aplicação.
+
+Passaram 43 testes Node, incluindo 17 novos, lint zero erros/21 avisos e 23 contratos. Runtime/artefactos e validação anterior são conservados por hashes; não se repetiram 2.432 testes frontend ou modelos. Permanecem abstenção/informação atual, avaliação independente, SDK/cofre em grande volume, dispositivos, instaladores e rollout. Fases 0–6 abertas, 49 gates falsos, sem deploy. Prova: evidence-graph-local-validation-20261115.json. Os blocos seguintes conservam a cronologia.
+
 ## Perfil do SDK e do transporte — 14 de novembro de 2026
 
 O [diagnóstico com SDK real](PERFIL_SDK_FIRESTORE_2026-11-14.md) identificou 5.000 mensagens/documentos recebidos numa edição de uma única nota, cerca de 46 MB neste emulador, embora o hook mapeie apenas a nota alterada. Cinco perfis com emulador novo verificaram carga/edição/logout. O long polling forçado não eliminou esse volume e não foi ativado no produto.
