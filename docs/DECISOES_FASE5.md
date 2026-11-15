@@ -1,5 +1,11 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Integridade de vetores e limite da cache — 15 de novembro de 2026
+
+A [correção do parser backend](CACHE_SDK_E_VETORES_2026-11-15.md) rejeita o vetor inteiro em vez de remover coordenadas inválidas e criar falsas correspondências cosine. Quatro regressões reproduzidas antes/corrigidas depois; build TypeScript, 25 focados e 618 testes backend passaram, um Rules omitido sem emulador. Frontend e verificações anteriores conservados por hashes, sem repetição.
+
+Dois percursos SDK reais de cache com 5.000 notas passaram carga, edição, 200 alterações, índice e logout. O ensaio de 100.000 parou antes dos hooks aos 91.008: RAM livre 717 MiB e heap de 2,47 GB. É uma paragem pelo orçamento de memória da fixture, sem aprovação online, de performance ou de dispositivos. Cache LRU sem limite/rede Firestore desativada só no instrumento; nenhuma alteração desse tipo no produto. Qualidade, grande volume e rollout continuam abertos; fases 0–6 incompletas, 49 gates falsos, sem deploy. Prova: cache-vector-local-validation-20261115.json. Os blocos seguintes conservam a cronologia.
+
 ## Abstenção extractiva em avaliação — 15 de novembro de 2026
 
 A [experiência QA local](ABSTENCAO_QA_LOCAL_2026-11-15.md) conserva o candidato de resposta ausente e limita trechos ao mesmo documento. O piloto de oito pares passou, mas 5.388 contextos/316 perguntas conhecidas rejeitaram a opção: nenhuma variante isolada cumpriu a calibração, mesmo na auditoria exata. Uma combinação de diagnóstico com relevância passou calibração, mas falhou seis critérios posteriores. Não foi integrada nem substituiu os critérios/política anteriores. Não é um novo teste cego.

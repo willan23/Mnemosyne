@@ -78,7 +78,11 @@ export interface MemoryApi {
 
 export function parseEmbedding(value: unknown): number[] {
   if (Array.isArray(value)) {
-    return value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
+    // Removing a coordinate changes the vector space and can create a false
+    // cosine match with another embedding dimension.
+    return value.every((item) => typeof item === 'number' && Number.isFinite(item))
+      ? value as number[]
+      : [];
   }
   if (typeof value === 'string') {
     try {
