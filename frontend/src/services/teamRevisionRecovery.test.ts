@@ -2,9 +2,10 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 vi.mock('../firebase',()=>({default:{},db:{},auth:{}}));
 import {encryptMemoryFields,decryptMemoryEnvelope,setMemoryCryptoMnemonic,isMemoryCryptoReady} from './memoryCrypto';
 import {encryptTeamMemoryFields,decryptTeamMemoryEnvelope,encryptLegacyTeamMemoryFields} from './teamVault';
-import {captureTeamRevisionBaseline,reviseTeamLearnedMemory,recoverPendingTeamRevision,cancelPendingTeamRevision,teamRevisionCheckpointKey,type TeamRevisionDeps,type TeamRevisionBaseline} from './teamRevisionRecovery';
+import {captureTeamRevisionBaseline,reviseTeamLearnedMemory,compactTeamStoredEmbedding,rollbackTeamStoredEmbedding,recoverPendingTeamRevision,cancelPendingTeamRevision,teamRevisionCheckpointKey,type TeamRevisionDeps,type TeamRevisionBaseline} from './teamRevisionRecovery';
 import {canonicalSyncState} from '../../../functions/src/mobileSyncImportContract';
 import {teamRevisionRequestBytes,type TeamRevisionRequest} from '../../../functions/src/teamRevisionContract';
+import {serializeStoredEmbedding} from '../../../functions/src/embeddingStorage';
 const words=['abandon','ability','able','about','above','absent','absorb','abstract','absurd','abuse','access','accident'];
 const keyId='22222222-2222-4222-8222-222222222222',priorId='11111111-1111-4111-8111-111111111111';
 const checkpoint=teamRevisionCheckpointKey('alice');
@@ -28,8 +29,12 @@ beforeEach(async()=>{
     if(receipt){if(receipt.digest!==digest)throw Error('Synthetic receipt mismatch');return receipt;}
     if(mode==='cancel'){receipt={...unknown,status:revoked?'revoked':'cancelled',createdAt:revoked?null:1000};return receipt;}
     expect(storage.has(checkpoint)).toBe(true);if(canonicalSyncState(await fresh())!==canonicalSyncState(request.baseline))throw Error('Synthetic conflict');
-    archive={text:'',title:null,enc:structuredClone(request.priorEnc)};current={...current,text:'',title:null,enc:structuredClone(request.enc),...request.metadata,keyEpoch:2,keyId,updatedAt:1000};stamp++;
-    receipt={...unknown,status:'committed',revision:1000,createdAt:1000};if(loseApply)throw Error('Synthetic lost acknowledgement');return receipt;
+    const revision=Math.max(1000,request.baseline.revision+1);
+    if('change' in request){
+      const previous=structuredClone(current);if(request.change.kind==='compact')current={...current,embedding:serializeStoredEmbedding(current!.embedding as number[]),updatedAt:revision};
+      else current={...current,embedding:archive!.embedding,updatedAt:revision};archive=previous;
+    }else{archive={text:'',title:null,enc:structuredClone(request.priorEnc)};current={...current,text:'',title:null,enc:structuredClone(request.enc),...request.metadata,keyEpoch:2,keyId,updatedAt:revision};}stamp++;
+    receipt={...unknown,status:'committed',revision,createdAt:1000};if(loseApply)throw Error('Synthetic lost acknowledgement');return receipt;
   });
   deps={enabled:()=>enabled,storage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>{storage.set(k,v);},removeItem:k=>{if(failRemoval)throw Error('Synthetic removal failure');storage.delete(k);}} as Storage,id,exclusive:async(_name,work)=>work(),read:async()=>structuredClone(current),key:async(_baseline,prior,guard)=>{guard();return prior?oldKey:teamKey;},encryptJournal:encryptMemoryFields,decryptJournal:decryptMemoryEnvelope,encryptContent:encryptTeamMemoryFields,decryptContent:decryptTeamMemoryEnvelope,call,generation:()=>generation,observe:(_uid,changed)=>{teamListeners.add(changed);return()=>{teamListeners.delete(changed);};},mutation:{uid:()=>uid,ready:isMemoryCryptoReady,subscribe:changed=>{listeners.add(changed);return()=>{listeners.delete(changed);};}}};
   baseline=await captureTeamRevisionBaseline({uid:'alice',id:'note',teamId:'crew',keyEpoch:2,keyId,expected:{text:'Synthetic previous team note',title:'Synthetic previous title',authorUid:'author'}},deps);call.mockClear();
@@ -92,4 +97,32 @@ it('closed writes and unavailable storage release all guards without inference o
 });
 it.each(['nodes','links','generatedPrompt','generatedImagePrompt'])('legacy plaintext side field refuses preparation and preserves the source: %s',async field=>{
   current![field]=field.includes('Prompt')?'Synthetic legacy prompt':[];await expect(reviseTeamLearnedMemory(input(),deps)).rejects.toThrow('rascunho');expect(prepare).not.toHaveBeenCalled();expect(call).not.toHaveBeenCalled();expect(storage.size).toBe(0);expect(current![field]).toBeDefined();
+});
+
+it('team compaction seals only a storage command and leaves historic ciphertext, model and key epoch unchanged',async()=>{
+  current!.embedding=[-0,Number.MIN_VALUE,1/3];current!.embeddingModel='historic@1';baseline=await fresh();const before=structuredClone(current),key=vi.fn(deps.key),encrypt=vi.fn(deps.encryptContent);deps.key=key;deps.encryptContent=encrypt;
+  await compactTeamStoredEmbedding({uid:'alice',id:'note',teamId:'crew',baseline},deps);
+  expect(JSON.parse(current!.embedding as string).every((n:number,i:number)=>Object.is(n,(before!.embedding as number[])[i]))).toBe(true);for(const field of ['enc','embeddingModel','keyEpoch','keyId','learning','connections'])expect(current![field]).toEqual(before![field]);
+  expect(key).not.toHaveBeenCalled();expect(encrypt).not.toHaveBeenCalled();expect(prepare).not.toHaveBeenCalled();const request=call.mock.calls.find(row=>row[0]==='apply')![1].request;expect(Object.keys(request).sort()).toEqual(['baseline','change','operationId']);expect(request.change).toEqual({kind:'compact'});expect(storage.size).toBe(0);
+});
+it('team storage lost acknowledgement recovers the original encrypted request with admission closed and no second apply',async()=>{
+  current!.embedding=[.1,.2];baseline=await fresh();loseApply=true;await expect(compactTeamStoredEmbedding({uid:'alice',id:'note',teamId:'crew',baseline},deps)).rejects.toThrow('lost acknowledgement');
+  const raw=storage.get(checkpoint)!,request=JSON.parse((await decryptMemoryEnvelope(JSON.parse(raw))).text).request;expect(request.change).toEqual({kind:'compact'});expect(request.enc).toBeUndefined();expect(request.metadata).toBeUndefined();
+  enabled=false;current=undefined;call.mockClear();const key=vi.fn(deps.key);deps.key=key;expect((await recoverPendingTeamRevision('alice',()=>{},deps)).status).toBe('committed');expect(call.mock.calls.map(row=>row[0])).toEqual(['status','status']);expect(id).toHaveBeenCalledOnce();expect(key).not.toHaveBeenCalled();expect(prepare).not.toHaveBeenCalled();expect(storage.size).toBe(0);
+});
+it('team storage rollback sends the validated history reference without preparing or encrypting content',async()=>{
+  current!.embedding=[.1,.2];baseline=await fresh();await compactTeamStoredEmbedding({uid:'alice',id:'note',teamId:'crew',baseline},deps);baseline=await fresh();receipt=undefined;call.mockClear();id.mockReturnValue('44444444-4444-4444-8444-444444444444');
+  await rollbackTeamStoredEmbedding({uid:'alice',id:'note',teamId:'crew',baseline,versionId:'team-revision-33333333-3333-4333-8333-333333333333'},deps);expect(current!.embedding).toEqual([.1,.2]);expect(prepare).not.toHaveBeenCalled();expect(call.mock.calls.find(row=>row[0]==='apply')![1].request.change).toEqual({kind:'rollback',versionId:'team-revision-33333333-3333-4333-8333-333333333333'});
+});
+it.each(['already-compact','malformed','shared','ambiguous'] as const)('team storage refuses unsuitable source before a journal or apply: %s',async mode=>{
+  current!.embedding=mode==='already-compact'?'[1,0]':mode==='malformed'?[1,null]:[1,0];if(mode==='shared')current!.sharedWithIds=['someone'];if(mode==='ambiguous')current!.teamScopeAmbiguous=true;baseline=await fresh();
+  await expect(compactTeamStoredEmbedding({uid:'alice',id:'note',teamId:'crew',baseline},deps)).rejects.toThrow();expect(storage.size).toBe(0);expect(call.mock.calls.some(row=>row[0]==='apply')).toBe(false);expect(id).not.toHaveBeenCalled();expect(prepare).not.toHaveBeenCalled();
+});
+it('team storage refuses a changed/restored team scope before sealing or using another nonce',async()=>{
+  current!.embedding=[1,0];baseline=await fresh();modeChanged=mode=>{if(mode==='prepare'){generation++;for(const change of teamListeners)change();generation--;}};
+  await expect(compactTeamStoredEmbedding({uid:'alice',id:'note',teamId:'crew',baseline},deps)).rejects.toThrow();expect(storage.size).toBe(0);expect(id).not.toHaveBeenCalled();expect(call.mock.calls.some(row=>row[0]==='apply')).toBe(false);
+});
+it('journal read-back must match the exact intended team request before persistence or admission',async()=>{
+  current!.embedding=[1,0];baseline=await fresh();deps.encryptJournal=async fields=>{const row=JSON.parse(fields.text);row.request.operationId='44444444-4444-4444-8444-444444444444';return encryptMemoryFields({text:JSON.stringify(row)});};
+  await expect(compactTeamStoredEmbedding({uid:'alice',id:'note',teamId:'crew',baseline},deps)).rejects.toThrow();expect(storage.size).toBe(0);expect(call.mock.calls.some(row=>row[0]==='apply'||row[0]==='status')).toBe(false);
 });

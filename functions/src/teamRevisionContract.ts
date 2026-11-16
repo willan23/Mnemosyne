@@ -8,7 +8,10 @@ export interface TeamRevisionBaseline extends TeamRevisionTarget{
   keyEpoch:number;keyId:string;priorKeyEpoch:number;priorKeyId:string|null;
 }
 export interface TeamRevisionCipher{v:1|2;iv:string;ct:string}
-export interface TeamRevisionRequest{operationId:string;baseline:TeamRevisionBaseline;enc:TeamRevisionCipher;priorEnc:TeamRevisionCipher;metadata:PersonalRevisionMetadata}
+export interface TeamContentRevisionRequest{operationId:string;baseline:TeamRevisionBaseline;enc:TeamRevisionCipher;priorEnc:TeamRevisionCipher;metadata:PersonalRevisionMetadata}
+export type TeamEmbeddingStorageChange={kind:'compact'}|{kind:'rollback';versionId:string};
+export interface TeamEmbeddingStorageRequest{operationId:string;baseline:TeamRevisionBaseline;change:TeamEmbeddingStorageChange}
+export type TeamRevisionRequest=TeamContentRevisionRequest|TeamEmbeddingStorageRequest;
 export interface TeamRevisionOutcome{operationId:string;sessionId:string;teamId:string;digest:string;status:'unknown'|'committed'|'cancelled'|'revoked';revision:number|null;createdAt:number|null}
 export type TeamRevisionCall='prepare'|'apply'|'status'|'cancel';
 export function teamRevisionTime(value:unknown):number|null{if(syncInteger(value))return value;if(value&&typeof value==='object'&&'toMillis' in value&&typeof value.toMillis==='function'){const result=value.toMillis();return syncInteger(result)?result:null;}return null;}
@@ -27,9 +30,18 @@ export function parseTeamRevisionCipher(value:unknown):TeamRevisionCipher{
   return{v:row.v as 1|2,iv:row.iv,ct:row.ct};
 }
 export function parseTeamRevisionRequest(value:unknown):TeamRevisionRequest{
+  if(value&&typeof value==='object'&&'change' in value){
+    const row=teamRevisionRecord(value,['operationId','baseline','change']);if(!attachmentIdValid(row.operationId))throw Error('Invalid revision nonce');
+    const baseline=parseTeamRevisionBaseline(row.baseline),change=parseTeamEmbeddingStorageChange(row.change);return{operationId:row.operationId,baseline,change};
+  }
   const row=teamRevisionRecord(value,['operationId','baseline','enc','priorEnc','metadata']);if(!attachmentIdValid(row.operationId))throw Error('Invalid revision nonce');const baseline=parseTeamRevisionBaseline(row.baseline),enc=parseTeamRevisionCipher(row.enc),priorEnc=parseTeamRevisionCipher(row.priorEnc);if(enc.v!==2||priorEnc.v===2&&baseline.priorKeyId===null)throw Error('Invalid revision epoch');
   const metadata=parsePersonalRevisionRequest({operationId:row.operationId,baseline:{sessionId:baseline.sessionId,stateHash:baseline.stateHash,stateDigest:baseline.stateDigest,revision:baseline.revision},enc:{...enc,v:1},priorEnc:{...priorEnc,v:1},metadata:row.metadata}).metadata;
   const result={operationId:row.operationId,baseline,enc,priorEnc,metadata};if(new TextEncoder().encode(JSON.stringify(result)).byteLength>TEAM_REVISION_MAX_BYTES)throw Error('Revision too large');return result;
+}
+export function parseTeamEmbeddingStorageChange(value:unknown):TeamEmbeddingStorageChange{
+  if(value&&typeof value==='object'&&'kind' in value&&value.kind==='compact'){teamRevisionRecord(value,['kind']);return{kind:'compact'};}
+  const row=teamRevisionRecord(value,['kind','versionId']);if(row.kind!=='rollback'||typeof row.versionId!=='string'||!row.versionId.startsWith('team-revision-')||!attachmentIdValid(row.versionId.slice('team-revision-'.length)))throw Error('Invalid storage rollback');
+  return{kind:'rollback',versionId:row.versionId};
 }
 export const teamRevisionRequestBytes=(value:TeamRevisionRequest)=>canonicalSyncState(parseTeamRevisionRequest(value));
 export function parseTeamRevisionCommand(mode:TeamRevisionCall,value:unknown){

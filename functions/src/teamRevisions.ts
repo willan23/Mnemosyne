@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { storedEmbeddingMetadata } from './embeddingStorage';
+import { readStoredEmbedding,serializeStoredEmbedding,storedEmbeddingMetadata } from './embeddingStorage';
 import * as functions from 'firebase-functions/v1';
 import {createHash} from 'node:crypto';
 import {recordMemorySupersession} from './memorySupersession';
@@ -17,6 +17,11 @@ const defaults=():TeamRevisionServerDeps=>({firestore:admin.firestore(),now:Date
 const fail=(code:functions.https.FunctionsErrorCode='failed-precondition')=>new functions.https.HttpsError(code,'Encrypted team revision unavailable; retain the local draft');
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 function parsed<T>(parse:(value:unknown)=>T,value:unknown):T{try{return parse(value);}catch{throw fail('invalid-argument');}}
+function storedIndex(row:FirebaseFirestore.DocumentData){
+  if(row.embedding!=null&&readStoredEmbedding(row.embedding)===null||row.embeddingModel!=null&&(typeof row.embeddingModel!=='string'||row.embeddingModel.length>256))throw fail();
+  return Object.fromEntries(['embedding','embeddingModel'].filter(key=>Object.prototype.hasOwnProperty.call(row,key)).map(key=>[key,row[key]]));
+}
+const storageContentDigest=(row:FirebaseFirestore.DocumentData)=>syncStateHash({uid:row.uid,teamId:row.teamId,enc:row.enc,keyEpoch:row.keyEpoch??null,keyId:row.keyId??null});
 export function teamRevisionParent(snapshot:FirebaseFirestore.DocumentSnapshot,teamId:string,activeEpoch:number){
   const row=snapshot.data();if(!snapshot.exists||!row||row.teamId!==teamId||!attachmentActorIdValid(row.uid)||row.deletedAt!=null||row.teamScopeAmbiguous===true||teamRevisionTime(row.timestamp)===null||teamRevisionTime(row.updatedAt??row.timestamp)===null||row.text!==''||row.title!=null||['nodes','links','generatedPrompt','generatedImagePrompt'].some(key=>row[key]!=null))throw fail('permission-denied');
   const enc=parsed(parseTeamRevisionCipher,row.enc),priorKeyEpoch=row.keyEpoch??1,priorKeyId=row.keyId??null;
@@ -61,17 +66,40 @@ export async function executeTeamRevision(uid:string,value:unknown,mode:'apply'|
     if(mode==='cancel'){const cancelled={...base,status:'cancelled' as const,createdAt:now};tx.create(ref,{v:1,uid,authorUid:input.baseline.authorUid,ownerUid:input.baseline.ownerUid,...cancelled});return cancelled;}
     const security=await tx.get(db.doc('config/teamSecurity'));if(security.data()?.writesEnabled!==true)throw fail();
     const sessionRef=db.doc(`sessions/${input.baseline.sessionId}`),snapshot=await tx.get(sessionRef),before=teamRevisionParent(snapshot,input.baseline.teamId,access.row.activeKeyEpoch);
-    if(syncDocumentStateHash(snapshot)!==input.baseline.stateHash||syncStateHash(before.row)!==input.baseline.stateDigest||before.row.uid!==input.baseline.authorUid||teamRevisionTime(before.row.updatedAt??before.row.timestamp)!==input.baseline.revision||before.priorKeyEpoch!==input.baseline.priorKeyEpoch||before.priorKeyId!==input.baseline.priorKeyId||canonicalSyncState(before.enc)!==canonicalSyncState(input.priorEnc)||syncDocumentStateHash(access.team)!==input.baseline.teamStateHash||syncDocumentStateHash(access.epoch)!==input.baseline.epochStateHash||access.row.activeKeyEpoch!==input.baseline.keyEpoch||access.row.activeKeyId!==input.baseline.keyId||access.row.ownerUid!==input.baseline.ownerUid)throw fail('aborted');
+    if(syncDocumentStateHash(snapshot)!==input.baseline.stateHash||syncStateHash(before.row)!==input.baseline.stateDigest||before.row.uid!==input.baseline.authorUid||teamRevisionTime(before.row.updatedAt??before.row.timestamp)!==input.baseline.revision||before.priorKeyEpoch!==input.baseline.priorKeyEpoch||before.priorKeyId!==input.baseline.priorKeyId||!('change' in input)&&canonicalSyncState(before.enc)!==canonicalSyncState(input.priorEnc)||syncDocumentStateHash(access.team)!==input.baseline.teamStateHash||syncDocumentStateHash(access.epoch)!==input.baseline.epochStateHash||access.row.activeKeyEpoch!==input.baseline.keyEpoch||access.row.activeKeyId!==input.baseline.keyId||access.row.ownerUid!==input.baseline.ownerUid)throw fail('aborted');
+    let storageUpdate:FirebaseFirestore.DocumentData|undefined,storageCharge=0;
+    if('change' in input){
+      // A representation change is not a content revision or a rekey. The server
+      // derives it from this exact, authorised snapshot, including historic models.
+      if(before.row.sharedWithIds!=null&&(!Array.isArray(before.row.sharedWithIds)||before.row.sharedWithIds.length!==0))throw fail('permission-denied');
+      storedIndex(before.row);
+      if(input.change.kind==='compact'){
+        if(!Array.isArray(before.row.embedding)||before.row.embedding.length===0)throw fail();storageUpdate={embedding:serializeStoredEmbedding(before.row.embedding)};
+      }else{
+        const old=(await tx.get(sessionRef.collection('versions').doc(input.change.versionId))).data(),marker=old?.teamEmbeddingIndex;
+        if(!old||old.uid!==before.row.uid||old.teamId!==input.baseline.teamId||marker?.v!==1||!['compact','rollback'].includes(marker.kind)||marker.operationId!==input.change.versionId.slice('team-revision-'.length)||marker.contentDigest!==storageContentDigest(before.row)||storageContentDigest(old)!==marker.contentDigest)throw fail('aborted');
+        const restored=storedIndex(old);storageUpdate=Object.fromEntries(['embedding','embeddingModel'].map(key=>[key,Object.prototype.hasOwnProperty.call(restored,key)?restored[key]:admin.firestore.FieldValue.delete()]));
+        storageCharge=Buffer.byteLength(canonicalSyncState(restored));
+      }
+      // Reuse the existing byte budget conservatively: include the entire archive
+      // and the replacement index, never charge less than both ciphertext copies.
+      storageCharge+=Buffer.byteLength(canonicalSyncState(before.row))+Buffer.byteLength(canonicalSyncState(input.change.kind==='compact'?storageUpdate:{}));
+    }
     const versionRef=sessionRef.collection('versions').doc(`team-revision-${input.operationId}`),auditRef=db.doc(`teamAudit/revision-${input.operationId}`);if((await tx.get(versionRef)).exists||(await tx.get(auditRef)).exists)throw fail('already-exists');
     const day=new Date(now).toISOString().slice(0,10),userBudget=db.doc(`teamRevisionBudgets/${hash(JSON.stringify([uid,input.baseline.teamId]))}_${day}`),teamBudget=db.doc(`teamRevisionTeamBudgets/${hash(input.baseline.teamId)}_${day}`),[userRow,teamRow]=await tx.getAll(userBudget,teamBudget);
-    const cipherBytes=Buffer.byteLength(input.enc.ct)+Buffer.byteLength(input.priorEnc.ct);const budget=(row:FirebaseFirestore.DocumentSnapshot,actor:boolean)=>{const data=row.data();if(data&&(data.v!==1||data.teamId!==input.baseline.teamId||data.day!==day||actor&&data.uid!==uid||!syncInteger(data.revisions)||!syncInteger(data.cipherBytes)))throw fail();return{revisions:Number(data?.revisions??0)+1,cipherBytes:Number(data?.cipherBytes??0)+cipherBytes};};
+    const cipherBytes='change' in input?Math.max(2*Buffer.byteLength(before.enc.ct),storageCharge):Buffer.byteLength(input.enc.ct)+Buffer.byteLength(input.priorEnc.ct);const budget=(row:FirebaseFirestore.DocumentSnapshot,actor:boolean)=>{const data=row.data();if(data&&(data.v!==1||data.teamId!==input.baseline.teamId||data.day!==day||actor&&data.uid!==uid||!syncInteger(data.revisions)||!syncInteger(data.cipherBytes)))throw fail();return{revisions:Number(data?.revisions??0)+1,cipherBytes:Number(data?.cipherBytes??0)+cipherBytes};};
     const user=budget(userRow,true),team=budget(teamRow,false);if(user.revisions>TEAM_REVISION_DAILY_LIMITS.revisions||user.cipherBytes>TEAM_REVISION_DAILY_LIMITS.cipherBytes||team.revisions>TEAM_REVISION_DAILY_LIMITS.teamRevisions||team.cipherBytes>TEAM_REVISION_DAILY_LIMITS.teamCipherBytes)throw fail('resource-exhausted');
     const revision=Math.max(now,input.baseline.revision+1);if(!syncInteger(revision))throw fail();const metadata=Object.fromEntries(TEAM_REVISION_ARCHIVE_FIELDS.filter(key=>before.row[key]!==undefined).map(key=>[key,before.row[key]]));
-    tx.create(versionRef,{...metadata,uid:before.row.uid,timestamp:before.row.timestamp,teamId:input.baseline.teamId,keyEpoch:before.priorKeyEpoch,keyId:before.priorKeyId,text:'',title:null,enc:input.priorEnc,previousUpdatedAt:before.row.updatedAt??before.row.timestamp,createdAt:revision,editorUid:uid});
-    tx.update(sessionRef,{text:'',title:null,enc:input.enc,...storedEmbeddingMetadata(input.metadata),keyEpoch:input.baseline.keyEpoch,keyId:input.baseline.keyId,updatedAt:revision,lastVersionId:versionRef.id,...(before.row.learning?{learning:{...before.row.learning,revisedAt:revision}}:{}),nodes:null,links:null,generatedPrompt:null,generatedImagePrompt:null});
-    recordMemorySupersession(tx,db,uid,{operationId:input.operationId,memoryId:input.baseline.sessionId,
-      previousRevision:input.baseline.revision,revision,versionId:versionRef.id,source:'team-revision'});
-    const result={...base,status:'committed' as const,revision,createdAt:now};tx.create(ref,{v:1,uid,authorUid:input.baseline.authorUid,ownerUid:input.baseline.ownerUid,...result});tx.create(auditRef,{v:1,type:'memory_revised',actorUid:uid,teamId:input.baseline.teamId,sessionId:input.baseline.sessionId,versionId:versionRef.id,revision,createdAt:now});tx.set(userBudget,{v:1,uid,teamId:input.baseline.teamId,day,...user,updatedAt:now});tx.set(teamBudget,{v:1,teamId:input.baseline.teamId,day,...team,updatedAt:now});return result;
+    if('change' in input){
+      tx.create(versionRef,{...before.row,previousUpdatedAt:input.baseline.revision,createdAt:revision,editorUid:uid,teamEmbeddingIndex:{v:1,kind:input.change.kind,operationId:input.operationId,contentDigest:storageContentDigest(before.row)}});
+      tx.update(sessionRef,{...storageUpdate,updatedAt:revision,lastVersionId:versionRef.id});
+    }else{
+      tx.create(versionRef,{...metadata,uid:before.row.uid,timestamp:before.row.timestamp,teamId:input.baseline.teamId,keyEpoch:before.priorKeyEpoch,keyId:before.priorKeyId,text:'',title:null,enc:input.priorEnc,previousUpdatedAt:before.row.updatedAt??before.row.timestamp,createdAt:revision,editorUid:uid});
+      tx.update(sessionRef,{text:'',title:null,enc:input.enc,...storedEmbeddingMetadata(input.metadata),keyEpoch:input.baseline.keyEpoch,keyId:input.baseline.keyId,updatedAt:revision,lastVersionId:versionRef.id,...(before.row.learning?{learning:{...before.row.learning,revisedAt:revision}}:{}),nodes:null,links:null,generatedPrompt:null,generatedImagePrompt:null});
+      recordMemorySupersession(tx,db,uid,{operationId:input.operationId,memoryId:input.baseline.sessionId,
+        previousRevision:input.baseline.revision,revision,versionId:versionRef.id,source:'team-revision'});
+    }
+    const result={...base,status:'committed' as const,revision,createdAt:now};tx.create(ref,{v:1,uid,authorUid:input.baseline.authorUid,ownerUid:input.baseline.ownerUid,...result});tx.create(auditRef,{v:1,type:'change' in input?(input.change.kind==='compact'?'embedding_storage_compacted':'embedding_storage_rolled_back'):'memory_revised',actorUid:uid,teamId:input.baseline.teamId,sessionId:input.baseline.sessionId,versionId:versionRef.id,revision,createdAt:now});tx.set(userBudget,{v:1,uid,teamId:input.baseline.teamId,day,...user,updatedAt:now});tx.set(teamBudget,{v:1,teamId:input.baseline.teamId,day,...team,updatedAt:now});return result;
   });
 }
 function bound(uid:string,mode:TeamRevisionCall,value:unknown){if(!attachmentActorIdValid(uid))throw fail('unauthenticated');const command=parsed(input=>parseTeamRevisionCommand(mode,input),value);if(command.actorUid!==uid)throw fail('permission-denied');return command;}

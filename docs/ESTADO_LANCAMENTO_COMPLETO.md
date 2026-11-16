@@ -1,5 +1,11 @@
 # Estado do lançamento completo — 29 de outubro de 2026
 
+## Núcleo recuperável da compactação de equipas — 16 de novembro de 2026
+
+O [contrato e executor de compactação de equipa](COMPACTACAO_VETORES_EQUIPA_2026-11-16.md) reutilizam revisão, baseline de documento/equipa/época, recibo, budgets e journal existentes. O servidor deriva a conversão; mantém ciphertext, modelo e época histórica. Rollback liga o arquivo ao mesmo conteúdo cifrado. Não há novos endpoints/coleções/Rules/índices/TTL; há um novo comando, marcador de arquivo e tipos de auditoria. A cobrança inclui conservadoramente o arquivo completo nos mesmos limites. **Faltam a interface por lotes e o ensaio integrado desse percurso; equipas ainda não estão concluídas para lançamento.**
+
+Passaram 2.481 testes frontend, 34 focados, 644 backend (um Rules omitido sem emulador), build/identidade, lint zero erros/21 avisos, 51 de recuperação e 23 contratos. O ensaio Auth/Firestore/Rules local fez quatro compactações, um rollback e um cancelamento; testou owner/admin/member, revogação, rotação, três aborts ABA, quotas e recusa de escritas diretas no histórico. A ponte ao executor não aprova HTTP/App Check/rate limiter nem UI/grande volume. Fases 0–6 incompletas, 49 gates falsos, sem merge/deploy. Prova: team-embedding-storage-local-validation-20261116.json. Os blocos seguintes conservam a cronologia.
+
 ## Compactação pessoal recuperável — 16 de novembro de 2026
 
 A [compactação de vetores pessoais](COMPACTACAO_VETORES_PESSOAIS_2026-11-16.md) acrescenta revisão/confirmar de lotes de até 25 notas próprias não partilhadas. O servidor converte o array atual para JSON, mantendo coordenadas, modelo, ciphertext e before-image. Usa CAS, recibos, journal cifrado, quota e rollback existentes. Um cursor local cifrado permite retomar; não substitui nem apaga pedidos pendentes. Não houve conversão em produção; equipas continuam pendentes.

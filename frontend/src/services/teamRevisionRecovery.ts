@@ -10,7 +10,8 @@ import {unlockTeamKey} from './teamKeyAccess';
 import {parseTeam} from './teamsService';
 import {readSessionMnemonic} from '../utils/sessionMnemonic';
 import {canonicalSyncState} from '../../../functions/src/mobileSyncImportContract';
-import {parseTeamRevisionTarget,parseTeamRevisionBaseline,parseTeamRevisionRequest,parseTeamRevisionCipher,teamRevisionTime,teamRevisionRequestBytes,TEAM_REVISION_MAX_BYTES,type TeamRevisionBaseline,type TeamRevisionRequest,type TeamRevisionOutcome} from '../../../functions/src/teamRevisionContract';
+import {parseTeamRevisionTarget,parseTeamRevisionBaseline,parseTeamRevisionRequest,parseTeamRevisionCipher,parseTeamEmbeddingStorageChange,teamRevisionTime,teamRevisionRequestBytes,TEAM_REVISION_MAX_BYTES,type TeamEmbeddingStorageChange,type TeamRevisionBaseline,type TeamRevisionRequest,type TeamRevisionOutcome} from '../../../functions/src/teamRevisionContract';
+import {readStoredEmbedding} from '../../../functions/src/embeddingStorage';
 import type {PersonalRevisionContent} from './personalLearnedRevision';
 export type {TeamRevisionBaseline};
 export class TeamRevisionError extends Error{readonly reason:'closed'|'baseline'|'pending'|'checkpoint'|'confirmation';constructor(reason:TeamRevisionError['reason']){super(reason==='baseline'?'A memória ou o acesso à equipa mudou desde que a edição foi aberta. Conserva o rascunho e volta a abrir a memória antes de rever.':reason==='closed'?'A revisão de equipa está em validação antes do lançamento.':'A revisão de equipa aguarda confirmação. Recupera ou cancela o pedido local antes de repetir.');this.reason=reason;}}
@@ -34,7 +35,7 @@ const defaults=():TeamRevisionDeps=>({enabled:()=>TEAM_WRITES_ENABLED,storage:lo
 const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),byte=>byte.toString(16).padStart(2,'0')).join('');
 const fail=(reason:TeamRevisionError['reason']='checkpoint')=>new TeamRevisionError(reason);
 async function readBaseline(uid:string,target:{sessionId:string;teamId:string},guard:()=>void,deps:TeamRevisionDeps){
-  const before=await deps.read(target.sessionId);guard();if(!before||before.teamId!==target.teamId||before.deletedAt!=null||before.text!==''||before.title!=null||['nodes','links','generatedPrompt','generatedImagePrompt'].some(key=>before[key]!=null))throw fail('baseline');const enc=parseTeamRevisionCipher(before.enc),digest=await hash(canonicalSyncState(before));guard();
+  const before=await deps.read(target.sessionId);guard();if(!before||before.teamId!==target.teamId||before.teamScopeAmbiguous===true||before.deletedAt!=null||before.text!==''||before.title!=null||['nodes','links','generatedPrompt','generatedImagePrompt'].some(key=>before[key]!=null))throw fail('baseline');const enc=parseTeamRevisionCipher(before.enc),digest=await hash(canonicalSyncState(before));guard();
   const baseline=parseTeamRevisionBaseline(await deps.call('prepare',{actorUid:uid,request:target}));guard();if(baseline.sessionId!==target.sessionId||baseline.teamId!==target.teamId||baseline.authorUid!==before.uid||baseline.stateDigest!==digest||baseline.revision!==teamRevisionTime(before.updatedAt??before.timestamp)||baseline.priorKeyEpoch!==(before.keyEpoch??1)||baseline.priorKeyId!==(before.keyId??null))throw fail('baseline');
   return{before,enc,baseline};
 }
@@ -53,18 +54,26 @@ function outcome(value:unknown,request:TeamRevisionRequest,digest:string):TeamRe
 async function journal(raw:string,uid:string,guard:()=>void,deps:TeamRevisionDeps){
   try{if(raw.length>3_000_000)throw fail();const enc:unknown=JSON.parse(raw);if(!isEncryptedMemoryEnvelope(enc)||Object.keys(enc).sort().join(',')!=='ct,iv,v')throw fail();const text=(await deps.decryptJournal(enc)).text;guard();if(new TextEncoder().encode(text).length>TEAM_REVISION_MAX_BYTES+1000)throw fail();const row=JSON.parse(text);if(!row||Object.keys(row).sort().join(',')!=='request,uid,v'||row.v!==1||row.uid!==uid)throw fail();return parseTeamRevisionRequest(row.request);}catch{guard();throw fail();}
 }
-type Input={uid:string;id:string;teamId:string;baseline:TeamRevisionBaseline;prepare:(guard:()=>void)=>Promise<PersonalRevisionContent>;assertCurrent?:()=>void};
-async function operate(uid:string,mode:'start'|'recover'|'cancel',input:Input|undefined,outer:()=>void,deps:TeamRevisionDeps){
-  const captured=input?{...input,baseline:parseTeamRevisionBaseline(input.baseline)}:undefined;if(mode==='start'&&!deps.enabled())throw fail('closed');if(captured&&(captured.baseline.sessionId!==captured.id||captured.baseline.teamId!==captured.teamId))throw fail('baseline');
+type CommonInput={uid:string;id:string;teamId:string;baseline:TeamRevisionBaseline;assertCurrent?:()=>void};
+type Input=CommonInput&{prepare:(guard:()=>void)=>Promise<PersonalRevisionContent>};
+type StorageInput=CommonInput&{change:TeamEmbeddingStorageChange};
+async function operate(uid:string,mode:'start'|'recover'|'cancel',input:Input|StorageInput|undefined,outer:()=>void,deps:TeamRevisionDeps){
+  const captured=input?('change' in input?{...input,baseline:parseTeamRevisionBaseline(input.baseline),change:parseTeamEmbeddingStorageChange(input.change)}:{...input,baseline:parseTeamRevisionBaseline(input.baseline)}):undefined;if(mode==='start'&&!deps.enabled())throw fail('closed');if(captured&&(captured.baseline.sessionId!==captured.id||captured.baseline.teamId!==captured.teamId))throw fail('baseline');
   return scoped(uid,()=>{outer();captured?.assertCurrent?.();},deps,scope=>deps.exclusive(teamRevisionCheckpointKey(uid),async()=>{
     scope();const key=teamRevisionCheckpointKey(uid),stored=()=>deps.storage.getItem(key);let raw=stored();const guard=()=>{scope();if(stored()!==raw)throw fail();};let request:TeamRevisionRequest;
     if(raw!==null){if(mode==='start')throw fail('pending');request=await journal(raw,uid,guard,deps);guard();}
     else{
       if(!captured||mode!=='start')throw fail('pending');const read=await readBaseline(uid,{sessionId:captured.id,teamId:captured.teamId},guard,deps);guard();if(canonicalSyncState(read.baseline)!==canonicalSyncState(captured.baseline))throw fail('baseline');
-      const content=structuredClone(await captured.prepare(guard));guard();if(!content||typeof content.text!=='string'||new TextEncoder().encode(content.text).length>500_000||content.title!==null&&(typeof content.title!=='string'||new TextEncoder().encode(content.title).length>2000))throw fail();
-      const teamKey=await deps.key(read.baseline,false,guard);guard();const enc=await deps.encryptContent(teamKey,content,{teamId:read.baseline.teamId,keyEpoch:read.baseline.keyEpoch,keyId:read.baseline.keyId});guard();
-      request=parseTeamRevisionRequest({operationId:deps.id(),baseline:captured.baseline,enc,priorEnc:read.enc,metadata:{embedding:content.embedding,embeddingModel:content.embeddingModel,semanticClusterId:content.semanticClusterId,position:content.position,importance:content.importance,processingMethod:content.processingMethod}});
-      const next=JSON.stringify(await deps.encryptJournal({text:JSON.stringify({v:1,uid,request})}));guard();if(next.length>3_000_000)throw fail();await journal(next,uid,guard,deps);guard();deps.storage.setItem(key,next);raw=next;guard();notify();guard();
+      if('change' in captured){
+        if(read.before.sharedWithIds!=null&&(!Array.isArray(read.before.sharedWithIds)||read.before.sharedWithIds.length!==0)||read.before.embedding!=null&&readStoredEmbedding(read.before.embedding)===null||read.before.embeddingModel!=null&&(typeof read.before.embeddingModel!=='string'||read.before.embeddingModel.length>256))throw fail('baseline');
+        if(captured.change.kind==='compact'&&(!Array.isArray(read.before.embedding)||read.before.embedding.length===0))throw fail('baseline');
+        request=parseTeamRevisionRequest({operationId:deps.id(),baseline:captured.baseline,change:captured.change});
+      }else{
+        const content=structuredClone(await captured.prepare(guard));guard();if(!content||typeof content.text!=='string'||new TextEncoder().encode(content.text).length>500_000||content.title!==null&&(typeof content.title!=='string'||new TextEncoder().encode(content.title).length>2000))throw fail();
+        const teamKey=await deps.key(read.baseline,false,guard);guard();const enc=await deps.encryptContent(teamKey,content,{teamId:read.baseline.teamId,keyEpoch:read.baseline.keyEpoch,keyId:read.baseline.keyId});guard();
+        request=parseTeamRevisionRequest({operationId:deps.id(),baseline:captured.baseline,enc,priorEnc:read.enc,metadata:{embedding:content.embedding,embeddingModel:content.embeddingModel,semanticClusterId:content.semanticClusterId,position:content.position,importance:content.importance,processingMethod:content.processingMethod}});
+      }
+      const next=JSON.stringify(await deps.encryptJournal({text:JSON.stringify({v:1,uid,request})}));guard();if(next.length>3_000_000)throw fail();const checked=await journal(next,uid,guard,deps);guard();if(teamRevisionRequestBytes(checked)!==teamRevisionRequestBytes(request))throw fail();deps.storage.setItem(key,next);raw=next;guard();notify();guard();
     }
     const digest=await hash(teamRevisionRequestBytes(request));guard();const call=async(which:'apply'|'status'|'cancel')=>{guard();const result=outcome(await deps.call(which,{actorUid:uid,request}),request,digest);guard();return result;};
     let result=await call('status');if(result.status==='unknown'){if(mode!=='cancel'&&!deps.enabled())throw fail('pending');result=await call(mode==='cancel'?'cancel':'apply');}if(result.status==='unknown')throw fail('confirmation');const confirmed=await call('status');if(canonicalSyncState(result)!==canonicalSyncState(confirmed))throw fail('confirmation');
@@ -72,5 +81,7 @@ async function operate(uid:string,mode:'start'|'recover'|'cancel',input:Input|un
   }));
 }
 export async function reviseTeamLearnedMemory(input:Input,deps=defaults()){const result=await operate(input.uid,'start',input,()=>{},deps);if(result.status!=='committed')throw fail('confirmation');return result;}
+export async function compactTeamStoredEmbedding(input:CommonInput,deps=defaults()){const result=await operate(input.uid,'start',{...input,change:{kind:'compact'}},()=>{},deps);if(result.status!=='committed')throw fail('confirmation');return result;}
+export async function rollbackTeamStoredEmbedding(input:CommonInput&{versionId:string},deps=defaults()){const result=await operate(input.uid,'start',{...input,change:{kind:'rollback',versionId:input.versionId}},()=>{},deps);if(result.status!=='committed')throw fail('confirmation');return result;}
 export async function recoverPendingTeamRevision(uid:string,outer:()=>void=()=>{},deps=defaults()){return operate(uid,'recover',undefined,outer,deps);}
 export async function cancelPendingTeamRevision(uid:string,outer:()=>void=()=>{},deps=defaults()){return operate(uid,'cancel',undefined,outer,deps);}
