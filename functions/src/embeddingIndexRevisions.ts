@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { readStoredEmbedding, storedEmbeddingMetadata } from './embeddingStorage';
+import { readStoredEmbedding, serializeStoredEmbedding, storedEmbeddingMetadata } from './embeddingStorage';
 import * as functions from 'firebase-functions/v1';
 import {createHash} from 'node:crypto';
 import {attachmentActorIdValid} from './attachmentEnvelope';
@@ -79,9 +79,15 @@ export async function executeEmbeddingIndexRevision(uid:string,value:unknown,mod
       contentDigest(before)!==base.contentDigest||(before.updatedAt??before.timestamp)!==base.revision)throw fail('aborted');
     let next:FirebaseFirestore.DocumentData,restoredIndex:FirebaseFirestore.DocumentData|undefined;
     if(input.change.kind==='publish')next=storedEmbeddingMetadata({embedding:input.change.vector,embeddingModel:input.change.space});
+    else if(input.change.kind==='compact'){
+      if(!Array.isArray(before.embedding)||before.embedding.length===0)throw fail();
+      // The client supplies no replacement vector or model. Preserve the exact
+      // historical space, including missing/null markers, and change storage only.
+      next={embedding:serializeStoredEmbedding(before.embedding)};
+    }
     else {
       const history=await tx.get(session.collection('versions').doc(input.change.versionId)),old=history.data();
-      if(!history.exists||!old||old.uid!==uid||old.teamId!==null||old.embeddingIndex?.v!==1||
+      if(!history.exists||!old||old.uid!==uid||old.teamId!==null||old.embeddingIndex?.v!==1||!['publish','rollback','compact'].includes(old.embeddingIndex.kind)||
         old.embeddingIndex.operationId!==input.change.versionId.slice(16)||old.embeddingIndex.contentDigest!==base.contentDigest||
         contentDigest(old)!==base.contentDigest)throw fail('aborted');
       const restored=storedIndex(old);restoredIndex=restored;

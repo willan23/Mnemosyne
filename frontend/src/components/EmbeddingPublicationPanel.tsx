@@ -13,7 +13,7 @@ import {triggerBlobDownload} from '../utils/export';
 import {useTranslation} from '../utils/translations';
 
 type Preview={kind:'publish';plan:EmbeddingPublicationPlan}|{kind:'rollback';id:string;viewDigest:string;baseline:EmbeddingIndexBaseline;entry:EmbeddingIndexHistoryEntry}
-  |{kind:'recover';id:string;operation:'publish'|'rollback'};
+  |{kind:'recover';id:string;operation:'publish'|'rollback'|'compact'};
 type Feedback='published'|'confirmed'|'cancelled'|'imported'|'failed'|EmbeddingIndexRecoveryError['reason'];
 export function EmbeddingPublicationPanel({uid,sessions}:{uid:string|null;sessions:readonly SessionData[]}) {
   const {t,language}=useTranslation();
@@ -93,7 +93,7 @@ export function EmbeddingPublicationPanel({uid,sessions}:{uid:string|null;sessio
       <div className="flex flex-wrap gap-2"><button type="button" className={button} disabled={!ready||busy} onClick={event=>{reviewTrigger.current=event.currentTarget;void reviewPending();}}>{t('indexPublishReviewPending')}</button><button type="button" className={button} disabled={!ready||busy} onClick={()=>void cancel()}>{t('indexPublishCancelPending')}</button><button type="button" className={button} disabled={!ready||busy} onClick={()=>void backup()}>{t('indexPublishExport')}</button></div></div>}
     <label className="block space-y-1 text-xs"><span>{t('indexPublishImport')}</span><input type="file" accept="application/json,.json" disabled={!uid||!ready||busy||pending} onChange={event=>{const file=event.target.files?.[0];event.target.value='';if(file)void restore(file);}} className="block max-w-full" /></label>
     {shownPreview&&<div role="group" aria-label={t('indexPublishReview')} className="space-y-3 rounded-lg border border-purple-300/40 p-3">
-      <p className="text-sm">{shownPreview.kind==='publish'?t('indexPublishPreview',{count:shownPreview.plan.items.length,remaining:shownPreview.plan.remaining}):shownPreview.kind==='rollback'?t('indexPublishRollbackPreview',{model:model(shownPreview.entry.space)}):t('indexPublishPendingPreview',{id:shownPreview.id,operation:t(shownPreview.operation==='publish'?'indexPublishTitle':'indexPublishRollback')})}</p>
+      <p className="text-sm">{shownPreview.kind==='publish'?t('indexPublishPreview',{count:shownPreview.plan.items.length,remaining:shownPreview.plan.remaining}):shownPreview.kind==='rollback'?t('indexPublishRollbackPreview',{model:model(shownPreview.entry.space)}):t('indexPublishPendingPreview',{id:shownPreview.id,operation:t(shownPreview.operation==='compact'?'storageOptimizeTitle':shownPreview.operation==='publish'?'indexPublishTitle':'indexPublishRollback')})}</p>
       <div className="flex gap-2"><button ref={confirmButton} type="button" className={button} disabled={busy||!ready} onClick={()=>void confirm()}>{t('indexPublishConfirm')}</button><button type="button" className={button} disabled={busy} onClick={()=>{returnFocus.current=true;setPreview(null);}}>{t('indexPublishBack')}</button></div>
     </div>}
     <div className="space-y-2 border-t border-white/10 pt-3"><label className="block text-xs">{t('indexPublishMemory')}<select value={memory?.id??''} disabled={!ready||busy} className="mt-1 block w-full rounded-lg border border-white/15 bg-slate-900 p-2" onChange={event=>{setSelected(event.target.value);setHistory(null);setPreview(null);}}>

@@ -31,6 +31,7 @@ import { AiModelPicker } from './AiModelPicker';
 import {EmailVerificationPanel} from './EmailVerificationPanel';
 import { EmbeddingReindexPanel } from './EmbeddingReindexPanel';
 import { EmbeddingPublicationPanel } from './EmbeddingPublicationPanel';
+import { EmbeddingStoragePanel } from './EmbeddingStoragePanel';
 import { importFolderMemories } from '../services/folderMemoryImport';
 import {looksLikeObsidianVault} from '../services/obsidianVaultImport';
 import { isTauriRuntime, selectAndReadTauriDirectory } from '../utils/tauriFolderImporter';
@@ -1542,6 +1543,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                                 <EmbeddingReindexPanel key={auth.currentUser?.uid ?? 'signed-out'}
                                     uid={auth.currentUser?.uid ?? null} sessions={sessions} />
+                                <EmbeddingStoragePanel key={`storage:${auth.currentUser?.uid ?? 'signed-out'}`} uid={auth.currentUser?.uid ?? null} />
                                 <EmbeddingPublicationPanel key={`publication:${auth.currentUser?.uid ?? 'signed-out'}`}
                                     uid={auth.currentUser?.uid ?? null} sessions={sessions} />
 

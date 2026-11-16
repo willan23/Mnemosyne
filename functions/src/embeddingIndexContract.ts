@@ -9,7 +9,7 @@ export interface EmbeddingIndexTarget {sessionId: string; viewDigest: string}
 export interface EmbeddingIndexBaseline {
   sessionId: string; ownerUid: string; stateHash: string; stateDigest: string; contentDigest: string; revision: number;
 }
-export type EmbeddingIndexChange = {kind: 'publish'; space: string; vector: number[]} | {kind: 'rollback'; versionId: string};
+export type EmbeddingIndexChange = {kind: 'publish'; space: string; vector: number[]} | {kind: 'rollback'; versionId: string} | {kind: 'compact'};
 export interface EmbeddingIndexRequest {operationId: string; baseline: EmbeddingIndexBaseline; change: EmbeddingIndexChange}
 export interface EmbeddingIndexOutcome {
   operationId: string; sessionId: string; digest: string; status: 'unknown'|'committed'|'cancelled'|'revoked';
@@ -30,6 +30,10 @@ export function parseEmbeddingIndexBaseline(value: unknown): EmbeddingIndexBasel
 }
 export function parseEmbeddingIndexChange(value: unknown): EmbeddingIndexChange {
   if(!value||typeof value!=='object'||Array.isArray(value))throw fail();
+  if((value as {kind?:unknown}).kind==='compact'){
+    teamRevisionRecord(value,['kind']);
+    return {kind:'compact'};
+  }
   if((value as {kind?:unknown}).kind==='rollback'){
     const row=teamRevisionRecord(value,['kind','versionId']);
     if(typeof row.versionId!=='string'||!/^embedding-index-[a-f0-9-]{36}$/.test(row.versionId)||!attachmentIdValid(row.versionId.slice(16)))throw fail();

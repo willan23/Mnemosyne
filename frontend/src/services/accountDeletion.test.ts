@@ -12,6 +12,13 @@ function fixture() {
 }
 const checkpointKey = 'mnemosyne:account-deletion:v1:alice';
 beforeEach(() => { localStorage.clear(); });
+it('local account cleanup removes only its own encrypted compaction cursor',()=>{
+  localStorage.setItem('mnemosyne:embedding-storage-cursor:v1:alice','encrypted-own');
+  localStorage.setItem('mnemosyne:embedding-storage-cursor:v1:alice-other','encrypted-other');
+  clearAccountLocalStorage('alice',localStorage);
+  expect(localStorage.getItem('mnemosyne:embedding-storage-cursor:v1:alice')).toBeNull();
+  expect(localStorage.getItem('mnemosyne:embedding-storage-cursor:v1:alice-other')).toBe('encrypted-other');
+});
 it('local account cleanup removes only the exact own team revision checkpoint',()=>{
   for(const uid of ['alice','bob','alice-other'])localStorage.setItem(`mnemosyne:team-revision:v1:${uid}`,'Synthetic encrypted request');clearAccountLocalStorage('alice',localStorage);expect(localStorage.getItem('mnemosyne:team-revision:v1:alice')).toBeNull();expect(localStorage.getItem('mnemosyne:team-revision:v1:bob')).toBe('Synthetic encrypted request');expect(localStorage.getItem('mnemosyne:team-revision:v1:alice-other')).toBe('Synthetic encrypted request');
 });

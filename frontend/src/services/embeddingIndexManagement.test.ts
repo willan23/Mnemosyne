@@ -59,3 +59,8 @@ it('reads rollback metadata from JSON vector archives without exposing their coo
   expect(result.invalid).toBe(0);
   expect(JSON.stringify(result)).not.toContain('[-0,0.5]');
 });
+
+it('allows rollback review for a compaction archive without changing its historical model',async()=>{
+  const f=await historyFixture();f.archive.embeddingIndex.kind='compact';
+  const result=await loadEmbeddingIndexHistory(f.input,f.historyDeps);expect(result.entries[0]).toMatchObject({dimensions:2,rollbackAllowed:true,space:'Xenova/all-MiniLM-L6-v2@legacy-main'});expect(result.invalid).toBe(0);
+});

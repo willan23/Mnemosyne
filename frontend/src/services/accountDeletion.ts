@@ -76,6 +76,7 @@ export function clearAccountLocalStorage(uid: string, storage: Storage) {
     `mnemosyne:team-revision:v1:${encoded}`,
     `mnemosyne:memory-edit:v1:${encoded}`,
     `mnemosyne:embedding-index:v1:${encoded}`,
+    `mnemosyne:embedding-storage-cursor:v1:${encoded}`,
     `mnemosyne:team-connection:v1:${encoded}`,
     `mnemosyne:semantic-relations:v1:${encoded}`,
     `mnemosyne:sync-conflict:v1:${encoded}`,

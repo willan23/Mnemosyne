@@ -1,5 +1,11 @@
 # Fase 5 — qualidade semântica e âmbito da recuperação
 
+## Compactação pessoal recuperável — 16 de novembro de 2026
+
+A [compactação de vetores pessoais](COMPACTACAO_VETORES_PESSOAIS_2026-11-16.md) acrescenta revisão/confirmar de lotes de até 25 notas próprias não partilhadas. O servidor converte o array atual para JSON, mantendo coordenadas, modelo, ciphertext e before-image. Usa CAS, recibos, journal cifrado, quota e rollback existentes. Um cursor local cifrado permite retomar; não substitui nem apaga pedidos pendentes. Não houve conversão em produção; equipas continuam pendentes.
+
+Passaram 2.472 testes frontend/254 ficheiros, 84 focados/7, 631 backend (um Rules omitido no comando sem emulador), build/identidade, lint zero erros/21 avisos, 51 de recuperação e 23 contratos. Após interrupção, sete etapas já concluídas foram reutilizadas por hashes e a suíte frontend completa foi repetida. O ensaio final com UI, SDKs/Rules e transações reais no emulador fez 51 compactações e um rollback em 53 notas, recuperou uma confirmação perdida sem novo apply e retomou do cursor após reload. A ponte local não exercitou HTTP callable/App Check/rate limiter; duas falhas do instrumento permanecem conservadas. Não aprova 100.000 notas ou a aplicação completa. Fases 0–6 incompletas, 49 gates falsos, sem merge/deploy. Prova: embedding-compaction-local-validation-20261116.json. Os blocos seguintes conservam a cronologia.
+
 ## Vetores compactos e compatibilidade de recuperação — 15 de novembro de 2026
 
 A [representação JSON dos vetores](ARMAZENAMENTO_VETORES_2026-11-15.md), já legível pelos leitores, reduziu a heap retida da página de 172,39 MB para 82,27 MB na comparação controlada de 5.000 notas, com todas as coordenadas preservadas. A conversão foi integrada apenas na persistência do documento atual, depois da validação/digest; RPCs/vistas continuam numéricos e os arquivos conservam o valor anterior exato. Recuperação, histórico, sincronização e ledger aceitam ambos os formatos.

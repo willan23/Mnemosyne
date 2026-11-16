@@ -85,7 +85,7 @@ export async function loadEmbeddingIndexHistory(input:{uid:string;id:string;view
     const page=await deps.page(captured.id,captured.cursor?.tail);guard();if(page.rows.length>25)throw fail();const entries:EmbeddingIndexHistoryEntry[]=[];let invalid=0;
     for(const {id,data:row}of page.rows){guard();if(!row.embeddingIndex)continue;
       try{const marker=row.embeddingIndex as Record<string,unknown>;
-        if(!id.startsWith('embedding-index-')||!attachmentIdValid(id.slice(16))||marker.v!==1||marker.operationId!==id.slice(16)||!['publish','rollback'].includes(String(marker.kind))||!syncHashValid(marker.contentDigest)||
+        if(!id.startsWith('embedding-index-')||!attachmentIdValid(id.slice(16))||marker.v!==1||marker.operationId!==id.slice(16)||!['publish','rollback','compact'].includes(String(marker.kind))||!syncHashValid(marker.contentDigest)||
           row.uid!==captured.uid||row.teamId!==null||row.text!==''||row.title!=null||!syncInteger(row.createdAt)||row.createdAt>8.64e15||!syncInteger(row.previousUpdatedAt)||
           row.embedding!=null&&readStoredEmbedding(row.embedding)===null||
           row.embeddingModel!=null&&(typeof row.embeddingModel!=='string'||row.embeddingModel.length>256))throw fail();

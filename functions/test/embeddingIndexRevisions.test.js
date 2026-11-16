@@ -90,3 +90,42 @@ test('index callables require Auth, App Check and the closed personal revision g
   await assert.rejects(service.applyEmbeddingIndexRevision.run(command,{auth:{uid:'alice'}}),{code:'failed-precondition'});
   await assert.rejects(service.applyEmbeddingIndexRevision.run(command,{auth:{uid:'alice'},app:{appId:'synthetic'}}),{code:'failed-precondition'});
 });
+
+test('compact commands accept no replacement vector, model or extra authority',()=>{
+  assert.deepEqual(contract.parseEmbeddingIndexChange({kind:'compact'}),{kind:'compact'});
+  for(const change of [{kind:'compact',vector:vector()},{kind:'compact',space:contract.EMBEDDING_INDEX_TARGET_SPACE},{kind:'compact',uid:'bob'},{kind:'compact',versionId:'embedding-index-'+first}])assert.throws(()=>contract.parseEmbeddingIndexChange(change));
+});
+
+test('compaction preserves every coordinate, model marker and cipher while archiving the exact source once',async()=>{
+  for(const marker of [{},{embeddingModel:null},{embeddingModel:'historic-unknown-space'}]){
+    const original=[-0,Number.MIN_VALUE,1/3],f=fixture({embedding:original,...marker}),request=await f.request({kind:'compact'}),before=structuredClone(f.docs.get('sessions/note'));
+    const result=await service.executeEmbeddingIndexRevision('alice',request,'apply',f.deps),after=f.docs.get('sessions/note');assert.equal(typeof after.embedding,'string');
+    const decoded=JSON.parse(after.embedding);assert(decoded.every((value,index)=>Object.is(value,original[index])));
+    for(const field of Object.keys(before).filter(key=>!['embedding','updatedAt','lastVersionId'].includes(key)))assert.deepEqual(after[field],before[field]);
+    assert.equal(Object.hasOwn(after,'embeddingModel'),Object.hasOwn(before,'embeddingModel'));
+    const archived=f.docs.get('sessions/note/versions/'+result.versionId);for(const field of Object.keys(before))assert.deepEqual(archived[field],before[field]);assert.equal(archived.embeddingIndex.kind,'compact');
+    const stable=JSON.stringify([...f.docs]);for(const mode of ['apply','status','cancel'])assert.deepEqual(await service.executeEmbeddingIndexRevision('alice',request,mode,f.deps),result);assert.equal(JSON.stringify([...f.docs]),stable);
+    const quota=[...f.docs.entries()].find(([path])=>path.startsWith('embeddingIndexBudgets/'))[1];assert.equal(quota.operations,1);
+  }
+});
+
+test('compaction rejects already compact, empty, absent or malformed vectors without a write',async()=>{
+  for(const index of [{embedding:'[1,0]'},{embedding:[]},{},{embedding:null},{embedding:[1,null,0]},{embedding:[1,Infinity]}]){
+    const f=fixture(index),before=JSON.stringify([...f.docs]);await assert.rejects(async()=>service.executeEmbeddingIndexRevision('alice',await f.request({kind:'compact'}),'apply',f.deps));assert.equal(JSON.stringify([...f.docs]),before);
+  }
+});
+
+test('compaction remains bound to the reviewed version, owner and existing budgets',async()=>{
+  const f=fixture(),request=await f.request({kind:'compact'});f.docs.get('sessions/note').updatedAt++;f.touch();const before=JSON.stringify([...f.docs]);await assert.rejects(service.executeEmbeddingIndexRevision('alice',request,'apply',f.deps),{code:'aborted'});assert.equal(JSON.stringify([...f.docs]),before);
+  await assert.rejects(service.executeEmbeddingIndexRevision('bob',request,'apply',f.deps),{code:'permission-denied'});
+  const q=fixture(),input=await q.request({kind:'compact'}),quota='embeddingIndexBudgets/'+require('node:crypto').createHash('sha256').update('alice').digest('hex')+'_1970-01-01';q.docs.set(quota,{v:1,uid:'alice',day:'1970-01-01',operations:service.EMBEDDING_INDEX_DAILY_LIMITS.operations,vectorBytes:0,archiveBytes:0});
+  const stable=JSON.stringify([...q.docs]);await assert.rejects(service.executeEmbeddingIndexRevision('alice',input,'apply',q.deps),{code:'resource-exhausted'});assert.equal(JSON.stringify([...q.docs]),stable);
+});
+
+test('compaction rollback restores the historical representation without changing graph, content or model',async()=>{
+  const f=fixture({embedding:[.1,.2],embeddingModel:'historic@1'}),before=structuredClone(f.docs.get('sessions/note')),done=await service.executeEmbeddingIndexRevision('alice',await f.request({kind:'compact'}),'apply',f.deps);
+  const rollback=await f.request({kind:'rollback',versionId:done.versionId},second);await service.executeEmbeddingIndexRevision('alice',rollback,'apply',f.deps);const after=f.docs.get('sessions/note');
+  for(const field of Object.keys(before).filter(key=>!['updatedAt','lastVersionId'].includes(key)))assert.deepEqual(after[field],before[field]);
+  const bad=fixture(),committed=await service.executeEmbeddingIndexRevision('alice',await bad.request({kind:'compact'}),'apply',bad.deps);bad.docs.get('sessions/note/versions/'+committed.versionId).embeddingIndex.kind='foreign-kind';
+  const input=await bad.request({kind:'rollback',versionId:committed.versionId},second),stable=JSON.stringify([...bad.docs]);await assert.rejects(service.executeEmbeddingIndexRevision('alice',input,'apply',bad.deps));assert.equal(JSON.stringify([...bad.docs]),stable);
+});

@@ -2,6 +2,7 @@ import {doc,getDocFromServer} from 'firebase/firestore';
 import {getFunctions,httpsCallable} from 'firebase/functions';
 import app,{auth,db} from '../firebase';
 import {PERSONAL_REVISION_WRITES_ENABLED} from '../config/releaseGates';
+import {readStoredEmbedding} from '../../../functions/src/embeddingStorage';
 import type {SessionData} from '../hooks/useSessions';
 import {encryptMemoryFields,decryptMemoryEnvelope,isEncryptedMemoryEnvelope,resolveMemoryDocFields} from './memoryCrypto';
 import {withPersonalMemoryMutation,type PersonalMemoryMutationDeps} from './personalMemoryMutation';
@@ -85,7 +86,8 @@ async function openJournal(raw:string,uid:string,guard:()=>void,deps:EmbeddingIn
 type CommonInput={uid:string;id:string;baseline:EmbeddingIndexBaseline;assertCurrent?:()=>void};
 type PublishInput=CommonInput&{profile:EmbeddingProfileId;readCurrent:()=>SessionData|undefined};
 type RollbackInput=CommonInput&{versionId:string};
-async function operate(uid:string,mode:'start'|'recover'|'cancel',input:PublishInput|RollbackInput|undefined,outer:()=>void,deps:EmbeddingIndexRecoveryDeps) {
+type CompactInput=CommonInput&{compact:true};
+async function operate(uid:string,mode:'start'|'recover'|'cancel',input:PublishInput|RollbackInput|CompactInput|undefined,outer:()=>void,deps:EmbeddingIndexRecoveryDeps) {
   const captured=input?{...input,baseline:parseEmbeddingIndexBaseline(input.baseline)}:undefined;
   if(captured&&(captured.id!==captured.baseline.sessionId||captured.baseline.ownerUid!==uid))throw fail('baseline');
   if(mode==='start'&&(!captured||!deps.enabled()))throw fail('closed');
@@ -106,6 +108,9 @@ async function operate(uid:string,mode:'start'|'recover'|'cancel',input:PublishI
           const prepared=await deps.prepared(uid,captured.profile,captured.readCurrent,{signal:new AbortController().signal});guard();
           if(!prepared||prepared.uid!==uid||prepared.memoryId!==captured.id||prepared.space!==EMBEDDING_INDEX_TARGET_SPACE||captured.readCurrent()!==current)throw fail('baseline');
           change={kind:'publish',space:prepared.space,vector:[...prepared.vector]};
+        }else if('compact' in captured){
+          if(captured.compact!==true||!Array.isArray(read.row.embedding)||!read.row.embedding.length||readStoredEmbedding(read.row.embedding)===null)throw fail('baseline');
+          change={kind:'compact'};
         }else change={kind:'rollback',versionId:captured.versionId};
         guard();request=parseEmbeddingIndexRequest({operationId:deps.id(),baseline:captured.baseline,change});
         const next=JSON.stringify(await deps.encrypt({text:JSON.stringify({v:1,kind:'embedding-index',uid,request})}));guard();
@@ -132,6 +137,9 @@ export async function publishPreparedEmbedding(input:PublishInput,deps=defaults(
 }
 export async function rollbackPublishedEmbedding(input:RollbackInput,deps=defaults()) {
   const result=await operate(input.uid,'start',input,()=>{},deps);if(result.status!=='committed')throw fail('confirmation');return result;
+}
+export async function compactStoredEmbedding(input:CommonInput,deps=defaults()) {
+  const result=await operate(input.uid,'start',{...input,compact:true},()=>{},deps);if(result.status!=='committed')throw fail('confirmation');return result;
 }
 export const recoverPendingEmbeddingIndex=(uid:string,outer:()=>void=()=>{},deps=defaults())=>operate(uid,'recover',undefined,outer,deps);
 export const cancelPendingEmbeddingIndex=(uid:string,outer:()=>void=()=>{},deps=defaults())=>operate(uid,'cancel',undefined,outer,deps);

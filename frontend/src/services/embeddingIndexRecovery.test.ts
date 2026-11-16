@@ -1,7 +1,7 @@
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 vi.mock('../firebase',()=>({default:{},db:{},auth:{}}));
 import {buildEncryptedMemoryFields,encryptMemoryFields,decryptMemoryEnvelope,setMemoryCryptoMnemonic,isMemoryCryptoReady} from './memoryCrypto';
-import {captureEmbeddingIndexBaseline,publishPreparedEmbedding,rollbackPublishedEmbedding,recoverPendingEmbeddingIndex,cancelPendingEmbeddingIndex,
+import {captureEmbeddingIndexBaseline,publishPreparedEmbedding,rollbackPublishedEmbedding,compactStoredEmbedding,recoverPendingEmbeddingIndex,cancelPendingEmbeddingIndex,
   embeddingIndexCheckpointKey,embeddingIndexViewDigest,inspectPendingEmbeddingIndex,exportPendingEmbeddingIndex,importPendingEmbeddingIndex,hasPendingEmbeddingIndex,
   type EmbeddingIndexBaseline,type EmbeddingIndexRecoveryDeps} from './embeddingIndexRecovery';
 import {canonicalSyncState} from '../../../functions/src/mobileSyncImportContract';
@@ -26,7 +26,8 @@ beforeEach(async()=>{
     if(mode==='status'){if(failStatus)throw Error('Synthetic status failure');return receipt??unknown;}if(receipt)return receipt;
     if(mode==='cancel'){receipt={...unknown,status:'cancelled',createdAt:1000};return receipt;}
     expect(storage.has(checkpoint)).toBe(true);expect(canonicalSyncState(await fresh())).toBe(canonicalSyncState(request.baseline));
-    if(request.change.kind==='publish')row={...row,embedding:[...request.change.vector],embeddingModel:request.change.space,updatedAt:1000};stamp++;
+    if(request.change.kind==='publish')row={...row,embedding:[...request.change.vector],embeddingModel:request.change.space,updatedAt:1000};
+    if(request.change.kind==='compact')row={...row,embedding:JSON.stringify(row!.embedding),updatedAt:1000};stamp++;
     receipt={...unknown,status:'committed',revision:1000,versionId:'embedding-index-'+request.operationId,createdAt:1000};if(loseApply)throw Error('Synthetic lost acknowledgement');return receipt;
   });
   deps={enabled:()=>enabled,id,prepared,storage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>{storage.set(key,value);},removeItem:key=>{if(failRemove)throw Error('Synthetic removal failure');storage.delete(key);}},
@@ -96,4 +97,16 @@ it('invalid backups and a vault transition during decryption preserve empty stor
   failStatus=true;await expect(publishPreparedEmbedding(input(),deps)).rejects.toThrow();const backup=await exportPendingEmbeddingIndex('alice',()=>{},deps);storage.delete(checkpoint);call.mockClear();
   for(const value of ['{}',backup+'x','x'.repeat(300001),JSON.stringify({...JSON.parse(backup),extra:true})])await expect(importPendingEmbeddingIndex('alice',value,()=>{},deps)).rejects.toThrow();expect(storage.size).toBe(0);
   const decrypt=deps.decrypt;deps.decrypt=async value=>{const result=await decrypt(value);listeners.forEach(changed=>changed());return result;};await expect(importPendingEmbeddingIndex('alice',backup,()=>{},deps)).rejects.toThrow();expect(storage.size).toBe(0);expect(call).not.toHaveBeenCalled();
+});
+
+it('compacts a captured source without preparing or sending replacement vector/model values',async()=>{
+  const before=structuredClone(row);await compactStoredEmbedding({uid:'alice',id:'note',baseline},deps);
+  expect(row!.embedding).toBe('[1,0]');expect(row!.enc).toEqual(before!.enc);expect(row!.embeddingModel).toBe(before!.embeddingModel);expect(prepared).not.toHaveBeenCalled();
+  const request=call.mock.calls.find(([mode])=>mode==='apply')![1].request as EmbeddingIndexRequest;expect(request.change).toEqual({kind:'compact'});expect(JSON.stringify(call.mock.calls)).not.toContain('Synthetic index source');expect(storage.size).toBe(0);
+});
+
+it('retains a lost compaction ACK in encrypted custody and recovers the same nonce with admission closed',async()=>{
+  loseApply=true;await expect(compactStoredEmbedding({uid:'alice',id:'note',baseline},deps)).rejects.toThrow('lost acknowledgement');expect(storage.has(checkpoint)).toBe(true);
+  enabled=false;row=undefined;call.mockClear();prepared.mockClear();expect(await inspectPendingEmbeddingIndex('alice',()=>{},deps)).toMatchObject({kind:'compact',operationId:nonce});
+  expect((await recoverPendingEmbeddingIndex('alice',()=>{},deps)).status).toBe('committed');expect(call.mock.calls.map(([mode])=>mode)).toEqual(['status','status']);expect(prepared).not.toHaveBeenCalled();expect(id).toHaveBeenCalledOnce();expect(storage.size).toBe(0);
 });

@@ -26,6 +26,15 @@ beforeEach(()=>{state.ready=true;state.enabled=true;state.pending=false;state.cr
   state.review.mockResolvedValue({uid:'alice',items:[{id:'note',viewDigest:'a'.repeat(64),revision:10}],remaining:0});state.publish.mockImplementation(async(_plan,_current,options)=>{options.onProgress(1,1);return{completed:1};});state.inspect.mockResolvedValue({sessionId:'note',kind:'publish'});
   state.recover.mockImplementation(async()=>{setPending(false);return{status:'committed'};});state.cancel.mockImplementation(async()=>{setPending(false);return{status:'cancelled'};});state.backup.mockResolvedValue('{"encrypted":"opaque"}');state.restore.mockImplementation(async()=>{setPending(true);return{};});state.history.mockResolvedValue({entries:[entry],next:null,invalid:0});state.capture.mockResolvedValue(baseline);state.rollback.mockResolvedValue({status:'committed'});
 });
+it('labels a pending compaction correctly and recovers it only after explicit confirmation with admission closed',async()=>{
+  state.enabled=false;state.pending=true;state.inspect.mockResolvedValue({sessionId:'note',kind:'compact'});
+  render(<EmbeddingPublicationPanel uid="alice" sessions={[]} />);
+  fireEvent.click(screen.getByRole('button',{name:'indexPublishReviewPending'}));
+  const group=await screen.findByRole('group',{name:'indexPublishReview'});
+  expect(group).toHaveTextContent('storageOptimizeTitle');expect(state.recover).not.toHaveBeenCalled();
+  fireEvent.click(within(group).getByRole('button',{name:'indexPublishConfirm'}));
+  await waitFor(()=>expect(state.recover).toHaveBeenCalledOnce());expect(state.publish).not.toHaveBeenCalled();expect(state.rollback).not.toHaveBeenCalled();
+});
 it('requires a captured review and explicit confirmation before publication, with keyboard focus on confirmation',async()=>{
   render(<EmbeddingPublicationPanel uid="alice" sessions={[note]} />);expect(state.review).not.toHaveBeenCalled();expect(state.publish).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'indexPublishReview'}));
   const group=await screen.findByRole('group',{name:'indexPublishReview'});expect(group).toHaveTextContent('indexPublishPreview');expect(state.publish).not.toHaveBeenCalled();await waitFor(()=>expect(within(group).getByRole('button',{name:'indexPublishConfirm'})).toHaveFocus());fireEvent.click(within(group).getByRole('button',{name:'indexPublishConfirm'}));await waitFor(()=>expect(screen.getByRole('status')).toHaveTextContent('indexPublishStatus_published'));expect(state.publish).toHaveBeenCalledOnce();
