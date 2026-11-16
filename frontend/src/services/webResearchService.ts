@@ -1,6 +1,9 @@
-import { getLocalAiConfig } from './localAiConfig';
 import { FAIR_USE } from '../config/fairUse';
 import { consumeRateLimit } from '../utils/clientRateLimit';
+import { AuthHttpError, getAuthJsonHeaders } from './authHttp';
+import { approximateBytes, guardCloudUse } from './cloudUsePolicy';
+import { withAiGenerationContext, type AiGenerationContext } from './aiGenerationContext';
+import { getLocalAiConfig } from './localAiConfig';
 
 export type WebResearchMode = 'public' | 'contextual' | 'private-local';
 
@@ -29,33 +32,60 @@ export interface WebResearchRequest {
   context?: string[];
   max_sources?: number;
 }
+export class WebResearchUnavailableError extends Error {
+  constructor() { super('Pesquisa web indisponível. Verifica a sessão e repete o pedido.'); }
+}
+export function parseWebResearchRequest(value: WebResearchRequest): WebResearchRequest {
+  if (!value || typeof value.query !== 'string' || !['public','contextual','private-local'].includes(value.mode)) throw new WebResearchUnavailableError();
+  const query=value.query.trim().replace(/\s+/g,' '); const max_sources=value.max_sources ?? 8;
+  if(value.mode==='contextual'&&value.context!==undefined&&!Array.isArray(value.context))throw new WebResearchUnavailableError();
+  const context=value.mode==='contextual' ? [...(value.context ?? [])] : [];
+  if (query.length<2 || approximateBytes(query)>2000 || !Number.isSafeInteger(max_sources) || max_sources<1 || max_sources>12 ||
+      context.length>8 || context.some(item=>typeof item!=='string'||approximateBytes(item)>2000) || approximateBytes(...context)>12000) throw new WebResearchUnavailableError();
+  return {query,mode:value.mode,context,max_sources};
+}
+export function parseWebResearchResult(value: unknown, expected?: Pick<WebResearchRequest,'query'|'mode'>): WebResearchResult {
+  const object=(input:unknown):input is Record<string,unknown>=>Boolean(input&&typeof input==='object'&&!Array.isArray(input));
+  const text=(input:unknown,limit:number):input is string=>typeof input==='string'&&approximateBytes(input)<=limit;
+  const strings=(input:unknown,count:number,limit:number):input is string[]=>Array.isArray(input)&&input.length<=count&&input.every(item=>text(item,limit));
+  if(!object(value)||!text(value.query,2000)||!['public','contextual','private-local'].includes(value.mode as string)||!text(value.summary,50000)||
+    !strings(value.key_concepts,50,512)||!strings(value.main_ideas,20,10000)||!strings(value.suggested_memories,20,10000)||!strings(value.local_comparisons,20,10000)||
+    !Array.isArray(value.sources)||value.sources.length>12|| (expected&&(value.query!==expected.query||value.mode!==expected.mode)) ||
+    (value.mode!=='contextual'&&value.local_comparisons.length))throw new WebResearchUnavailableError();
+  const sources:WebResearchSource[]=value.sources.map(source=>{
+    if(!object(source)||!text(source.title,2000)||!text(source.url,4096)||!text(source.snippet,20000)||!text(source.summary,20000)||!['read','snippet-only','failed'].includes(source.status as string))throw new WebResearchUnavailableError();
+    let url:URL;try{url=new URL(source.url);}catch{throw new WebResearchUnavailableError();}
+    if(!['https:','http:'].includes(url.protocol)||url.username||url.password)throw new WebResearchUnavailableError();
+    return {title:source.title,url:source.url,snippet:source.snippet,summary:source.summary,status:source.status as WebResearchSource['status']};
+  });
+  const result:WebResearchResult={query:value.query,mode:value.mode as WebResearchMode,summary:value.summary,key_concepts:[...value.key_concepts],main_ideas:[...value.main_ideas],
+    suggested_memories:[...value.suggested_memories],sources,local_comparisons:[...value.local_comparisons]};
+  if(approximateBytes(JSON.stringify(result))>250000)throw new WebResearchUnavailableError();return result;
+}
+async function readResearchResponse(response:Response,guard:()=>void):Promise<string> {
+  if(!response.body)throw new WebResearchUnavailableError();
+  const reader=response.body.getReader();const chunks:Uint8Array[]=[];let length=0;let complete=false;
+  try{
+    while(true){guard();const part=await reader.read();guard();if(part.done){complete=true;break;}
+      length+=part.value.byteLength;if(length>250000)throw new WebResearchUnavailableError();chunks.push(part.value);
+    }
+    const bytes=new Uint8Array(length);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
+    try{return new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new WebResearchUnavailableError();}
+  }finally{if(!complete)void reader.cancel().catch(()=>{});reader.releaseLock();}
+}
 
 const productionWebResearchEndpoint =
   (typeof window !== 'undefined' && (window.location.origin.includes('mnemosyne-one.web.app') || window.location.origin.includes('mnemosyne-one.firebaseapp.com')))
     ? '/api/v1/web/research'
     : 'https://mnemosyne-one.web.app/api/v1/web/research';
-const legacyCloudRunWebResearchEndpoint =
-  'https://mnemosyne-web-research-tq3vyofasq-ew.a.run.app/api/v1/web/research';
 const configuredWebResearchEndpoint =
   (import.meta.env.PROD ? productionWebResearchEndpoint : import.meta.env.VITE_WEB_RESEARCH_ENDPOINT as string | undefined) ||
   (import.meta.env.PROD ? productionWebResearchEndpoint : undefined);
-const fallbackBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const webResearchBackendEnabled =
   import.meta.env.VITE_ENABLE_WEB_RESEARCH_BACKEND === 'true' ||
   Boolean(configuredWebResearchEndpoint);
 
-const normalizeBase = (value: string): string => value.trim().replace(/\/+$/, '');
-
-const endpointCandidates = (baseUrl: string): string[] => {
-  const normalizedBase = normalizeBase(baseUrl);
-  return Array.from(new Set([
-    configuredWebResearchEndpoint,
-    legacyCloudRunWebResearchEndpoint,
-    `${normalizedBase}/api/v1/web/research`,
-    `${normalizedBase}/v1/web/research`,
-    `${normalizedBase}/web/research`,
-  ].filter((url): url is string => Boolean(url?.trim()))));
-};
+const webResearchEndpoint = configuredWebResearchEndpoint || '/api/v1/web/research';
 
 const extractConcepts = (query: string): string[] => {
   const stopwords = new Set(['como', 'para', 'pela', 'pelo', 'sobre', 'with', 'from', 'what', 'when', 'where', 'the', 'and']);
@@ -126,7 +156,20 @@ const buildBrowserFallbackResult = (request: WebResearchRequest, reason?: string
   };
 };
 
-export async function runWebResearch(request: WebResearchRequest): Promise<WebResearchResult> {
+export async function runWebResearch(input: WebResearchRequest, options: {context?:AiGenerationContext;assertCurrent?:()=>void} = {}): Promise<WebResearchResult> {
+  const request=parseWebResearchRequest(input);const context=request.context ?? [];
+  const authorize=()=>guardCloudUse('web-research', 'Mnemosyne web research', {
+    bytes: approximateBytes(request.query, ...context),
+    containsMemory: context.length > 0,
+    containsAttachment: false,
+    containsPrompt: true,
+  });
+  // Preserve a direct privacy rejection even when no account/vault is available.
+  if(!['allow-cloud','confirm-cloud'].includes(getLocalAiConfig().memoryPermission))authorize();
+  const work=async(captured:AiGenerationContext):Promise<WebResearchResult>=>{
+  const guard=()=>{options.assertCurrent?.();captured.assertCurrent();if(captured.scope.kind!=='personal')throw new WebResearchUnavailableError();};
+  guard();await captured.assertAccess();guard();
+  authorize();guard();
   const rate = consumeRateLimit('web-research', FAIR_USE.webResearchPerHour, 60 * 60 * 1000);
   if (!rate.allowed) {
     const mins = Math.max(1, Math.ceil(rate.retryAfterMs / 60_000));
@@ -140,44 +183,39 @@ export async function runWebResearch(request: WebResearchRequest): Promise<WebRe
     return buildBrowserFallbackResult(request, 'backend web desativado');
   }
 
-  const config = getLocalAiConfig();
-  const backendConfig = config.providers.nvidia;
-  const baseUrl = backendConfig.endpoint || fallbackBaseUrl;
   let lastFailure = '';
 
-  for (const endpoint of endpointCandidates(baseUrl)) {
+  for (const endpoint of [webResearchEndpoint]) {
     try {
+      const headers=await getAuthJsonHeaders(captured.uid);guard();await captured.assertAccess();guard();
+      if(typeof headers.Authorization!=='string'||!/^Bearer \S+$/.test(headers.Authorization))throw new WebResearchUnavailableError();
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,signal:captured.signal,
         body: JSON.stringify({
           query: request.query,
           mode: request.mode,
-          context: request.context || [],
+          context,
           max_sources: request.max_sources || 8,
         }),
       });
+      guard();
 
       if (response.ok) {
-        const data = await response.json();
-        if (data && typeof data === 'object' && ('sources' in data || 'summary' in data)) {
-          return data as WebResearchResult;
-        }
-        throw new Error('resposta do servidor com formato incorreto');
+        const raw=await readResearchResponse(response,guard);guard();
+        let data:unknown;try{data=JSON.parse(raw);}catch{throw new WebResearchUnavailableError();}
+        const result=parseWebResearchResult(data,request);await captured.assertAccess();guard();return result;
       }
-
-      let message = `${response.status} ${response.statusText}`.trim();
-      try {
-        const payload = await response.json();
-        message = payload.detail || message;
-      } catch {
-        // Keep statusText when the backend response is not JSON.
-      }
-      lastFailure = message || 'endpoint indisponível';
+      if(response.status>=400&&response.status<500)throw new WebResearchUnavailableError();
+      lastFailure='endpoint indisponível';
     } catch (error) {
-      lastFailure = error instanceof Error ? error.message : 'endpoint indisponível';
+      guard();if(error instanceof WebResearchUnavailableError || error instanceof AuthHttpError || captured.signal.aborted)throw new WebResearchUnavailableError();
+      lastFailure='endpoint indisponível';
     }
   }
 
-  return buildBrowserFallbackResult(request, lastFailure);
+  await captured.assertAccess();guard();return buildBrowserFallbackResult(request, lastFailure);
+  };
+  if(options.context)return work(options.context);
+  return withAiGenerationContext({},work);
 }

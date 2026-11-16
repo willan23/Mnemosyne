@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { buildSemanticClusterBackfillPatches } from './semanticClusterBackfill';
 
 describe('buildSemanticClusterBackfillPatches', () => {
+  it('handles a 20000-node reversed chain without recursion and generates different namespaces', () => {
+    const memories = Array.from({length:20000},(_,index)=>({id:String(index),connections:index?[String(index-1)]:[]}));
+    const a=buildSemanticClusterBackfillPatches(memories,'scopeA');
+    const b=buildSemanticClusterBackfillPatches(memories.reverse(),'scopeB');
+    expect(a).toHaveLength(20000);expect(new Set(a.map(row=>row.semanticClusterId)).size).toBe(1);
+    expect(a[0].semanticClusterId).not.toBe(b[0].semanticClusterId);
+  });
   it('inherits an existing cluster from connected memories', () => {
     const patches = buildSemanticClusterBackfillPatches([
       { id: 'a', connections: ['b'] },

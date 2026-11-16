@@ -1,59 +1,25 @@
-import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
+import { ref, deleteObject } from 'firebase/storage';
 import { storage } from '../firebase';
+import { ATTACHMENT_READ_ONLY_MESSAGE } from '../config/releaseGates';
+import {
+    fileMatchesAllowedTypes,
+    maxUploadBytesForFile,
+} from './fileTypes';
 
 export interface UploadProgress {
     progress: number;
     state: 'running' | 'paused' | 'success' | 'error';
 }
 
-/**
- * Upload a file to Firebase Storage with progress tracking
- */
+/** Deprecated plaintext uploader stays closed even when the encrypted pipeline is enabled. */
 export const uploadFile = (
     file: File,
     userId: string,
     onProgress?: (progress: UploadProgress) => void
 ): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        // Create unique filename
-        const timestamp = Date.now();
-        const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const filename = `${timestamp}_${sanitizedName}`;
-        const storagePath = `attachments/${userId}/${filename}`;
-
-        // Create storage reference
-        const storageRef = ref(storage, storagePath);
-
-        // Start upload
-        const uploadTask = uploadBytesResumable(storageRef, file);
-
-        // Monitor upload progress
-        uploadTask.on(
-            'state_changed',
-            (snapshot) => {
-                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                onProgress?.({
-                    progress,
-                    state: snapshot.state as 'running' | 'paused'
-                });
-            },
-            (error) => {
-                console.error('Upload error:', error);
-                onProgress?.({ progress: 0, state: 'error' });
-                reject(error);
-            },
-            async () => {
-                // Upload completed successfully
-                try {
-                    const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-                    onProgress?.({ progress: 100, state: 'success' });
-                    resolve(downloadURL);
-                } catch (error) {
-                    reject(error);
-                }
-            }
-        );
-    });
+    void file; void userId;
+    onProgress?.({ progress: 0, state: 'error' });
+    return Promise.reject(new Error(ATTACHMENT_READ_ONLY_MESSAGE));
 };
 
 /**
@@ -101,7 +67,8 @@ export const compressImage = (file: File, maxWidth = 1920, quality = 0.8): Promi
                 canvas.toBlob(
                     (blob) => {
                         if (blob) {
-                            const compressedFile = new File([blob], file.name, {
+                            const jpegName = /\.[^./\\]+$/.test(file.name) ? file.name.replace(/\.[^./\\]+$/, '.jpg') : `${file.name}.jpg`;
+                            const compressedFile = new File([blob], jpegName, {
                                 type: 'image/jpeg',
                                 lastModified: Date.now()
                             });
@@ -130,23 +97,13 @@ export const validateFile = (
     allowedTypes: string[],
     maxSizeMB: number
 ): { valid: boolean; error?: string } => {
-    // Check file type
-    const fileType = file.type;
-    const isValidType = allowedTypes.some(type => {
-        if (type.endsWith('/*')) {
-            return fileType.startsWith(type.replace('/*', ''));
-        }
-        return fileType === type;
-    });
-
-    if (!isValidType) {
+    if (!fileMatchesAllowedTypes(file, allowedTypes)) {
         return {
             valid: false,
             error: `Tipo de arquivo não suportado. Permitidos: ${allowedTypes.join(', ')}`
         };
     }
 
-    // Check file size
     const maxSizeBytes = maxSizeMB * 1024 * 1024;
     if (file.size > maxSizeBytes) {
         return {
@@ -157,6 +114,39 @@ export const validateFile = (
 
     return { valid: true };
 };
+
+export function describeUploadError(error: unknown): string {
+    const code = typeof error === 'object' && error && 'code' in error
+        ? String((error as { code?: string }).code)
+        : '';
+    const message = error instanceof Error ? error.message : '';
+
+    if (code === 'storage/unauthenticated' || /unauthenticated/i.test(message)) {
+        return 'Inicia sessão para carregar ficheiros.';
+    }
+    if (code === 'storage/unauthorized' || /permission|unauthorized/i.test(message)) {
+        return 'O armazenamento recusou o ficheiro (tipo, extensão em maiúsculas, MIME vazio no Windows, ou tamanho). Usa PDF, Markdown, texto, Office, código, imagem, áudio ou vídeo dentro dos limites.';
+    }
+    if (code === 'storage/canceled') {
+        return 'Upload cancelado.';
+    }
+    if (code === 'storage/retry-limit-exceeded') {
+        return 'A ligação falhou a meio do upload. Tenta de novo.';
+    }
+    if (message) return message;
+    return 'Falha no upload.';
+}
+
+export function assertFileFitsStorageLimits(file: File): void {
+    if (file.size <= 0) {
+        throw new Error(`"${file.name}" está vazio.`);
+    }
+    const maxBytes = maxUploadBytesForFile(file);
+    if (file.size > maxBytes) {
+        const maxMb = Math.round(maxBytes / (1024 * 1024));
+        throw new Error(`"${file.name}" é demasiado grande. Máximo ${maxMb} MB para este tipo.`);
+    }
+}
 
 /**
  * Format file size for display

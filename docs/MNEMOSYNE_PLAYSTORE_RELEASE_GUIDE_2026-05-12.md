@@ -1,5 +1,7 @@
 # Mnemosyne Play Store Release Guide
 
+> Atualização de 23/10/2026: o procedimento atual está em [BUILD_ANDROID_VALIDADO_2026-10-23.md](BUILD_ANDROID_VALIDADO_2026-10-23.md). Os exemplos e estados seguintes são históricos de maio. `-SkipTests` e `-SkipWebBuild` foram retirados; release exige versão explícita alinhada com o package atual e configuração privada de assinatura. Não reutilizar os códigos de versão antigos para um novo envio. Nenhum build local comprova publicação, certificado esperado ou piloto em dispositivo.
+
 Data: 2026-05-12
 
 ## Estado atual

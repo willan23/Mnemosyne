@@ -121,6 +121,7 @@ export function scrubLegacyKeyMaterial(): void {
     'mnemosyne_public_jwk',
     'mnemosyne.mnemonic',
     'mnemosyne.session.mnemonic',
+    'mnemosyne.search.recent.v1',
   ];
   for (const key of legacy) {
     try {

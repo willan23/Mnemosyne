@@ -1,7 +1,7 @@
 {
     "name": "Mnemosyne - Biógrafo de Conhecimento Zero",
     "short_name": "Mnemosyne",
-    "description": "Seu biógrafo pessoal com criptografia end-to-end e knowledge graph inteligente",
+    "description": "Memórias com texto e título cifrados no cliente e grafo de conhecimento inteligente",
     "start_url": "/",
     "display": "standalone",
     "background_color": "#0a0a0a",
@@ -25,20 +25,6 @@
         "productivity",
         "utilities",
         "lifestyle"
-    ],
-    "screenshots": [
-        {
-            "src": "/screenshot-wide.png",
-            "sizes": "1280x720",
-            "type": "image/png",
-            "form_factor": "wide"
-        },
-        {
-            "src": "/screenshot-mobile.png",
-            "sizes": "750x1334",
-            "type": "image/png",
-            "form_factor": "narrow"
-        }
     ],
     "shortcuts": [
         {

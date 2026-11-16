@@ -1,0 +1,219 @@
+name: Desktop Release (Windows)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      notes:
+        type: string
+        required: false
+        default: 'Mnemosyne Cognitive OS desktop update.'
+      deploy_release:
+        type: boolean
+        required: false
+        default: false
+      android_release_asset_id:
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Desktop version matching the application metadata'
+        required: true
+        default: '1.0.9'
+      notes:
+        description: 'Release notes for updater feed'
+        required: false
+        default: 'Mnemosyne Cognitive OS desktop update.'
+      deploy_release:
+        description: 'Run the full validated Firebase deployment after staging'
+        type: boolean
+        required: false
+        default: false
+      android_release_asset_id:
+        description: 'GitHub release asset ID of the approved signed Android APK'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+  build-windows:
+    needs: validate
+    runs-on: windows-latest
+    env:
+      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+      VITE_FIREBASE_APPCHECK_SITE_KEY: ${{ secrets.VITE_FIREBASE_APPCHECK_SITE_KEY }}
+      VITE_STRIPE_PUBLISHABLE_KEY: ${{ secrets.VITE_STRIPE_PUBLISHABLE_KEY }}
+      VITE_STRIPE_PRICE_PRO_MONTHLY: ${{ secrets.VITE_STRIPE_PRICE_PRO_MONTHLY }}
+      VITE_STRIPE_PRICE_PRO_YEARLY: ${{ secrets.VITE_STRIPE_PRICE_PRO_YEARLY }}
+      VITE_STRIPE_PRICE_BUSINESS_MONTHLY: ${{ secrets.VITE_STRIPE_PRICE_BUSINESS_MONTHLY }}
+      VITE_STRIPE_PRICE_BUSINESS_YEARLY: ${{ secrets.VITE_STRIPE_PRICE_BUSINESS_YEARLY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Retrieve approved Android APK
+        if: inputs.deploy_release == true
+        shell: pwsh
+        env:
+          MNEMOSYNE_ANDROID_RELEASE_ASSET_ID: ${{ inputs.android_release_asset_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/android-release-artifact.cjs --fetch $env:MNEMOSYNE_ANDROID_RELEASE_ASSET_ID
+
+      - name: Validate native JavaScript and Rust version alignment
+        run: node scripts/check-tauri-version-alignment.cjs
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the native dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Check the locked native dependency graph
+        working-directory: frontend/src-tauri
+        run: cargo check --locked
+
+      - name: Updater signature version binding
+        working-directory: frontend/src-tauri
+        run: cargo test --locked -p tauri-plugin-updater --lib version
+
+      - name: Updater cached bytes reject tampering
+        working-directory: frontend/src-tauri
+        run: cargo test --locked -p tauri-plugin-updater --lib verifies_cached_bytes_and_rejects_tampering
+
+      - name: Audit the locked native dependency graph
+        working-directory: frontend/src-tauri
+        run: cargo audit
+
+      - name: Verify desktop artifact staging and refusal cases
+        run: node --test scripts/stage-desktop-artifacts.test.cjs
+
+      - name: Verify Android artifact staging and refusal cases
+        run: node --test scripts/android-release-artifact.test.cjs
+
+      - name: Test the release signature verifier
+        run: cargo test --locked --manifest-path scripts/desktop-artifact-verifier/Cargo.toml
+
+      - name: Audit the release signature verifier
+        run: cargo audit --file scripts/desktop-artifact-verifier/Cargo.lock
+
+      # Authenticode is optional. When WINDOWS_CERTIFICATE is unset, build is unsigned.
+      - name: Import Authenticode certificate (optional)
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) {
+            Write-Host "No WINDOWS_CERTIFICATE secret — building unsigned (SmartScreen warning expected)."
+            exit 0
+          }
+          .\scripts\import-windows-certificate.ps1 -FromEnv -PatchTauriConfig
+
+      - name: Build Tauri (Windows)
+        working-directory: frontend
+        run: npx tauri build --ci --no-bundle -- --locked
+
+      - name: Bundle and sign Tauri (Windows)
+        working-directory: frontend
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MNEMOSYNE_DESKTOP_UPDATER_EPOCH2 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'The epoch 2 updater signing secret is required.' }
+          $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $null
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+          npx tauri bundle --ci
+
+      - name: Verify Authenticode (best-effort)
+        shell: pwsh
+        env:
+          MNEMOSYNE_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          $setup = Join-Path 'frontend\src-tauri\target\release\bundle\nsis' ('Mnemosyne_' + $env:MNEMOSYNE_RELEASE_VERSION + '_x64-setup.exe')
+          if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Exact versioned NSIS installer is missing.' }
+          $sig = Get-AuthenticodeSignature -LiteralPath $setup
+          Write-Host "File: $setup"
+          Write-Host "Authenticode Status: $($sig.Status)"
+          if ($sig.SignerCertificate) {
+            Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Stage public download artifacts
+        shell: pwsh
+        env:
+          MNEMOSYNE_RELEASE_VERSION: ${{ inputs.version }}
+          MNEMOSYNE_RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          .\scripts\publish-desktop.ps1 -Version $env:MNEMOSYNE_RELEASE_VERSION -Notes $env:MNEMOSYNE_RELEASE_NOTES
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnemosyne-windows-${{ inputs.version }}
+          path: |
+            frontend/public/downloads/Mnemosyne_${{ inputs.version }}_x64-setup.exe
+            frontend/public/downloads/Mnemosyne_${{ inputs.version }}_x64-setup.exe.sig
+            frontend/public/downloads/Mnemosyne_${{ inputs.version }}_x64_en-US.msi
+            frontend/public/downloads/Mnemosyne_${{ inputs.version }}_x64_en-US.msi.sig
+            frontend/public/downloads/mnemosyne-desktop-setup.exe
+            frontend/public/downloads/mnemosyne-desktop.exe
+            frontend/public/downloads/mnemosyne-desktop.msi
+            frontend/public/desktop/v2/latest.json
+            frontend/public/desktop/v2/release-manifest.json
+          if-no-files-found: error
+
+      - name: Install deployment dependencies
+        if: inputs.deploy_release == true
+        run: npm ci --include=optional
+        working-directory: functions
+
+      - name: Java for deployment validation
+        if: inputs.deploy_release == true
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install the validated Firebase CLI
+        if: inputs.deploy_release == true
+        run: npm install --global firebase-tools@15.34.0
+
+      - name: Authenticate to Google Cloud
+        if: inputs.deploy_release == true
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Deploy the full validated release
+        if: inputs.deploy_release == true
+        shell: pwsh
+        env:
+          MNEMOSYNE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP ('mnemosyne-release-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT)
+          .\deploy.ps1 -Project $env:MNEMOSYNE_PROJECT_ID -ReportDirectory $report

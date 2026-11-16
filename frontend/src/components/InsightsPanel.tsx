@@ -1,10 +1,15 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { AlertTriangle, GitBranch, Link2Off, RotateCcw, Sparkles, X } from 'lucide-react';
 import type { SessionData } from '../hooks/useSessions';
-import { generateCognitiveInsights, type CognitiveInsight, type InsightKind } from '../services/insightEngine';
+import type { CognitiveInsight, InsightKind } from '../services/insightEngine';
+import type {MemoryReadScope} from '../services/memoryReadScope';
+import {useCognitiveAnalysis} from '../hooks/useCognitiveAnalysis';
+import {useTranslation} from '../utils/translations';
 
 interface Props {
-  sessions: SessionData[];
+  sessions: readonly SessionData[];
+  readScope: MemoryReadScope;
+  enabled?: boolean;
   onMemoryClick: (session: SessionData) => void;
   onClose?: () => void;
 }
@@ -17,7 +22,7 @@ const ICONS: Record<InsightKind, React.ComponentType<{ className?: string }>> = 
 };
 
 const KIND_LABELS: Record<InsightKind, string> = {
-  contradiction: 'Contradição',
+  contradiction: 'Tensão provável',
   orphan: 'Órfã',
   resurface: 'Regresso',
   pattern: 'Padrão',
@@ -31,13 +36,11 @@ const memoryLabel = (memory: SessionData, index: number) => {
   return `Memória ${index + 1}`;
 };
 
-const findMemory = (sessions: SessionData[], id: string) => sessions.find((session) => session.id === id);
-
 const InsightCard: React.FC<{
   insight: CognitiveInsight;
-  sessions: SessionData[];
+  getMemory: (id:string)=>SessionData|undefined;
   onMemoryClick: (session: SessionData) => void;
-}> = ({ insight, sessions, onMemoryClick }) => {
+}> = ({ insight, getMemory, onMemoryClick }) => {
   const Icon = ICONS[insight.kind];
   const severityClass = insight.severity === 'high'
     ? 'border-rose-400/35 bg-rose-500/10 text-rose-200'
@@ -46,7 +49,7 @@ const InsightCard: React.FC<{
       : 'border-white/10 bg-white/5 text-white/75';
 
   const related = insight.memoryIds
-    .map((id) => findMemory(sessions, id))
+    .map((id) => getMemory(id))
     .filter((memory): memory is SessionData => Boolean(memory))
     .slice(0, 4);
 
@@ -89,7 +92,7 @@ const InsightCard: React.FC<{
           <button
             key={`${insight.id}-${memory.id}`}
             type="button"
-            onClick={() => onMemoryClick(memory)}
+            onClick={() => {const current=getMemory(memory.id);if(current)onMemoryClick(current);}}
             title={memory.title || memory.text?.slice(0, 80)}
             className="max-w-full truncate rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-white/70 transition hover:border-white/25 hover:bg-white/10 hover:text-white"
           >
@@ -112,14 +115,12 @@ const InsightCard: React.FC<{
   );
 };
 
-export const InsightsPanel: React.FC<Props> = ({ sessions, onMemoryClick, onClose }) => {
-  const insights = useMemo(() => generateCognitiveInsights(sessions), [sessions]);
-  const counts = useMemo(() => ({
-    total: sessions.length,
-    linked: sessions.filter((session) => (session.connections?.length || 0) > 0).length,
-    contradictions: insights.filter((insight) => insight.kind === 'contradiction').length,
-    orphans: insights.filter((insight) => insight.kind === 'orphan').length,
-  }), [insights, sessions]);
+export const InsightsPanel: React.FC<Props> = ({ sessions, readScope, enabled = true, onMemoryClick, onClose }) => {
+  const {t}=useTranslation(),analysis=useCognitiveAnalysis(sessions,readScope,'insights',enabled);
+  const data=analysis.analysis?.mode==='insights'?analysis.analysis:null,insights=data?.insights??[];
+  const counts=data?.counts??{total:0,linked:0,contradictions:0,orphans:0};
+
+  if (!enabled) return null;
 
   return (
     <aside className="absolute bottom-28 right-3 top-20 z-40 flex w-[min(420px,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#020617]/90 text-white shadow-2xl shadow-cyan-950/25 backdrop-blur-2xl md:right-6 md:top-24">
@@ -154,20 +155,20 @@ export const InsightsPanel: React.FC<Props> = ({ sessions, onMemoryClick, onClos
           ].map((stat) => (
             <div key={stat.label} className="rounded-lg border border-white/5 bg-white/[0.03] px-2 py-2">
               <p className="text-[9px] uppercase tracking-widest text-white/35">{stat.label}</p>
-              <p className="text-base font-semibold text-white sm:text-lg">{stat.value}</p>
+              <p className="text-base font-semibold text-white sm:text-lg">{analysis.ready?stat.value:'—'}</p>
             </div>
           ))}
         </div>
       </div>
 
       <div className="mnem-scroll min-h-0 flex-1 overflow-y-auto p-4">
-        {insights.length > 0 ? (
+        {!analysis.ready ? <div role="status" className="space-y-3 p-4 text-sm text-slate-300"><p>{t(analysis.loading?'cognitiveLoading':'cognitiveUnavailable')}</p>{!analysis.loading&&<button type="button" className="rounded-lg border border-white/15 px-3 py-2" onClick={analysis.retry}>{t('cognitiveRetry')}</button>}</div> : insights.length > 0 ? (
           <div className="space-y-3">
             {insights.map((insight) => (
               <InsightCard
                 key={insight.id}
                 insight={insight}
-                sessions={sessions}
+                getMemory={analysis.getMemory}
                 onMemoryClick={onMemoryClick}
               />
             ))}
@@ -181,7 +182,7 @@ export const InsightsPanel: React.FC<Props> = ({ sessions, onMemoryClick, onClos
               Ainda não há massa crítica para gerar insights.
             </p>
             <p className="mt-2 max-w-72 text-xs leading-relaxed text-white/40">
-              Cria memórias no Flow — o motor deteta contradições, órfãs, regressos e padrões.
+              Cria memórias na captura do Universo — o motor sugere tensões prováveis, memórias isoladas, regressos e padrões.
             </p>
           </div>
         )}

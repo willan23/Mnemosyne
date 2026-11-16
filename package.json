@@ -7,11 +7,11 @@
     "dev": "npm run dev --prefix frontend",
     "test": "npm run test --prefix frontend",
     "test:rules": "npm run test:rules --prefix frontend",
-    "backend": "cd backend && venv\\Scripts\\python -m uvicorn main:app --reload",
-    "backend:install": "cd backend && venv\\Scripts\\python -m pip install -r requirements.txt",
+    "test:firestore-rules": "node scripts/run-rules-tests.js",
     "desktop:build": "cd frontend && npx tauri build",
     "desktop:dev": "cd frontend && npx tauri dev",
-    "deploy": "firebase deploy --only hosting,firestore,storage",
-    "deploy:all": "powershell -File deploy.ps1"
+    "desktop:publish": "powershell -File scripts/publish-desktop.ps1",
+    "deploy": "powershell -NoProfile -NonInteractive -File deploy.ps1",
+    "deploy:all": "powershell -NoProfile -NonInteractive -File deploy.ps1"
   }
 }

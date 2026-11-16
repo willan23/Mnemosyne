@@ -4,17 +4,15 @@ service cloud.firestore {
     
     // Helper functions
     function isAuthenticated() {
-      return request.auth != null;
+      return request.auth != null && !exists(/databases/$(database)/documents/accountDeletions/$(request.auth.uid));
+    }
+
+    function accountTargetActive(uid) {
+      return uid is string && !exists(/databases/$(database)/documents/accountDeletions/$(uid));
     }
     
     function isOwner(uid) {
       return isAuthenticated() && request.auth.uid == uid;
-    }
-    
-    function hasSharedAccess(sessionData) {
-      return isAuthenticated() && 
-             sessionData.sharedWith != null &&
-             sessionData.sharedWith.hasAny([request.auth.uid]);
     }
 
     function p2pRoomExists(roomId) {
@@ -28,6 +26,7 @@ service cloud.firestore {
     function isP2PRoomParticipant(roomId) {
       return isAuthenticated() &&
         p2pRoomExists(roomId) &&
+        accountTargetActive(p2pRoomData(roomId).callerId) && accountTargetActive(p2pRoomData(roomId).calleeId) &&
         (p2pRoomData(roomId).callerId == request.auth.uid ||
          p2pRoomData(roomId).calleeId == request.auth.uid);
     }
@@ -43,35 +42,157 @@ service cloud.firestore {
     function canReadSession(sessionId) {
       return isAuthenticated() &&
         sessionExists(sessionId) &&
-        (sessionData(sessionId).uid == request.auth.uid ||
-         (sessionData(sessionId).sharedWithIds != null && sessionData(sessionId).sharedWithIds.hasAny([request.auth.uid])));
+        canReadSessionData(sessionData(sessionId));
+    }
+
+    function canReadSessionData(data) {
+      return isAuthenticated() &&
+        ((data.teamId == null && !exists(/databases/$(database)/documents/accountDeletions/$(data.uid)) &&
+          (data.uid == request.auth.uid ||
+           (data.get('sharedWithIds', null) is list &&
+            data.sharedWithIds.hasAny([request.auth.uid])))) ||
+         (data.get('teamId', null) is string && isTeamMemberOf(data.teamId)));
     }
 
     function canEditSession(sessionId) {
       return canReadSession(sessionId);
     }
 
+    function userDocExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function currentUserData() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    function currentSubscriptionTier() {
-      return currentUserData().subscription.tier;
+    // ─── Plan enforcement (server-owned data only) ─────────────────────────
+    // config/monetization (Admin-only write) is the server-side kill switch:
+    //   { mode: 'paid' } activates full tier enforcement.
+    //   Missing doc or any other mode == Free-first (Founder Preview), which
+    //   matches the deployed client default and keeps existing users working.
+    // entitlements/{uid} is written exclusively by the Stripe Cloud Functions
+    // (syncEntitlementsForUser). Missing entitlements == free tier.
+    function paidEnforcementOn() {
+      return exists(/databases/$(database)/documents/config/monetization) &&
+        get(/databases/$(database)/documents/config/monetization).data.get('mode', 'free-first') == 'paid';
     }
 
-    function currentSubscriptionStatus() {
-      return currentUserData().subscription.status;
+    function entitlementsExists() {
+      return exists(/databases/$(database)/documents/entitlements/$(request.auth.uid));
     }
 
+    function entitlementsData() {
+      return get(/databases/$(database)/documents/entitlements/$(request.auth.uid)).data;
+    }
+
+    // Attachments: allowed in Free-first; in paid mode requires the server-set
+    // canUploadAttachments entitlement flag (missing entitlements => free => no).
     function hasPaidAttachmentAccess() {
-      return isAuthenticated();
+      return isAuthenticated() && (
+        !paidEnforcementOn() ||
+        (entitlementsExists() && entitlementsData().get('canUploadAttachments', false) == true)
+      );
     }
 
-    function sessionAttachmentsAllowed() {
+    function hasEntitledPaidTier() {
+      return entitlementsExists() &&
+        entitlementsData().get('effectiveTier', 'free') in ['pro', 'sovereign'];
+    }
+
+    // Free tier: 30 memories per UTC calendar month. The counter lives in
+    // users/{uid}.usage (Admin-SDK-only, incremented by the onMemoryCreated
+    // Cloud Function). Period-aware: a stale counter from a previous month
+    // never blocks creation.
+    function memoriesUsedThisPeriod() {
+      return (currentUserData().get('usage', {}).get('periodYear', 0) == request.time.year() &&
+              currentUserData().get('usage', {}).get('periodMonth', 0) == request.time.month())
+        ? currentUserData().get('usage', {}).get('memoriesThisMonth', 0)
+        : 0;
+    }
+
+    function memoryCreateWithinPlan() {
+      return !paidEnforcementOn() ||
+        hasEntitledPaidTier() ||
+        !userDocExists() ||
+        memoriesUsedThisPeriod() < 30;
+    }
+
+    function requestHasNoAttachments() {
       return !request.resource.data.keys().hasAny(['attachments']) ||
         request.resource.data.attachments == null ||
-        request.resource.data.attachments.size() == 0 ||
-        hasPaidAttachmentAccess();
+        request.resource.data.attachments.size() == 0;
+    }
+
+    function sessionAttachmentsAllowedOnCreate() {
+      return requestHasNoAttachments();
+    }
+
+    // Existing attachment references may be retained or removed, but new
+    // references are frozen while uploads and tokenized URLs are replaced.
+    function attachmentsUnchanged() {
+      return resource.data.get('attachments', null) == request.resource.data.get('attachments', null);
+    }
+
+    function sessionAttachmentsAllowedOnUpdate() {
+      return requestHasNoAttachments() ||
+        attachmentsUnchanged();
+    }
+
+    function versionAttachmentsUnchanged(sessionId) {
+      return requestHasNoAttachments() ||
+        ('attachments' in request.resource.data ? request.resource.data.attachments : null) ==
+          ('attachments' in sessionData(sessionId) ? sessionData(sessionId).attachments : null);
+    }
+
+    function noPlaintextPromptsOnCreate() {
+      return request.resource.data.get('generatedPrompt', null) == null &&
+        request.resource.data.get('generatedImagePrompt', null) == null &&
+        researchMetadataSafe(request.resource.data);
+    }
+
+    function researchMetadataSafe(data) {
+      return !data.keys().hasAny(['webResearch']) || data.webResearch == null ||
+        (data.webResearch is map &&
+         data.webResearch.keys().hasOnly(['mode', 'savedAt']));
+    }
+
+    function noNewPlaintextPromptsOnUpdate() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['generatedPrompt', 'generatedImagePrompt', 'webResearch']) ||
+        (request.resource.data.get('generatedPrompt', null) == null &&
+         request.resource.data.get('generatedImagePrompt', null) == null &&
+         researchMetadataSafe(request.resource.data));
+    }
+
+    // Client writes always store ciphertext in `enc: { v, iv, ct }`.
+    // Legacy plaintext documents may be read and migrated, never written anew.
+    function isMemoryEncEnvelope(enc) {
+      return enc is map &&
+        enc.keys().hasAll(['v', 'iv', 'ct']) &&
+        enc.keys().hasOnly(['v', 'iv', 'ct']) &&
+        enc.v == 1 &&
+        enc.iv is string && enc.iv.size() > 0 &&
+        enc.ct is string && enc.ct.size() > 0;
+    }
+
+    function sessionCipherFieldsOk() {
+      return request.resource.data.keys().hasAll(['enc']) &&
+        isSessionEncEnvelope(request.resource.data) &&
+        request.resource.data.text == '' &&
+        (!request.resource.data.keys().hasAny(['title']) ||
+          request.resource.data.title == null);
+    }
+
+    // New client creates must be E2EE envelopes (Admin SDK bypasses rules for API/MCP).
+    function sessionCreateRequiresEnc() {
+      return request.resource.data.keys().hasAll(['enc']) &&
+        isSessionEncEnvelope(request.resource.data) &&
+        request.resource.data.text is string &&
+        request.resource.data.text == '' &&
+        (!request.resource.data.keys().hasAny(['title']) ||
+          request.resource.data.title == null) &&
+        noPlaintextPromptsOnCreate();
     }
 
     function trustedDeviceExists(deviceId) {
@@ -88,73 +209,294 @@ service cloud.firestore {
         trustedDeviceData(deviceId).status == 'active';
     }
 
-    // Sessions (memories) - User data isolation
-    match /sessions/{sessionId} {
-      // Owners and explicitly shared recipients can read sessions.
-      allow read: if isAuthenticated() &&
-        (resource.data.uid == request.auth.uid ||
-         (resource.data.sharedWithIds != null && resource.data.sharedWithIds.hasAny([request.auth.uid])));
-      
-      // Authenticated users can create sessions with their own uid
-      allow create: if isAuthenticated() &&
-        request.resource.data.uid == request.auth.uid &&
-        sessionAttachmentsAllowed();
-      
-      // Owners can update all fields. Shared editors can only edit memory content fields.
-      allow update: if isAuthenticated() &&
-        (
-          (resource.data.uid == request.auth.uid && sessionAttachmentsAllowed()) ||
-          (
-            resource.data.sharedWithIds != null &&
-            resource.data.sharedWithIds.hasAny([request.auth.uid]) &&
-            sessionAttachmentsAllowed() &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'text',
-              'title',
-              'tags',
-              'category',
-              'attachments',
-              'updatedAt',
-              'embedding',
-              'connections',
-              'semanticClusterId',
-              'position',
-              'importance',
-              'celestialType',
-              'processingMethod'
-            ])
-          )
-        );
-      
-      // Users can only delete their own sessions
-      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+    // P2 team spaces — membership is server-owned (Admin SDK / callables).
+    function teamExists(teamId) {
+      return exists(/databases/$(database)/documents/teams/$(teamId));
+    }
 
+    function teamDoc(teamId) {
+      return get(/databases/$(database)/documents/teams/$(teamId)).data;
+    }
+
+    function isTeamMemberOf(teamId) {
+      return isAuthenticated() &&
+        teamId is string &&
+        teamExists(teamId) &&
+        teamDoc(teamId).memberUids is list &&
+        teamDoc(teamId).memberUids.hasAny([request.auth.uid]);
+    }
+
+    // Personal launch: existing team sessions remain readable, but old clients
+    // must not create or mutate content under a key that cannot yet be rotated.
+    function sessionIsPersonal(data) {
+      return data.get('teamId', null) == null;
+    }
+
+    function isTeamAdminOf(teamId) {
+      return isTeamMemberOf(teamId) &&
+        (teamDoc(teamId).ownerUid == request.auth.uid ||
+         teamDoc(teamId).get('roles', {}).get(request.auth.uid, 'member') == 'admin');
+    }
+
+    function sessionTeamOkOnWrite() {
+      return request.resource.data.teamId == null || teamSessionWriteAllowed(request.resource.data);
+    }
+
+    // Admin-owned rollout/rollback switch. Missing/false keeps every team writer closed.
+    function teamMemoryWritesEnabled() {
+      return exists(/databases/$(database)/documents/config/teamSecurity) &&
+        get(/databases/$(database)/documents/config/teamSecurity).data.get('writesEnabled', false) == true;
+    }
+
+    function isTeamEncEnvelope(enc) {
+      return enc is map && enc.keys().hasAll(['v', 'iv', 'ct']) &&
+        enc.keys().hasOnly(['v', 'iv', 'ct']) && enc.v == 2 &&
+        enc.iv is string && enc.iv.size() == 16 && enc.iv.matches('^[A-Za-z0-9+/]{16}$') &&
+        enc.ct is string && enc.ct.size() >= 24 && enc.ct.size() <= 1000000 &&
+        enc.ct.size() % 4 == 0 && enc.ct.matches('^[A-Za-z0-9+/]+={0,2}$');
+    }
+
+    function isSessionEncEnvelope(data) {
+      return (data.get('teamId', null) == null && isMemoryEncEnvelope(data.enc)) ||
+        (data.get('teamId', null) is string && isTeamEncEnvelope(data.enc));
+    }
+
+    function activeTeamEpochMatches(teamId, epoch, keyId) {
+      let team = teamDoc(teamId);
+      let epochPath = /databases/$(database)/documents/teams/$(teamId)/keyEpochs/$(string(epoch));
+      let key = get(epochPath).data;
+      return isAuthenticated() && team.memberUids.hasAny([request.auth.uid]) && epoch is int && epoch >= 1 && keyId is string &&
+        team.get('keyRotationStatus', null) == 'active' && team.get('pendingRotationId', null) == null &&
+        team.get('activeKeyEpoch', null) == epoch && team.get('activeKeyId', null) == keyId &&
+        key.status == 'active' && key.keyId == keyId &&
+        key.memberUids.hasAny([request.auth.uid]) && key.wrappedKeys.keys().hasAny([request.auth.uid]);
+    }
+
+    function teamSessionWriteAllowed(data) {
+      return teamMemoryWritesEnabled() && userDocExists() && currentUserData().get('deletionState', null) != 'deleting' &&
+        data.get('teamId', null) is string &&
+        data.keys().hasAll(['keyEpoch', 'keyId', 'updatedAt']) &&
+        activeTeamEpochMatches(data.teamId, data.keyEpoch, data.keyId) &&
+        isTeamEncEnvelope(data.enc) && data.text == '' && data.get('title', null) == null &&
+        data.updatedAt is number && ((data.timestamp is number && data.timestamp >= 0) || data.timestamp is timestamp) &&
+        data.get('nodes', null) == null && data.get('links', null) == null &&
+        data.get('generatedPrompt', null) == null && data.get('generatedImagePrompt', null) == null && researchMetadataSafe(data);
+    }
+
+    function teamSessionCreateFieldsAllowed() {
+      return request.resource.data.get('teamId', null) == null ||
+        (request.resource.data.timestamp is number && teamLearningMetadataSafe(request.resource.data) &&
+          (request.resource.data.get('connections', null) == null || request.resource.data.connections.size() == 0) &&
+          request.resource.data.keys().hasOnly([
+          'uid', 'teamId', 'keyEpoch', 'keyId', 'enc', 'text', 'title', 'timestamp', 'updatedAt',
+          'nodes', 'links', 'embedding', 'embeddingModel', 'connections', 'semanticClusterId',
+          'position', 'tags', 'category', 'attachments', 'generatedPrompt', 'generatedImagePrompt', 'generatedImageProvider',
+          'generatedImageModel', 'celestialType', 'importance', 'entities', 'processingMethod', 'taxonomyLane', 'projectStatus',
+          'learning', 'parentId', 'generatedProvider', 'generatedModel'
+        ]));
+    }
+
+    function teamLearningMetadataSafe(data) {
+      let learning = data.get('learning', null);
+      return learning == null || (learning is map && learning.keys().hasOnly([
+        'schemaVersion', 'source', 'modality', 'learnedAt', 'revisedAt', 'batchId', 'attachmentCount'
+      ]) && learning.schemaVersion == 1 &&
+        learning.source in ['manual', 'text-generation', 'image-generation', 'video-generation', 'document-batch', 'document-upload', 'capsule-import', 'obsidian-vault', 'starter-universe'] &&
+        learning.modality in ['text', 'image', 'audio', 'video', 'document', 'mixed'] &&
+        learning.learnedAt is number && learning.learnedAt >= 0 &&
+        learning.attachmentCount is int && learning.attachmentCount >= 0 &&
+        (learning.get('batchId', null) == null || learning.batchId is string) &&
+        (learning.get('revisedAt', null) == null || learning.revisedAt is number));
+    }
+
+    function teamSessionUpdateAllowed(sessionId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let history = getAfter(/databases/$(database)/documents/sessions/$(sessionId)/versions/$(after.lastVersionId)).data;
+      return before.get('teamId', null) is string &&
+        teamSessionWriteAllowed(after) && sessionTeamIdUnchanged() &&
+        after.uid == before.uid &&
+        after.timestamp == before.timestamp &&
+        before.get('deletedAt', null) == null &&
+        (after.get('deletedAt', null) == null ||
+          (teamDoc(before.teamId).ownerUid == request.auth.uid &&
+            after.deletedAt == after.updatedAt)) &&
+        after.updatedAt > teamNumericRevision(before) &&
+        after.lastVersionId is string && after.lastVersionId.size() > 0 &&
+        after.lastVersionId.size() <= 128 && !after.lastVersionId.matches('.*/.*') &&
+        after.lastVersionId != before.get('lastVersionId', null) &&
+        history.enc == before.enc && history.previousUpdatedAt == before.get('updatedAt', before.timestamp) &&
+        (teamConnectionsUnchanged() || teamConnectionPairAllowed(sessionId)) &&
+        sessionAttachmentsAllowedOnUpdate() &&
+        after.diff(before).affectedKeys().hasOnly([
+          'enc', 'text', 'title', 'keyEpoch', 'keyId', 'updatedAt', 'lastVersionId', 'nodes', 'links', 'embedding', 'embeddingModel',
+          'connections', 'semanticClusterId', 'position', 'tags', 'category', 'attachments',
+          'generatedPrompt', 'generatedImagePrompt', 'generatedImageProvider', 'generatedImageModel', 'celestialType', 'importance',
+          'entities', 'processingMethod', 'taxonomyLane', 'projectStatus', 'deletedAt', 'connectionChange'
+        ]);
+    }
+
+    function teamConnectionsUnchanged() {
+      let before = resource.data.get('connections', null) == null ? [] : resource.data.connections;
+      let after = request.resource.data.get('connections', null) == null ? [] : request.resource.data.connections;
+      return before == after && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['connectionChange']);
+    }
+
+    function teamConnectionPairAllowed(sessionId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let change = after.connectionChange;
+      let peerPath = /databases/$(database)/documents/sessions/$(change.peerId);
+      let peerBefore = get(peerPath).data;
+      let peerAfter = getAfter(peerPath).data;
+      let oldLinks = before.get('connections', null) == null ? [] : before.connections;
+      let newLinks = after.connections;
+      return change is map && change.keys().hasOnly(['id', 'peerId', 'operation', 'actorUid']) &&
+        change.id is string && change.id.matches('^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') &&
+        change.peerId is string && change.peerId.size() > 0 && change.peerId.size() <= 1500 &&
+        !change.peerId.matches('.*/.*') && change.peerId != sessionId && change.actorUid == request.auth.uid &&
+        after.get('deletedAt', null) == null && peerBefore.get('deletedAt', null) == null && peerAfter.get('deletedAt', null) == null &&
+        oldLinks is list && newLinks is list && oldLinks.size() <= 100 && newLinks.size() <= 100 &&
+        oldLinks.toSet().size() == oldLinks.size() && newLinks.toSet().size() == newLinks.size() &&
+        !newLinks.hasAny([sessionId]) &&
+        ((change.operation == 'link' && newLinks.hasAny([change.peerId]) && newLinks.hasAll(oldLinks) &&
+          newLinks.size() == oldLinks.size() + (oldLinks.hasAny([change.peerId]) ? 0 : 1)) ||
+         (change.operation == 'unlink' && !newLinks.hasAny([change.peerId]) && oldLinks.hasAll(newLinks) &&
+          newLinks.size() == oldLinks.size() - (oldLinks.hasAny([change.peerId]) ? 1 : 0))) &&
+        peerBefore.teamId == before.teamId && peerAfter.teamId == before.teamId &&
+        peerAfter.updatedAt > teamNumericRevision(peerBefore) &&
+        peerAfter.connectionChange == { 'id': change.id, 'peerId': sessionId,
+          'operation': change.operation, 'actorUid': request.auth.uid } &&
+        peerAfter.connections is list &&
+        (change.operation == 'link' ? peerAfter.connections.hasAny([sessionId]) : !peerAfter.connections.hasAny([sessionId]));
+    }
+
+    // Explicit cryptographic maintenance; semantic metadata and history stay unchanged.
+    // The server cannot prove plaintext equality: only a current owner/admin may replace old ciphertext.
+    function teamHistoricalRekeyAllowed(teamId, isVersion) {
+      let team = teamDoc(teamId);
+      let before = resource.data;
+      let after = request.resource.data;
+      let oldEpoch = before.get('keyEpoch', 1);
+      return isAuthenticated() && teamId is string &&
+        exists(/databases/$(database)/documents/config/teamSecurity) &&
+        get(/databases/$(database)/documents/config/teamSecurity).data.get('historyReencryptionEnabled', false) == true &&
+        userDocExists() && currentUserData().get('deletionState', null) != 'deleting' &&
+        team.memberUids.hasAny([request.auth.uid]) &&
+        (team.ownerUid == request.auth.uid || team.get('roles', {}).get(request.auth.uid, 'member') == 'admin') &&
+        (before.get('teamId', null) == teamId || (isVersion && before.get('teamId', null) == null)) &&
+        after.teamId == teamId && before.text == '' && before.get('title', null) == null &&
+        after.text == '' && after.get('title', null) == null &&
+        (isMemoryEncEnvelope(before.enc) || isTeamEncEnvelope(before.enc)) &&
+        oldEpoch is int && oldEpoch >= 1 &&
+        (before.enc.v == 1 || (before.keys().hasAll(['keyEpoch', 'keyId']) && before.keyId is string)) &&
+        isTeamEncEnvelope(after.enc) && activeTeamEpochMatches(teamId, after.keyEpoch, after.keyId) &&
+        (after.keyEpoch > oldEpoch || (after.keyEpoch == oldEpoch && before.enc.v == 1)) &&
+        before.get('rekeyRevision', 0) is int && before.get('rekeyRevision', 0) >= 0 &&
+        after.rekeyRevision == before.get('rekeyRevision', 0) + 1 &&
+        after.rekeyedByUid == request.auth.uid && after.rekeyJobId is string &&
+        after.rekeyJobId.matches('^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') &&
+        after.diff(before).affectedKeys().hasOnly(['enc', 'teamId', 'keyEpoch', 'keyId', 'rekeyRevision', 'rekeyJobId', 'rekeyedByUid']);
+    }
+
+    // Archive precisely the old ciphertext in the same atomic write as its replacement.
+    // The old epoch remains historical; it is never relabelled as the current key.
+    function teamVersionMetadataMatches(before, version) {
+      return version.get('tags', null) == before.get('tags', null) &&
+        version.get('category', null) == before.get('category', null) &&
+        version.get('attachments', null) == before.get('attachments', null) &&
+        version.get('embedding', null) == before.get('embedding', null) &&
+        version.get('embeddingModel', null) == before.get('embeddingModel', null) &&
+        version.get('connections', null) == before.get('connections', null) &&
+        version.get('semanticClusterId', null) == before.get('semanticClusterId', null) &&
+        version.get('position', null) == before.get('position', null) &&
+        version.get('importance', null) == before.get('importance', null) &&
+        version.get('celestialType', null) == before.get('celestialType', null) &&
+        version.get('processingMethod', null) == before.get('processingMethod', null) &&
+        version.get('connectionChange', null) == before.get('connectionChange', null) &&
+        version.get('learning', null) == before.get('learning', null) &&
+        version.get('parentId', null) == before.get('parentId', null) &&
+        version.get('taxonomyLane', null) == before.get('taxonomyLane', null) &&
+        version.get('projectStatus', null) == before.get('projectStatus', null) &&
+        version.get('entities', null) == before.get('entities', null) &&
+        version.get('generatedProvider', null) == before.get('generatedProvider', null) &&
+        version.get('generatedModel', null) == before.get('generatedModel', null) &&
+        version.get('generatedImageProvider', null) == before.get('generatedImageProvider', null) &&
+        version.get('generatedImageModel', null) == before.get('generatedImageModel', null);
+    }
+
+    function teamVersionCreateAllowed(sessionId, versionId) {
+      let before = sessionData(sessionId);
+      let after = getAfter(/databases/$(database)/documents/sessions/$(sessionId)).data;
+      let version = request.resource.data;
+      return before.get('teamId', null) is string && teamMemoryWritesEnabled() &&
+        // The required parent revision/pointer change is independently authorized by its update rule.
+        // Rechecking the full parent policy here doubles evaluation cost for atomic connection pairs.
+        isAuthenticated() && after.uid == before.uid && after.teamId == before.teamId &&
+        after.updatedAt > teamNumericRevision(before) &&
+        after.lastVersionId == versionId && teamVersionMetadataMatches(before, version) &&
+        version.teamId == before.teamId && version.editorUid == request.auth.uid &&
+        version.text == '' && version.get('title', null) == null && version.enc == before.enc &&
+        version.keyEpoch == before.get('keyEpoch', 1) && version.keyId == before.get('keyId', null) &&
+        version.previousUpdatedAt == before.get('updatedAt', before.timestamp) &&
+        version.createdAt == after.updatedAt && version.createdAt is number &&
+        version.keys().hasAll(['teamId', 'keyEpoch', 'keyId', 'enc', 'text', 'editorUid', 'previousUpdatedAt', 'createdAt']) &&
+        version.keys().hasOnly([
+          'teamId', 'keyEpoch', 'keyId', 'text', 'title', 'enc', 'tags', 'category', 'attachments',
+          'embedding', 'embeddingModel', 'connections', 'semanticClusterId', 'position', 'importance',
+          'celestialType', 'processingMethod', 'previousUpdatedAt', 'createdAt', 'editorUid', 'connectionChange',
+          'learning', 'parentId', 'taxonomyLane', 'projectStatus', 'entities', 'generatedProvider', 'generatedModel', 'generatedImageProvider', 'generatedImageModel'
+        ]);
+    }
+
+    function sessionTeamIdUnchanged() {
+      return resource.data.get('teamId', null) == request.resource.data.get('teamId', null);
+    }
+
+    function ownsUnsharedPersonalSession(sessionId) {
+      return isAuthenticated() && sessionExists(sessionId) &&
+        sessionData(sessionId).uid == request.auth.uid &&
+        sessionIsPersonal(sessionData(sessionId)) &&
+        sessionData(sessionId).get('sharedWithIds', []) is list &&
+        sessionData(sessionId).get('sharedWithIds', []).size() == 0;
+    }
+
+    function sessionRevision(sessionId) {
+      return sessionData(sessionId).get('updatedAt',
+        sessionData(sessionId).get('timestamp', 0));
+    }
+
+    function teamNumericRevision(data) {
+      let value = data.get('updatedAt', data.get('timestamp', 0));
+      return value is timestamp ? value.toMillis() : value;
+    }
+
+    // Sessions (memories) - User data isolation
+    // Team memories: optional `teamId`. Content is still `enc:{v,iv,ct}` but
+    // encrypted with the teamKey (never the personal mnemonic). See teamVault.ts.
+    match /sessions/{sessionId} {
+      // Queries still require the explicit personal scope and the coordinated backfill/index rollout.
+      allow read: if canReadSessionData(resource.data);
+      // Creation, revisions, links, migration and deletion require server receipts, quotas and current authority.
+      // Legacy clients cannot bypass those protocols, even with a valid cipher or a no-op write.
+      allow create, update, delete: if false;
+
+      match /relationSuggestions/{targetId} {
+        allow read: if ownsUnsharedPersonalSession(sessionId);
+        allow create, update, delete: if false;
+      }
       match /versions/{versionId} {
         allow read: if canReadSession(sessionId);
-        allow create: if canEditSession(sessionId) &&
-          request.resource.data.editorUid == request.auth.uid &&
-          request.resource.data.text is string &&
-          request.resource.data.createdAt is number &&
-          request.resource.data.previousUpdatedAt is number &&
-          request.resource.data.keys().hasOnly([
-            'text',
-            'tags',
-            'category',
-            'attachments',
-            'title',
-            'embedding',
-            'connections',
-            'semanticClusterId',
-            'position',
-            'importance',
-            'celestialType',
-            'processingMethod',
-            'previousUpdatedAt',
-            'createdAt',
-            'editorUid'
-          ]);
-        allow update, delete: if false;
+        allow create, update, delete: if false;
       }
+    }
+
+    // API keys: hashes only (Admin SDK write). Owner may get own doc;
+    // list is denied so clients use the authenticated callable listApiKeys.
+    match /apiKeys/{keyId} {
+      allow get: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow list: if false;
+      allow create, update, delete: if false;
     }
 
     // Rate limits: só Admin SDK (Cloud Functions) — clientes sem acesso
@@ -162,55 +504,32 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Public shares — apenas cápsulas cifradas (sem plaintext de memória)
+    match /aiBudgets/{docId} {
+      allow read, write: if false;
+    }
+
+    match /aiBudgetWindows/{docId} { allow read, write: if false; }
+    match /aiPersonalBudgets/{docId} { allow read, write: if false; }
+    match /teamAiBudgets/{docId} { allow read, write: if false; }
+    match /teamAiBudgetWindows/{docId} { allow read, write: if false; }
+
+    // Stripe webhook idempotency — Admin only
+    match /processedStripeEvents/{eventId} {
+      allow read, write: if false;
+    }
+
+    // Capsules use server projections, budgets and source-bound mutations.
     match /shares/{shareId} {
-      // Anyone can read ciphertext metadata (passphrase fica out-of-band / fragment)
-      allow read: if true;
-
-      // Owner only; schema encriptado obrigatório (Zero-Knowledge capsules)
-      allow create: if isAuthenticated() &&
-        request.resource.data.uid == request.auth.uid &&
-        request.resource.data.encrypted == true &&
-        request.resource.data.ciphertext is string &&
-        request.resource.data.ciphertext.size() > 16 &&
-        request.resource.data.sessionId is string &&
-        request.resource.data.views == 0 &&
-        request.resource.data.importCount == 0 &&
-        // Bloquear campos de conteúdo em claro se alguém tentar reintroduzi-los
-        !('text' in request.resource.data) &&
-        !('content' in request.resource.data) &&
-        !('plaintext' in request.resource.data);
-
-      // views +1 (público) ou importCount +1 (auth)
-      allow update: if (
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views']) &&
-        request.resource.data.views == resource.data.views + 1
-      ) || (
-        isAuthenticated() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['importCount', 'lastImportedAt']) &&
-        request.resource.data.importCount == (
-          resource.data.keys().hasAll(['importCount'])
-            ? resource.data.importCount + 1
-            : 1
-        )
-      );
-
-      // Owner can delete
-      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow read, write: if false;
     }
 
     // Avisos ao autor quando alguém assimila a cápsula
     match /capsuleImportNotices/{noticeId} {
-      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
-      allow create: if isAuthenticated() &&
-        request.resource.data.importerUid == request.auth.uid &&
-        request.resource.data.ownerUid is string &&
-        request.resource.data.shareId is string &&
-        request.resource.data.read == false;
-      allow update: if isAuthenticated() &&
-        resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
-      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+      allow get: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+      allow list: if isAuthenticated() && resource.data.ownerUid == request.auth.uid &&
+        request.query.limit is int && request.query.limit > 0 && request.query.limit <= 40;
+      // Import completion creates the event; the owner acknowledges its bound source through the server.
+      allow create, update, delete: if false;
     }
 
     // Notifications
@@ -229,308 +548,257 @@ service cloud.firestore {
       allow delete: if isOwner(resource.data.uid);
     }
 
-    // Users collection
+    // User roots are server-owned, including identity metadata and billing.
     match /users/{userId} {
-      // Users can only read their own profile
       allow read: if isOwner(userId);
-      
-      // Users can only create/update their own profile
-      allow create, update: if isOwner(userId);
-      
-      // Users can delete their own profile
-      allow delete: if isOwner(userId);
+      // Profile initialization and refresh use Auth-bound server publication.
+      allow create, update: if false;
+      // Account deletion must use the server cleanup; recreating this profile
+      // would reset gateway revocation and server-owned billing counters.
+      allow delete: if false;
 
-      // Memories subcollection
+      // Operational metadata only. Immutable to clients; account deletion purges it.
+      match /memoryEvents/{eventId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+      match /agentEvents/{eventId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+
       match /memories/{memoryId} {
-        allow read, write: if isOwner(userId);
+        // Legacy collection is read for compatibility and owner migration.
+        // New memories belong in sessions; old clients cannot add plaintext here.
+        allow read: if isOwner(userId);
+        // Personal migration and purge are server-owned, including historical plaintext.
+        allow create, update, delete: if false;
       }
     }
 
-    // Public discovery data for E2E transmission. No plaintext email is stored here.
-    match /publicProfiles/{userId} {
+    // Server-owned entitlements mirror (optional). Clients: read own, never write.
+    match /entitlements/{userId} {
+      allow read: if isOwner(userId);
+      allow create, update, delete: if false;
+    }
+
+    // Server-side monetization mode switch — Admin SDK only.
+    // { mode: 'paid' } activates full plan enforcement; missing == free-first.
+    match /config/monetization {
       allow read: if isAuthenticated();
+      allow write: if false;
+    }
 
-      allow create, update: if isOwner(userId) &&
-        request.resource.data.keys().hasOnly([
-          'uid',
-          'displayName',
-          'emailHash',
-          'publicKeyPem',
-          'publicKeyUpdatedAt'
-        ]) &&
-        request.resource.data.uid == userId &&
-        request.resource.data.publicKeyPem is string;
+    match /config/{configId} {
+      allow read, write: if false;
+    }
 
-      allow delete: if isOwner(userId);
+    // Public discovery data for E2E transmission. No plaintext email is stored here.
+    // Anti-harvesting: only point lookups by uid (get); listing/query denied.
+    match /publicProfiles/{userId} {
+      allow get: if isAuthenticated();
+      allow list: if false;
+
+      allow create, update: if false;
+
+      allow delete: if false;
     }
 
     // End-to-end encrypted relay capsules.
     match /transmissions/{transmissionId} {
       allow read: if isAuthenticated() &&
+        accountTargetActive(resource.data.senderId) && accountTargetActive(resource.data.recipientId) &&
         (resource.data.senderId == request.auth.uid || resource.data.recipientId == request.auth.uid);
-
-      allow create: if isAuthenticated() &&
-        request.resource.data.senderId == request.auth.uid &&
-        request.resource.data.recipientId is string &&
-        request.resource.data.recipientId != request.auth.uid &&
-        request.resource.data.encryptedKey is string &&
-        request.resource.data.encryptedPayload is string &&
-        request.resource.data.payloadIv is string &&
-        request.resource.data.status == 'sent' &&
-        request.resource.data.keys().hasOnly([
-          'senderId',
-          'recipientId',
-          'encryptedKey',
-          'encryptedPayload',
-          'payloadIv',
-          'hasAttachment',
-          'attachmentName',
-          'timestamp',
-          'status'
-        ]);
-
-      allow update: if isAuthenticated() &&
-        resource.data.recipientId == request.auth.uid &&
-        resource.data.status == 'sent' &&
-        request.resource.data.senderId == resource.data.senderId &&
-        request.resource.data.recipientId == resource.data.recipientId &&
-        request.resource.data.encryptedKey == resource.data.encryptedKey &&
-        request.resource.data.encryptedPayload == resource.data.encryptedPayload &&
-        request.resource.data.payloadIv == resource.data.payloadIv &&
-        request.resource.data.hasAttachment == resource.data.hasAttachment &&
-        request.resource.data.attachmentName == resource.data.attachmentName &&
-        request.resource.data.timestamp == resource.data.timestamp &&
-        request.resource.data.status in ['received', 'failed'] &&
-        request.resource.data.receivedAt is number &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status',
-          'receivedAt'
-        ]);
-      allow delete: if isAuthenticated() &&
-        (resource.data.senderId == request.auth.uid || resource.data.recipientId == request.auth.uid);
+      // Authenticated callables own receipt/quota admission, cancellation and recipient ACK.
+      allow create, update, delete: if false;
     }
+    match /commsDeliveryRequests/{requestId} { allow read, write: if false; }
+    match /commsDeliveryBudgets/{budgetId} { allow read, write: if false; }
 
     // Real social graph: users can request contact with a public profile, and the
     // recipient controls acceptance. No private memory content is stored here.
     match /friendRequests/{requestId} {
       allow read: if isAuthenticated() &&
+        accountTargetActive(resource.data.fromUid) && accountTargetActive(resource.data.toUid) &&
         (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
-
-      allow create: if isAuthenticated() &&
-        request.resource.data.fromUid == request.auth.uid &&
-        request.resource.data.toUid is string &&
-        request.resource.data.toUid != request.auth.uid &&
-        request.resource.data.status == 'pending' &&
-        request.resource.data.fromLabel is string &&
-        request.resource.data.toLabel is string &&
-        request.resource.data.createdAt is number &&
-        request.resource.data.updatedAt is number &&
-        request.resource.data.keys().hasOnly([
-          'fromUid',
-          'toUid',
-          'fromLabel',
-          'toLabel',
-          'status',
-          'createdAt',
-          'updatedAt'
-        ]);
-
-      allow update: if isAuthenticated() &&
-        resource.data.toUid == request.auth.uid &&
-        resource.data.status == 'pending' &&
-        request.resource.data.fromUid == resource.data.fromUid &&
-        request.resource.data.toUid == resource.data.toUid &&
-        request.resource.data.fromLabel == resource.data.fromLabel &&
-        request.resource.data.toLabel == resource.data.toLabel &&
-        request.resource.data.createdAt == resource.data.createdAt &&
-        request.resource.data.status in ['accepted', 'rejected'] &&
-        request.resource.data.updatedAt is number &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status',
-          'updatedAt'
-        ]);
-
-      allow delete: if isAuthenticated() &&
-        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      // Callables own idempotent admission, pair uniqueness, response and cancellation.
+      allow create, update, delete: if false;
     }
-
+    match /commsContactPairs/{pairId} { allow read, write: if false; }
+    match /commsContactRemovals/{requestId} { allow read, write: if false; }
+    match /commsContactBudgets/{budgetId} { allow read, write: if false; }
+    // Enrollment transitions, key binding, quota and permanent revocation belong to the callables.
     match /devicePairings/{pairingId} {
-      allow create: if isAuthenticated() &&
-        request.resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.pairingId == pairingId &&
-        request.resource.data.status == 'pending' &&
-        request.resource.data.expiresAt is number &&
-        request.resource.data.keys().hasOnly([
-          'version',
-          'pairingId',
-          'ownerUid',
-          'status',
-          'desktopDeviceName',
-          'desktopPublicKeyJwk',
-          'createdAt',
-          'expiresAt'
-        ]);
-
       allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
-
-      allow update: if isAuthenticated() &&
-        resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.ownerUid == resource.data.ownerUid &&
-        request.resource.data.pairingId == resource.data.pairingId &&
-        request.resource.data.status in ['pending', 'accepted', 'cancelled', 'expired'] &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status',
-          'mobileDeviceName',
-          'mobileDeviceId',
-          'mobilePublicKeyJwk',
-          'encryptedHandshake',
-          'acceptedAt',
-          'cancelledAt',
-          'updatedAt'
-        ]);
-
-      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+      allow create, update, delete: if false;
     }
-
     match /trustedDevices/{deviceId} {
       allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
-
-      allow create: if isAuthenticated() &&
-        request.resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.deviceId == deviceId &&
-        request.resource.data.status == 'active' &&
-        request.resource.data.name is string &&
-        request.resource.data.pairedAt is number &&
-        request.resource.data.keys().hasOnly([
-          'deviceId',
-          'ownerUid',
-          'name',
-          'status',
-          'pairedAt',
-          'pairingId',
-          'publicKeyJwk',
-          'desktopPublicKeyJwk',
-          'createdAt',
-          'updatedAt'
-        ]);
-
-      allow update: if isAuthenticated() &&
-        resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.ownerUid == resource.data.ownerUid &&
-        request.resource.data.deviceId == resource.data.deviceId &&
-        request.resource.data.status in ['active', 'revoked'] &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status',
-          'revokedAt',
-          'updatedAt'
-        ]);
-
-      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+      allow create, update, delete: if false;
     }
 
     match /mobileSyncEnvelopes/{envelopeId} {
-      allow create: if isAuthenticated() &&
-        request.resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.deviceId is string &&
-        isActiveTrustedDevice(request.resource.data.deviceId) &&
-        request.resource.data.direction in ['desktop-to-mobile', 'mobile-to-desktop'] &&
-        request.resource.data.payloadType in ['memory-snapshot', 'memory-delta'] &&
-        request.resource.data.status == 'queued' &&
-        request.resource.data.senderPublicKeyJwk is map &&
-        request.resource.data.encryptedPayload is map &&
-        request.resource.data.memoryCount is number &&
-        request.resource.data.tombstoneIds is list &&
-        request.resource.data.expiresAt is number &&
-        request.resource.data.keys().hasOnly([
-          'ownerUid',
-          'deviceId',
-          'direction',
-          'payloadType',
-          'status',
-          'senderPublicKeyJwk',
-          'encryptedPayload',
-          'memoryCount',
-          'tombstoneIds',
-          'createdAt',
-          'updatedAt',
-          'expiresAt'
-        ]);
-
+      // Publication, ACK, expiry and cleanup use the server protocol and immutable receipts.
       allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
-
-      allow update: if isAuthenticated() &&
-        resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.ownerUid == resource.data.ownerUid &&
-        request.resource.data.deviceId == resource.data.deviceId &&
-        request.resource.data.direction == resource.data.direction &&
-        request.resource.data.payloadType == resource.data.payloadType &&
-        request.resource.data.senderPublicKeyJwk == resource.data.senderPublicKeyJwk &&
-        request.resource.data.encryptedPayload == resource.data.encryptedPayload &&
-        request.resource.data.memoryCount == resource.data.memoryCount &&
-        request.resource.data.tombstoneIds == resource.data.tombstoneIds &&
-        request.resource.data.expiresAt == resource.data.expiresAt &&
-        request.resource.data.status in ['queued', 'pulled', 'failed'] &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status',
-          'pulledAt',
-          'error',
-          'updatedAt'
-        ]);
-
-      allow delete: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+      allow create, update, delete: if false;
     }
 
     // WebRTC signaling only. Message payloads still travel E2E encrypted over DataChannel.
     match /p2pRooms/{roomId} {
+      // Authenticated callables own room/SDP/ICE admission, receipt recovery and closure.
+      allow read, write: if false;
+      match /callerCandidates/{candidateId} { allow read, write: if false; }
+      match /calleeCandidates/{candidateId} { allow read, write: if false; }
+    }
+    match /commsP2PRequests/{operationId} { allow read, write: if false; }
+    match /commsP2PContentReceipts/{requestId} { allow read, write: if false; }
+    match /commsP2PCleanup/{stateId} { allow read, write: if false; }
+    match /commsP2PLegacyCutovers/{cutoverId} { allow read, write: if false; }
+    match /commsP2PLegacyReceipts/{planId} { allow read, write: if false; }
+    match /commsP2PBudgets/{budgetId} { allow read, write: if false; }
+
+    // P2 E2EE team spaces. Clients never write wrappedKeys — only Admin SDK
+    // (createTeam / inviteMember / acceptInvite / leaveTeam / deleteTeam).
+    match /teams/{teamId} {
+      // hasAny requires list membership and permits the client's array-contains query.
       allow read: if isAuthenticated() &&
-        (resource.data.callerId == request.auth.uid || resource.data.calleeId == request.auth.uid);
+        resource.data.memberUids.hasAny([request.auth.uid]);
+      allow create, update, delete: if false;
 
-      allow create: if isAuthenticated() &&
-        request.resource.data.callerId == request.auth.uid &&
-        request.resource.data.calleeId is string &&
-        request.resource.data.calleeId != request.auth.uid &&
-        request.resource.data.offer is map &&
-        request.resource.data.status == 'offer' &&
-        request.resource.data.keys().hasOnly([
-          'callerId',
-          'calleeId',
-          'callerLabel',
-          'status',
-          'offer',
-          'createdAt',
-          'updatedAt'
-        ]);
-
-      allow update: if isAuthenticated() &&
-        (resource.data.callerId == request.auth.uid || resource.data.calleeId == request.auth.uid) &&
-        request.resource.data.callerId == resource.data.callerId &&
-        request.resource.data.calleeId == resource.data.calleeId &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'answer',
-          'status',
-          'updatedAt'
-        ]);
-
-      allow delete: if isAuthenticated() &&
-        (resource.data.callerId == request.auth.uid || resource.data.calleeId == request.auth.uid);
-
-      match /callerCandidates/{candidateId} {
-        allow read: if isP2PRoomParticipant(roomId);
-        allow create: if isP2PRoomParticipant(roomId) &&
-          p2pRoomData(roomId).callerId == request.auth.uid &&
-          request.resource.data.candidate is map &&
-          request.resource.data.uid == request.auth.uid;
-        allow update, delete: if false;
-      }
-
-      match /calleeCandidates/{candidateId} {
-        allow read: if isP2PRoomParticipant(roomId);
-        allow create: if isP2PRoomParticipant(roomId) &&
-          p2pRoomData(roomId).calleeId == request.auth.uid &&
-          request.resource.data.candidate is map &&
-          request.resource.data.uid == request.auth.uid;
-        allow update, delete: if false;
+      match /keyEpochs/{epochId} {
+        allow get, list: if isTeamMemberOf(teamId) &&
+          resource.data.memberUids is list &&
+          resource.data.memberUids.hasAny([request.auth.uid]);
+        allow create, update, delete: if false;
       }
     }
+
+    match /teamKeyRotations/{rotationId} {
+      allow get: if resource.data.teamId is string &&
+        isTeamAdminOf(resource.data.teamId);
+      allow list, create, update, delete: if false;
+    }
+
+    match /teamCreationRequests/{requestId} {
+      allow read, write: if false;
+    }
+
+    // Upload authorization, durable status and quota counters are server-owned.
+    match /attachmentUploads/{uploadId} { allow read, write: if false; }
+    match /attachmentUploadCancellations/{uploadId} { allow read, write: if false; }
+    match /attachmentQuotas/{quotaId} { allow read, write: if false; }
+    match /attachmentMutations/{operationId} { allow read, write: if false; }
+    match /memoryCreationReceipts/{sessionId} { allow read, write: if false; }
+    match /personalConnectionChanges/{operationId} { allow read, write: if false; }
+    match /personalRevisions/{operationId} { allow read, write: if false; }
+    match /embeddingIndexRevisions/{operationId} { allow read, write: if false; }
+    match /embeddingIndexBudgets/{budgetId} { allow read, write: if false; }
+    match /personalRevisionBudgets/{budgetId} { allow read, write: if false; }
+    match /teamRevisions/{operationId} { allow read, write: if false; }
+    match /teamRevisionBudgets/{budgetId} { allow read, write: if false; }
+    match /teamRevisionTeamBudgets/{budgetId} { allow read, write: if false; }
+    match /memoryEdits/{operationId} { allow read, write: if false; }
+    match /memoryEditEvents/{operationId} { allow read, write: if false; }
+    match /memoryEditBudgets/{budgetId} { allow read, write: if false; }
+    match /memoryEditTeamBudgets/{budgetId} { allow read, write: if false; }
+    match /teamConnectionChanges/{operationId} { allow read, write: if false; }
+    match /teamConnectionEvents/{operationId} { allow read, write: if false; }
+    match /semanticClusterChanges/{operationId} { allow read, write: if false; }
+    match /semanticClusterEvents/{operationId} { allow read, write: if false; }
+    match /semanticClusterBudgets/{budgetId} { allow read, write: if false; }
+    match /semanticClusterTeamBudgets/{budgetId} { allow read, write: if false; }
+    match /semanticRelationChanges/{operationId} { allow read, write: if false; }
+    match /semanticRelationEvents/{operationId} { allow read, write: if false; }
+    match /semanticRelationBudgets/{budgetId} { allow read, write: if false; }
+    match /syncConflictDecisions/{operationId} { allow read, write: if false; }
+    match /syncConflictEvents/{operationId} { allow read, write: if false; }
+    match /syncConflictBudgets/{budgetId} { allow read, write: if false; }
+    match /personalMigrations/{operationId} { allow read, write: if false; }
+    match /personalMigrationEvents/{operationId} { allow read, write: if false; }
+    match /personalMigrationBudgets/{budgetId} { allow read, write: if false; }
+    match /personalMigrationArchives/{operationId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+    match /teamHistoryChanges/{operationId} { allow read, write: if false; }
+    match /teamHistoryEvents/{operationId} { allow read, write: if false; }
+    match /teamHistoryCipherArchives/{operationId} { allow read, write: if false; }
+    match /teamHistoryBudgets/{budgetId} { allow read, write: if false; }
+    match /teamHistoryTeamBudgets/{budgetId} { allow read, write: if false; }
+    match /commsIdentityRollovers/{operationId} { allow read, write: if false; }
+    match /commsIdentityBudgets/{budgetId} { allow read, write: if false; }
+    match /obsidianImports/{importId} { allow read, write: if false; match /batches/{batchId} { allow read, write: if false; } }
+    match /obsidianImportBudgets/{budgetId} { allow read, write: if false; }
+    match /documentImports/{importId} { allow read, write: if false; match /batches/{batchId} { allow read, write: if false; } }
+    match /documentImportBudgets/{budgetId} { allow read, write: if false; }
+    match /memoryUsageReceipts/{sessionId} { allow read, write: if false; }
+    match /mobileSyncImports/{envelopeId} {
+      allow read, write: if false;
+      match /batches/{cursor} { allow read, write: if false; }
+    }
+    match /mobileSyncPublications/{envelopeId} { allow read, write: if false; }
+    match /mobileSyncPublicationCancellations/{envelopeId} { allow read, write: if false; }
+    match /mobileSyncBudgets/{budgetId} { allow read, write: if false; }
+    match /attachmentObjectTombstones/{id} { allow read, write: if false; }
+    match /accountDeletions/{uid} { allow read, write: if false; }
+    match /maintenanceCursors/{cursorId} { allow read, write: if false; }
+    match /teamDeletions/{teamId} { allow read, write: if false; }
+
+    match /teamInvites/{inviteId} {
+      function currentRecipientInvite() {
+        let invite = resource.data;
+        let team = teamDoc(invite.teamId);
+        let issuer = invite.get('fromUid', null);
+        return invite.uid == request.auth.uid && invite.get('status', null) == 'pending' &&
+          invite.get('expiresAt', null) is int && invite.expiresAt > request.time.toMillis() &&
+          accountTargetActive(issuer) && accountTargetActive(team.get('ownerUid', null)) &&
+          team.get('deletionState', null) != 'deleting' && team.get('keyRotationStatus', 'active') == 'active' &&
+          team.get('memberUids', []).hasAny([issuer]) &&
+          (issuer == team.ownerUid || team.get('roles', {}).get(issuer, null) == 'admin') &&
+          invite.get('keyEpoch', null) is int && invite.keyEpoch == team.get('activeKeyEpoch', 1) &&
+          invite.get('keyId', null) == team.get('activeKeyId', null) &&
+          invite.get('publicKeyFingerprint', null) is string && invite.publicKeyFingerprint.matches('^[a-f0-9]{64}$');
+      }
+      allow read: if isAuthenticated() && (
+        (resource.data.teamId is string && isTeamMemberOf(resource.data.teamId) &&
+          accountTargetActive(teamDoc(resource.data.teamId).get('ownerUid', null)) &&
+          teamDoc(resource.data.teamId).get('deletionState', null) != 'deleting') ||
+        (resource.data.teamId is string && teamExists(resource.data.teamId) && currentRecipientInvite())
+      );
+      allow create, update, delete: if false;
+    }
+
+    // P3 · team admin audit (no plaintext). Members read; clients never write.
+    match /teamAudit/{auditId} {
+      allow read: if isAuthenticated() &&
+        resource.data.teamId is string &&
+        isTeamMemberOf(resource.data.teamId);
+      allow create, update, delete: if false;
+    }
+
+    // Agent registrations, consent and one-use PKCE codes are server-only.
+    match /agentClients/{clientId} { allow read, write: if false; }
+    match /agentMutationReceipts/{proposalId} { allow read, write: if false; }
+    match /agentMutationReversals/{operationId} { allow read, write: if false; }
+    match /agentReversalCancelBudgets/{budgetId} { allow read, write: if false; }
+    match /agentMutationProposals/{proposalId} { allow read, write: if false; }
+    match /agentMutationBudgets/{budgetId} { allow read, write: if false; }
+    match /agentMutationTeamBudgets/{budgetId} { allow read, write: if false; }
+    match /agentGrants/{grantId} { allow read, write: if false; }
+    match /agentAuthorizationCodes/{codeId} { allow read, write: if false; }
+    match /agentSessions/{sessionId} { allow read, write: if false; }
+
+    // Desktop login bridge — tokens only via Admin SDK (Cloud Functions).
+    match /desktopAuthBridges/{bridgeId} {
+      allow read, write: if false;
+    }
+
+    // Only an opaque pointer is listable by recipient; wrapped keys require a fresh individual ACL read.
+    match /teamInviteInbox/{inviteId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+    match /desktopAuthBridgeReceipts/{bridgeId} { allow read, write: if false; }
   }
 }
+

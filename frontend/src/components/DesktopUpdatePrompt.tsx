@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import toast from 'react-hot-toast'
 import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater'
 
-const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
+const CHECK_INTERVAL_MS = 30 * 60 * 1000 // 30 min (antes 12h — atrasava updates após publicar)
 const promptedVersions = new Set<string>()
 
 const isTauriRuntime = () =>
@@ -100,7 +100,18 @@ function useDesktopUpdater() {
     void checkForDesktopUpdate()
     const intervalId = window.setInterval(() => void checkForDesktopUpdate(), CHECK_INTERVAL_MS)
 
-    return () => window.clearInterval(intervalId)
+    const onFocus = () => void checkForDesktopUpdate()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void checkForDesktopUpdate()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 }
 

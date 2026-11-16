@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Mnemosyne Clipper</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      width: 320px;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #07101f;
+      color: #e2e8f0;
+    }
+    header {
+      padding: 12px 14px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .eyebrow {
+      margin: 0;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #67e8f9;
+      font-weight: 700;
+    }
+    h1 {
+      margin: 4px 0 0;
+      font-size: 14px;
+      font-weight: 650;
+      color: #fff;
+    }
+    form { padding: 12px 14px 14px; display: grid; gap: 8px; }
+    label {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    input, textarea {
+      width: 100%;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      background: rgba(0,0,0,0.35);
+      color: #f8fafc;
+      font: inherit;
+      font-size: 12px;
+      padding: 8px 10px;
+    }
+    textarea { min-height: 88px; resize: vertical; }
+    button {
+      margin-top: 4px;
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-weight: 650;
+      font-size: 12px;
+      cursor: pointer;
+      background: linear-gradient(135deg, rgba(34,211,238,0.35), rgba(139,92,246,0.4));
+      color: #fff;
+    }
+    button:disabled { opacity: 0.45; cursor: wait; }
+    .hint {
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">Mnemosyne</p>
+    <h1>Capturar recorte</h1>
+  </header>
+  <form id="clip-form">
+    <div>
+      <label for="title">Título</label>
+      <input id="title" name="title" maxlength="180" autocomplete="off" />
+    </div>
+    <div>
+      <label for="url">URL</label>
+      <input id="url" name="url" maxlength="500" autocomplete="off" />
+    </div>
+    <div>
+      <label for="text">Seleção</label>
+      <textarea id="text" name="text" maxlength="1200"></textarea>
+    </div>
+    <button type="submit" id="send">Enviar para o Mnemosyne</button>
+    <p class="hint">Abre a web app. A cifra E2EE só acontece depois de desbloqueares a sessão — a extensão nunca vê a mnemónica. Recorte local limitado a ~1.5 KB.</p>
+  </form>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -10,10 +10,16 @@ frontend/dist/
 frontend/build/
 frontend/dev-dist/
 frontend/src-tauri/target/
+scripts/desktop-artifact-verifier/target/
+.desktop-stage-*/
+.desktop-release.lock/
 frontend/src-tauri/updater.key
 frontend/src-tauri/updater.key.pub
 *.apk
 *.aab
+*.exe
+*.msi
+frontend/src.zip
 
 # Firebase
 .firebase/
@@ -25,7 +31,10 @@ ui-debug.log
 .env
 .env.local
 .env.*.local
+.secret.local
 functions/.env
+# Live keys (NVIDIA/HuggingFace/Tauri signing) — never commit or delete
+backend/.env
 config.json
 current_config.json
 .runtimeconfig.json
@@ -44,6 +53,10 @@ frontend/android/app/release/
 frontend/android/app/*.keystore
 *.pem
 *.key
+*.pfx
+*.p12
+certs/
+certificate/
 frontend/android/build_log.txt
 
 # IDE
@@ -79,3 +92,7 @@ __pycache__/
 mnemosyne-github/
 obsidian-skills-main/
 skill/
+
+# Local input archives; retain them on disk, outside reviewed release sources
+/docs.zip
+/docs/Auditoria Mnemosyne_ Melhores Práticas e Correções.zip

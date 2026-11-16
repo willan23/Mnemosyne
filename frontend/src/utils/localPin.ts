@@ -2,14 +2,20 @@
  * PIN local opcional para reabrir a sessão sem reescrever as 12 palavras.
  * A mnemónica fica cifrada (AES-GCM) com chave derivada do PIN via PBKDF2.
  * O PIN nunca é guardado em plaintext; só o vault cifrado existe em localStorage.
+ *
+ * Política:
+ * - Criar: mínimo 6 caracteres alfanuméricos.
+ * - Unlock: aceita PINs 4 dígitos legados e os novos PINs alfanuméricos (4–12).
  */
 
 import { decryptTextAesGcm, encryptTextAesGcm } from './crypto';
 
 const VAULT_STORAGE_KEY = 'mnemosyne.pin.vault.v1';
 const PIN_ITERATIONS = 180_000;
-const MIN_PIN_LENGTH = 4;
+const MIN_CREATE_PIN_LENGTH = 6;
+const MIN_UNLOCK_PIN_LENGTH = 4;
 const MAX_PIN_LENGTH = 12;
+const PIN_CHAR_PATTERN = /^[A-Za-z0-9]+$/;
 
 export interface LocalPinVault {
   version: 1;
@@ -20,6 +26,8 @@ export interface LocalPinVault {
   createdAt: number;
   updatedAt: number;
 }
+
+export type PinValidationMode = 'create' | 'unlock';
 
 const encoder = new TextEncoder();
 
@@ -39,13 +47,14 @@ export function normalizePin(pin: string): string {
   return pin.replace(/\s+/g, '').trim();
 }
 
-export function validatePinFormat(pin: string): string | null {
+export function validatePinFormat(pin: string, mode: PinValidationMode = 'create'): string | null {
   const normalized = normalizePin(pin);
-  if (normalized.length < MIN_PIN_LENGTH || normalized.length > MAX_PIN_LENGTH) {
-    return `O PIN deve ter entre ${MIN_PIN_LENGTH} e ${MAX_PIN_LENGTH} caracteres.`;
+  const min = mode === 'unlock' ? MIN_UNLOCK_PIN_LENGTH : MIN_CREATE_PIN_LENGTH;
+  if (normalized.length < min || normalized.length > MAX_PIN_LENGTH) {
+    return `O PIN deve ter entre ${min} e ${MAX_PIN_LENGTH} caracteres.`;
   }
-  if (!/^[0-9]+$/.test(normalized)) {
-    return 'O PIN deve conter apenas dígitos.';
+  if (!PIN_CHAR_PATTERN.test(normalized)) {
+    return 'O PIN deve ser alfanumérico (letras e números).';
   }
   return null;
 }
@@ -97,19 +106,16 @@ export function isLocalPinEnabled(): boolean {
   return Boolean(readLocalPinVault());
 }
 
-export async function enableLocalPin(pin: string, confirmPin: string, mnemonic: string[]): Promise<void> {
-  const formatError = validatePinFormat(pin);
-  if (formatError) throw new Error(formatError);
-  if (normalizePin(pin) !== normalizePin(confirmPin)) {
-    throw new Error('Os PINs não coincidem.');
-  }
+/** Escreve o vault cifrado. Usado internamente e em testes de PINs legados. */
+export async function writeLocalPinVault(pin: string, mnemonic: string[], existing?: LocalPinVault | null): Promise<void> {
   if (!Array.isArray(mnemonic) || mnemonic.length !== 12) {
-    throw new Error('Precisas de uma sessão desbloqueada para ativar o PIN.');
+    throw new Error(existing ? 'Mnemónica inválida para reseal do PIN.' : 'Precisas de uma sessão desbloqueada para ativar o PIN.');
   }
 
-  const salt = new Uint8Array(16);
-  window.crypto.getRandomValues(salt);
-  const key = await deriveKeyFromPin(pin, salt, PIN_ITERATIONS);
+  const salt = existing ? fromBase64(existing.salt) : new Uint8Array(16);
+  if (!existing) window.crypto.getRandomValues(salt);
+  const iterations = existing?.iterations || PIN_ITERATIONS;
+  const key = await deriveKeyFromPin(pin, salt, iterations);
   const encrypted = await encryptTextAesGcm(JSON.stringify(mnemonic), key);
   const now = Date.now();
   const vault: LocalPinVault = {
@@ -117,11 +123,20 @@ export async function enableLocalPin(pin: string, confirmPin: string, mnemonic: 
     salt: toBase64(salt),
     iv: encrypted.iv,
     data: encrypted.data,
-    iterations: PIN_ITERATIONS,
-    createdAt: now,
+    iterations,
+    createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
   localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(vault));
+}
+
+export async function enableLocalPin(pin: string, confirmPin: string, mnemonic: string[]): Promise<void> {
+  const formatError = validatePinFormat(pin, 'create');
+  if (formatError) throw new Error(formatError);
+  if (normalizePin(pin) !== normalizePin(confirmPin)) {
+    throw new Error('Os PINs não coincidem.');
+  }
+  await writeLocalPinVault(pin, mnemonic);
 }
 
 /** Atualiza o vault cifrado com a mnemónica atual (após unlock). */
@@ -131,22 +146,9 @@ export async function resealLocalPinVault(pin: string, mnemonic: string[]): Prom
     await enableLocalPin(pin, pin, mnemonic);
     return;
   }
-  const formatError = validatePinFormat(pin);
+  const formatError = validatePinFormat(pin, 'unlock');
   if (formatError) throw new Error(formatError);
-  if (!Array.isArray(mnemonic) || mnemonic.length !== 12) {
-    throw new Error('Mnemónica inválida para reseal do PIN.');
-  }
-
-  const salt = fromBase64(existing.salt);
-  const key = await deriveKeyFromPin(pin, salt, existing.iterations || PIN_ITERATIONS);
-  const encrypted = await encryptTextAesGcm(JSON.stringify(mnemonic), key);
-  const vault: LocalPinVault = {
-    ...existing,
-    iv: encrypted.iv,
-    data: encrypted.data,
-    updatedAt: Date.now(),
-  };
-  localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(vault));
+  await writeLocalPinVault(pin, mnemonic, existing);
 }
 
 export async function unlockWithLocalPin(pin: string): Promise<string[]> {
@@ -154,7 +156,7 @@ export async function unlockWithLocalPin(pin: string): Promise<string[]> {
   if (!vault) {
     throw new Error('Não há PIN local configurado.');
   }
-  const formatError = validatePinFormat(pin);
+  const formatError = validatePinFormat(pin, 'unlock');
   if (formatError) throw new Error(formatError);
 
   try {
@@ -173,7 +175,6 @@ export async function unlockWithLocalPin(pin: string): Promise<string[]> {
 }
 
 export async function disableLocalPin(pin: string): Promise<void> {
-  // Verifica PIN antes de apagar
   await unlockWithLocalPin(pin);
   localStorage.removeItem(VAULT_STORAGE_KEY);
 }

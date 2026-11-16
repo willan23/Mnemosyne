@@ -1,0 +1,29 @@
+{
+  "name": "@mnemosyne/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cliente TypeScript mínimo da API pública Mnemosyne v1. Não decifra enc.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "example:unauth": "node examples/list-without-key.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

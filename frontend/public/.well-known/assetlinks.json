@@ -1,0 +1,13 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.mnemosyne.mobile",
+      "sha256_cert_fingerprints": [
+        "4A:9A:CC:97:71:F0:ED:3E:68:C4:CF:14:57:E5:EC:CD:EA:80:0F:DB:AB:1D:8C:07:14:C3:5E:7A:49:82:11:2A",
+        "CC:CD:1D:63:D4:76:C6:71:C3:63:57:5D:EB:52:C5:CE:C6:9B:29:88:32:4B:5E:30:0A:34:1B:41:CF:8D:39:16"
+      ]
+    }
+  }
+]

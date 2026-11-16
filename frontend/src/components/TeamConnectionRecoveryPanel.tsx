@@ -1,0 +1,15 @@
+import {useEffect,useState} from 'react';
+import {onAuthStateChanged} from 'firebase/auth';
+import {auth} from '../firebase';
+import {useSyncFeedback} from '../hooks/useSyncFeedback';
+import {isMemoryCryptoReady,onMemoryCryptoChanged} from '../services/memoryCrypto';
+import {hasPendingTeamConnection,observeTeamConnections,recoverTeamConnection,cancelPendingTeamConnection} from '../services/teamConnections';
+export function TeamConnectionRecoveryPanel(){
+  const [uid,setUid]=useState(()=>auth.currentUser?.uid??null),[,tick]=useState(0),feedback=useSyncFeedback(),scope=JSON.stringify([uid,feedback.epoch]);
+  const [state,setState]=useState<{scope:string;busy:boolean;message:string|null}>({scope,busy:false,message:null}),busy=state.scope===scope&&state.busy,message=state.scope===scope?state.message:null,pending=Boolean(uid&&hasPendingTeamConnection(uid)),ready=isMemoryCryptoReady();
+  useEffect(()=>{const change=()=>tick(value=>value+1),a=onAuthStateChanged(auth,user=>setUid(user?.uid??null)),v=onMemoryCryptoChanged(change),s=observeTeamConnections(change);return()=>{a();v();s();};},[]);
+  async function operate(cancel:boolean){if(!uid||!ready||busy)return;const current=feedback.capture(uid),guard=()=>{if(!current())throw Error('Connection recovery view retired');};if(!current())return;if(cancel&&!window.confirm('Cancelar a ligação ainda não confirmada? Uma ligação já gravada será confirmada. Este cancelamento não desfaz ligações admitidas.'))return;if(!current())return;setState({scope,busy:true,message:null});
+    try{const result=cancel?await cancelPendingTeamConnection(uid,guard):await recoverTeamConnection(uid,guard);if(!current())return;setState({scope,busy:false,message:result.status==='committed'?result.changed?result.operation==='link'?'Ligação recíproca confirmada.':'Remoção da ligação recíproca confirmada.':'O par já estava no estado pedido. Não foram alteradas as memórias.':result.status==='revoked'?'O acesso já não está disponível. O pedido local foi encerrado, sem criar novas ligações.':'Pedido de ligação cancelado. Nenhuma ligação já admitida foi desfeita.'});}catch{if(current())setState({scope,busy:false,message:'Não foi possível confirmar a ligação. O pedido cifrado foi conservado.'});}
+  }
+  if(!pending&&!message)return null;return <section aria-label="Recuperação de ligações de equipa" className="mt-2 rounded-xl border border-amber-300/30 bg-slate-950/95 p-3 text-sm text-white/80">{pending&&<p>Uma alteração de ligações de equipa aguarda confirmação.</p>}{pending&&!ready&&<p>Desbloqueia o cofre desta conta para continuar.</p>}{pending&&<div className="mt-2 flex flex-wrap gap-2"><button type="button" disabled={busy||!ready} onClick={()=>void operate(false)} className="rounded border px-3 py-2 disabled:opacity-40">Recuperar ligação de equipa</button><button type="button" disabled={busy||!ready} onClick={()=>void operate(true)} className="rounded border px-3 py-2 disabled:opacity-40">Cancelar pedido de ligação</button></div>}{message&&<p role="status" aria-live="polite">{message}</p>}</section>;
+}

@@ -10,51 +10,108 @@ service firebase.storage {
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
+
+    // Personal preview: existing attachments are readable/deletable, new writes are frozen.
+    function attachmentWritesEnabled() {
+      return false;
+    }
+
+    // Null-safe: calling .matches on a missing contentType fails the whole rule.
+    function hasContentType() {
+      return request.resource.contentType != null
+        && request.resource.contentType.size() > 0;
+    }
+
+    function contentTypeMatches(pattern) {
+      return hasContentType() && request.resource.contentType.matches(pattern);
+    }
     
     function isImage() {
-      return request.resource.contentType.matches('image/.*');
+      return contentTypeMatches('image/.*');
+    }
+
+    function isImageByExtension(filePath) {
+      return string(filePath).matches('(?i).*\\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$');
     }
     
     function isAudio() {
-      return request.resource.contentType.matches('audio/.*');
+      return contentTypeMatches('audio/.*');
+    }
+
+    // Extension first: Windows often sends empty MIME or odd types; path is authoritative.
+    function isDocumentByExtension(filePath) {
+      return string(filePath).matches('(?i).*\\.(pdf|txt|md|markdown|csv|json|doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp|rtf|pages|key|numbers|py|js|jsx|mjs|cjs|ts|tsx|rs|go|c|cpp|h|hpp|java|kt|swift|sh|bat|ps1|sql|css|scss|ini|toml|conf|env|html|htm|xml|yaml|yml|mdx|log|vue|svelte)$');
     }
 
     function isDocument(filePath) {
-      return request.resource.contentType.matches('application/pdf') ||
-             request.resource.contentType.matches('application/json') ||
-             request.resource.contentType.matches('text/.*') ||
-             request.resource.contentType.matches('application/msword') ||
-             request.resource.contentType.matches('application/vnd\\.ms-excel') ||
-             request.resource.contentType.matches('application/vnd\\.ms-powerpoint') ||
-             request.resource.contentType.matches('application/vnd\\.openxmlformats-officedocument\\..*') ||
-             request.resource.contentType.matches('application/vnd\\.oasis\\.opendocument\\..*') ||
-             request.resource.contentType.matches('application/rtf') ||
-             request.resource.contentType.matches('application/x-iwork-.*') ||
-             string(filePath).matches('.*\\.(pdf|txt|md|markdown|csv|json|doc|docx|xls|xlsx|ppt|pptx|odt|ods|odp|rtf|pages|key|numbers)$');
+      return isDocumentByExtension(filePath) ||
+             contentTypeMatches('application/pdf') ||
+             contentTypeMatches('application/json') ||
+             contentTypeMatches('text/.*') ||
+             contentTypeMatches('application/msword') ||
+             contentTypeMatches('application/javascript') ||
+             contentTypeMatches('application/xml') ||
+             contentTypeMatches('application/vnd\\.ms-excel') ||
+             contentTypeMatches('application/vnd\\.ms-powerpoint') ||
+             contentTypeMatches('application/vnd\\.openxmlformats-officedocument\\..*') ||
+             contentTypeMatches('application/vnd\\.oasis\\.opendocument\\..*') ||
+             contentTypeMatches('application/rtf') ||
+             contentTypeMatches('application/x-iwork-.*') ||
+             contentTypeMatches('application/ld\\+json');
     }
 
     function isVideo() {
-      return request.resource.contentType.matches('video/.*');
+      return contentTypeMatches('video/.*');
+    }
+
+    // E2E encrypted attachments are stored as opaque blobs.
+    function isEncryptedBlob() {
+      return contentTypeMatches('application/octet-stream');
     }
     
     function isValidSize(filePath) {
-      // Images: max 10MB, Audio: max 50MB, documents: max 30MB, videos: max 200MB
-      return (isImage() && request.resource.size < 10 * 1024 * 1024) ||
+      // Images/docs follow client FAIR_USE (25MB). Audio 50MB, video/blobs 200MB.
+      // Accept images by MIME or extension — some browsers send empty type on File(blob).
+      return ((isImage() || isImageByExtension(filePath)) && request.resource.size < 25 * 1024 * 1024) ||
              (isAudio() && request.resource.size < 50 * 1024 * 1024) ||
-             (isDocument(filePath) && request.resource.size < 30 * 1024 * 1024) ||
-             (isVideo() && request.resource.size < 200 * 1024 * 1024);
+             (isDocument(filePath) && request.resource.size < 25 * 1024 * 1024) ||
+             (isVideo() && request.resource.size < 200 * 1024 * 1024) ||
+             (isEncryptedBlob() && request.resource.size < 200 * 1024 * 1024);
     }
 
-    // Attachments organized by user
+    // ─── Plan enforcement (mirrors firestore.rules) ──────────────────────────
+    // config/monetization.mode == 'paid' activates entitlement checks.
+    // Missing doc / any other mode == Founder Preview (free-first): attachments
+    // are allowed for the owner as long as isValidSize holds.
+    function paidEnforcementOn() {
+      return firestore.exists(/databases/(default)/documents/config/monetization) &&
+        firestore.get(/databases/(default)/documents/config/monetization).data.get('mode', 'free-first') == 'paid';
+    }
+
+    function hasPaidAttachmentAccess() {
+      // Default open in Founder Preview. Only gate when mode is explicitly paid.
+      return isAuthenticated() && (
+        !paidEnforcementOn() ||
+        (
+          firestore.exists(/databases/(default)/documents/entitlements/$(request.auth.uid)) &&
+          firestore.get(/databases/(default)/documents/entitlements/$(request.auth.uid)).data.get('canUploadAttachments', false) == true
+        )
+      );
+    }
+
+    // Attachments organized by user.
+    // Legacy reads require the session-bound Function, even for the uploader.
+    // A former member who uploaded a team file cannot bypass the current ACL here.
     match /attachments/{userId}/{allPaths=**} {
-      // Read: only owner
-      allow read: if isOwner(userId);
-      
-      // Write: only owner, max 200MB size limit
-      allow write: if isOwner(userId) && request.resource.size < 200 * 1024 * 1024;
-      
-      // Delete: only owner
-      allow delete: if isOwner(userId);
+      allow read: if false;
+
+      allow create, update: if attachmentWritesEnabled() && isOwner(userId) &&
+        request.resource.size > 0 &&
+        isValidSize(allPaths) &&
+        hasPaidAttachmentAccess();
+
+      // Legacy paths do not identify personal/team scope. Purge is server-only.
+      allow delete: if false;
     }
   }
 }

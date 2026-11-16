@@ -1,0 +1,32 @@
+import {act,renderHook,waitFor} from '@testing-library/react';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+const observers=vi.hoisted(()=>new Set<()=>void>());
+vi.mock('../services/memoryCrypto',()=>({onMemoryCryptoChanged:(callback:()=>void)=>{observers.add(callback);return()=>observers.delete(callback);}}));
+vi.mock('../services/teamVault',()=>({onTeamKeyChanged:()=>()=>{}}));
+import {useRelatedMemories} from './useRelatedMemories';
+import {MemoryViewWorkerMock} from '../test/memoryViewWorkerMock';
+import {IncrementalMemoryPublication} from '../services/incrementalMemoryPublication';
+import type {MemoryObject} from '../types/universe';
+const memory=(id:string,timestamp=1):MemoryObject=>({id,uid:'synthetic',text:id,timestamp,updatedAt:1,importance:.5,celestialType:'planet',position:[0,0,0],embedding:[],connections:[]});
+beforeEach(()=>{MemoryViewWorkerMock.instances=[];vi.stubGlobal('Worker',MemoryViewWorkerMock);});
+afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
+it('allocates no Worker while inactive or without relations and withdraws the active result on close',async()=>{
+  const rows=[memory('z'),memory('a')],ids=['a','z'];
+  const {result,rerender,unmount}=renderHook(({active,filter})=>useRelatedMemories(rows,filter,active,10),{initialProps:{active:false,filter:ids}});
+  expect(MemoryViewWorkerMock.instances).toHaveLength(0);expect(result.current.loading).toBe(false);
+  rerender({active:true,filter:[]});expect(MemoryViewWorkerMock.instances).toHaveLength(0);
+  rerender({active:true,filter:ids});await waitFor(()=>expect(result.current.ready).toBe(true));expect(result.current.memories).toEqual(rows);
+  const lookup=result.current.lookup;rerender({active:false,filter:ids});expect(result.current.memories).toEqual([]);expect(lookup.size).toBe(0);expect(MemoryViewWorkerMock.instances[0].terminate).toHaveBeenCalledOnce();
+  rerender({active:true,filter:ids});expect(result.current.memories).toEqual([]);expect(result.current.ready).toBe(false);await waitFor(()=>expect(result.current.memories).toHaveLength(2));unmount();expect(MemoryViewWorkerMock.instances[1].terminate).toHaveBeenCalledOnce();
+});
+it('uses warm snapshot deltas and retires results when the key or root fence is withdrawn',async()=>{
+  const publisher=new IncrementalMemoryPublication<MemoryObject>('asc'),rows=Array.from({length:1000},(_,index)=>memory('m'+index,index));
+  publisher.apply('source',{changed:rows.map(value=>({id:value.id,value})),removed:[],order:{reset:rows.map(row=>row.id),changes:[]}});
+  const ids=['m900','m100'],{result,rerender}=renderHook(({source})=>useRelatedMemories(source,ids,true,10),{initialProps:{source:publisher.snapshot()}});
+  await waitFor(()=>expect(result.current.ready).toBe(true),{timeout:5000});expect(result.current.memories.map(row=>row.id)).toEqual(['m100','m900']);
+  const snapshot=publisher.snapshot(),prototype=Object.getPrototypeOf(snapshot);vi.spyOn(prototype,Symbol.iterator).mockImplementation(()=>{throw Error('Enumerated warm root');});
+  publisher.apply('source',{changed:[{id:'m900',value:memory('m900',-1)}],removed:[],order:{changes:[]}});
+  rerender({source:publisher.snapshot()});expect(result.current.memories).toEqual([]);await waitFor(()=>expect(result.current.memories.map(row=>row.id)).toEqual(['m900','m100']));
+  const lookup=result.current.lookup;publisher.clear();act(()=>{for(const callback of observers)callback();});
+  expect(result.current.ready).toBe(false);expect(result.current.loading).toBe(false);expect(lookup.size).toBe(0);expect(result.current.memories).toEqual([]);
+});

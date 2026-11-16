@@ -48,8 +48,8 @@ describe('E2E pipeline · comms multi-user', () => {
   });
 });
 
-describe('E2E pipeline · search + flow echoes', () => {
-  it('finds related memories for a flow draft', () => {
+describe('E2E pipeline · search + capture echoes', () => {
+  it('finds related memories for a capture draft', () => {
     const hits = searchMemories(
       [
         { id: '1', title: 'Arquitetura cognitiva', text: 'grafo de memórias e embeddings' },

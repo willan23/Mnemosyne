@@ -1,0 +1,22 @@
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+const state=vi.hoisted(()=>({uid:'alice' as string|null,ready:true,pending:true,authListeners:new Set<(user:{uid:string}|null)=>void>(),vaultListeners:new Set<()=>void>(),changeListeners:new Set<()=>void>(),recover:vi.fn(),cancel:vi.fn()}));
+vi.mock('../firebase',()=>({auth:{get currentUser(){return state.uid?{uid:state.uid}:null;}}}));
+vi.mock('firebase/auth',()=>({onAuthStateChanged:(_auth:unknown,callback:(user:{uid:string}|null)=>void)=>{state.authListeners.add(callback);callback(state.uid?{uid:state.uid}:null);return()=>state.authListeners.delete(callback);}}));
+vi.mock('../services/memoryCrypto',()=>({isMemoryCryptoReady:()=>state.ready,onMemoryCryptoChanged:(callback:()=>void)=>{state.vaultListeners.add(callback);return()=>state.vaultListeners.delete(callback);}}));
+vi.mock('../services/memoryEditRecovery',()=>({hasPendingMemoryEdit:()=>state.pending,observeMemoryEdits:(callback:()=>void)=>{state.changeListeners.add(callback);return()=>state.changeListeners.delete(callback);},recoverPendingMemoryEdit:(...args:unknown[])=>state.recover(...args),cancelPendingMemoryEdit:(...args:unknown[])=>state.cancel(...args)}));
+import {MemoryEditRecoveryPanel} from './MemoryEditRecoveryPanel';
+beforeEach(()=>{state.uid='alice';state.ready=true;state.pending=true;state.recover.mockReset();state.cancel.mockReset();state.authListeners.clear();state.vaultListeners.clear();state.changeListeners.clear();});
+afterEach(()=>{cleanup();vi.restoreAllMocks();});
+it('shows locked pending requests and preserves them on a failed recovery',async()=>{
+  state.ready=false;const rendered=render(<MemoryEditRecoveryPanel/>);expect(screen.getByRole('button',{name:'Recuperar alteração de memória'})).toBeDisabled();state.ready=true;act(()=>{for(const change of state.vaultListeners)change();});state.recover.mockRejectedValueOnce(Error('Synthetic network failure'));fireEvent.click(screen.getByRole('button',{name:'Recuperar alteração de memória'}));await waitFor(()=>expect(screen.getByRole('status')).toHaveTextContent('pedido e os rascunhos foram conservados'));expect(state.pending).toBe(true);rendered.unmount();
+});
+it('cancellation requires confirmation and truthfully announces an already committed tombstone',async()=>{
+  vi.spyOn(window,'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);state.cancel.mockImplementation(async(_uid,guard)=>{guard();state.pending=false;return{status:'committed',operation:'delete'};});render(<MemoryEditRecoveryPanel/>);const button=screen.getByRole('button',{name:'Cancelar alteração pendente'});fireEvent.click(button);expect(state.cancel).not.toHaveBeenCalled();fireEvent.click(button);await waitFor(()=>expect(screen.getByRole('status')).toHaveTextContent('Apagamento confirmado'));expect(screen.getByRole('status')).toHaveTextContent('rascunhos locais foram conservados');expect(screen.queryByRole('button',{name:'Recuperar alteração de memória'})).toBeNull();
+});
+it('revocation closes only the pending request and describes retained drafts',async()=>{
+  state.recover.mockImplementation(async()=>{state.pending=false;return{status:'revoked'};});render(<MemoryEditRecoveryPanel/>);fireEvent.click(screen.getByRole('button',{name:'Recuperar alteração de memória'}));await waitFor(()=>expect(screen.getByRole('status')).toHaveTextContent('acesso já não está disponível'));expect(screen.getByRole('status')).toHaveTextContent('rascunhos foram conservados');
+});
+it('late account or vault retirement suppresses the old request response even after the same UID returns',async()=>{
+  for(const kind of ['account','vault']){let finish!:(result:unknown)=>void;state.recover.mockReturnValueOnce(new Promise(resolve=>{finish=resolve;}));const rendered=render(<MemoryEditRecoveryPanel/>);fireEvent.click(screen.getByRole('button',{name:'Recuperar alteração de memória'}));const guard=state.recover.mock.calls.at(-1)![1];await act(async()=>{if(kind==='account'){state.uid='bob';for(const change of state.authListeners)change({uid:'bob'});state.uid='alice';for(const change of state.authListeners)change({uid:'alice'});}else{state.ready=false;for(const change of state.vaultListeners)change();state.ready=true;for(const change of state.vaultListeners)change();}finish({status:'committed',operation:'edit'});});expect(guard).toThrow();expect(screen.queryByRole('status')).toBeNull();expect(state.pending).toBe(true);rendered.unmount();}
+});

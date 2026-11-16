@@ -1,3 +1,5 @@
+import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, fileExtension, isTextLikeExtension } from '../utils/fileTypes';
+
 export type MediaAnalysisKind = 'image' | 'video' | 'audio';
 
 export interface FrameAnalysis {
@@ -32,20 +34,13 @@ const INFERENCE_TIMEOUT_MS = 60_000;
 const MAX_TRANSCRIPTION_SECONDS = 180;
 const TARGET_AUDIO_SAMPLE_RATE = 16_000;
 
-const imageExtensions = new Set(['apng', 'avif', 'bmp', 'gif', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
-const audioExtensions = new Set(['aac', 'flac', 'm4a', 'mp3', 'oga', 'ogg', 'opus', 'wav', 'webm']);
-const videoExtensions = new Set(['avi', 'm4v', 'mov', 'mp4', 'mpeg', 'ogv', 'webm']);
-
-const extensionOf = (name: string): string => {
-  const match = /\.([a-z0-9]+)$/i.exec(name);
-  return match ? match[1].toLowerCase() : '';
-};
-
 export const mediaKindForFile = (file: File): MediaAnalysisKind | null => {
-  const extension = extensionOf(file.name);
-  if (file.type.startsWith('image/') || imageExtensions.has(extension)) return 'image';
-  if (file.type.startsWith('video/') || videoExtensions.has(extension)) return 'video';
-  if (file.type.startsWith('audio/') || audioExtensions.has(extension)) return 'audio';
+  const extension = fileExtension(file.name);
+  // Windows maps `.ts` to `video/mp2t`. Source files are documents, not video.
+  if (isTextLikeExtension(extension)) return null;
+  if (file.type.startsWith('image/') || IMAGE_EXTENSIONS.has(extension)) return 'image';
+  if (file.type.startsWith('video/') || VIDEO_EXTENSIONS.has(extension)) return 'video';
+  if (file.type.startsWith('audio/') || AUDIO_EXTENSIONS.has(extension)) return 'audio';
   return null;
 };
 

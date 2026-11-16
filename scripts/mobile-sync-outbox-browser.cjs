@@ -1,0 +1,90 @@
+'use strict';
+/** Actual browser clients/crypto with synthetic localhost RPC. Real transactions/rules have a separate emulator suite. */
+const path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');const {createHash}=require('node:crypto');
+const frontend=path.resolve(__dirname,'../frontend');
+const {parseSyncPublication}=require('../functions/lib/mobileSyncPublicationContract');
+const {canonicalSyncState,normalizedSyncMetadata,parseSyncImportBatch,parseSyncImportStatusInput,parseSyncImportPreparation}=require('../functions/lib/mobileSyncImportContract');
+const hash=value=>createHash('sha256').update(canonicalSyncState(value)).digest('hex');let phase='runtime';
+async function main(){
+  if(process.versions.node.split('.')[0]!=='22')throw Error();
+  const {build}=require(path.join(frontend,'node_modules/esbuild'));const {chromium}=require(path.join(frontend,'node_modules/@playwright/test'));
+  const source=`import * as outbox from './src/services/mobileSyncOutbox';import * as incoming from './src/services/mobileSyncImport';
+    import * as vault from './src/services/memoryCrypto';import {withClipCaptureLock} from './src/services/clipCaptureService';import {canonicalSyncState} from '../functions/src/mobileSyncImportContract';
+    const words=['abandon','ability','able','about','above','absent','absorb','abstract','absurd','abuse','access','accident'];vault.setMemoryCryptoMnemonic(words);
+    const digest=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonicalSyncState(value)))),n=>n.toString(16).padStart(2,'0')).join('');
+    const rpc=async(kind,mode,value)=>{const r=await fetch('/'+kind+'/'+mode,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!r.ok)throw Error('Synthetic refusal');return r.json();};
+    const base=(uid,fixture)=>({enabled:()=>true,storage:localStorage,exclusive:withClipCaptureLock,device:async()=>fixture.device,observeDevice:()=>()=>{},digest,
+      encryptJournal:vault.encryptMemoryFields,decryptJournal:vault.decryptMemoryEnvelope,mutation:{uid:()=>uid,ready:vault.isMemoryCryptoReady,subscribe:vault.onMemoryCryptoChanged}});
+    window.syncOutboxTest={outbox,incoming,vault,reset:()=>vault.setMemoryCryptoMnemonic(words),
+      make:async(direction,count,large)=>{const mobile=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveKey']);const desktop=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveKey']);
+        const mobilePrivate=await crypto.subtle.exportKey('jwk',mobile.privateKey);const desktopPrivate=await crypto.subtle.exportKey('jwk',desktop.privateKey);const publicKeyJwk=await crypto.subtle.exportKey('jwk',mobile.publicKey);const desktopPublicKeyJwk=await crypto.subtle.exportKey('jwk',desktop.publicKey);const deviceId='phone-'+direction;
+        const sessions=Array.from({length:count},(_,i)=>({uid:'alice',id:deviceId+'-'+i,text:'SYNTHETIC_OUTBOX_PRIVATE_583 memória 😀 '+i+(large?'Olá 🌍 '.repeat(9000):''),title:'SYNTHETIC_OUTBOX_TITLE_583',timestamp:10,updatedAt:20}));
+        return {direction,device:{ownerUid:'alice',deviceId,status:'active',publicKeyJwk,desktopPublicKeyJwk},mobilePrivate,desktopPrivate,sessions};},
+      outDeps:(uid,fixture)=>({...base(uid,fixture),id:()=>crypto.randomUUID(),now:Date.now,seal:outbox.sealMobileSyncPayload,call:(mode,value)=>rpc('publication',mode,value)}),
+      inDeps:fixture=>({...base('alice',fixture),verifyPrivate:incoming.verifySyncImportPrivateKey,decrypt:incoming.decryptSyncImportEnvelope,prepare:vault.buildEncryptedMemoryFields,resolve:vault.decryptMemoryEnvelope,
+        list:async()=>(await fetch('/sources?deviceId='+fixture.device.deviceId+'&direction='+fixture.direction)).json(),read:async id=>(await fetch('/source/'+id)).json(),call:(mode,value)=>rpc('import',mode,value)}),
+      queue:fixture=>{const api=window.syncOutboxTest;return api.outbox.queuePersonalSyncDelta('alice',fixture.device.deviceId,fixture.direction,fixture.sessions,fixture.direction==='mobile-to-desktop'?fixture.mobilePrivate:undefined,api.outDeps('alice',fixture));},
+      receive:fixture=>{const api=window.syncOutboxTest;return api.incoming.importPersonalMobileSync('alice',fixture.device.deviceId,fixture.direction,fixture.direction==='desktop-to-mobile'?fixture.mobilePrivate:fixture.desktopPrivate,api.inDeps(fixture));}};`;
+  phase='bundle';const bundled=await build({stdin:{contents:source,resolveDir:frontend,loader:'ts'},bundle:true,platform:'browser',format:'iife',write:false,logLevel:'silent',plugins:[{name:'synthetic-app',setup(builder){
+    builder.onResolve({filter:/firebase$/},args=>path.resolve(args.resolveDir,args.path)===path.join(frontend,'src/firebase')?{path:'stub',namespace:'stub'}:undefined);
+    builder.onLoad({filter:/.*/,namespace:'stub'},()=>({contents:'export const db={};export const auth={currentUser:null};export default {};',loader:'js'}));
+  }}]});
+  const publications=new Map(),envelopes=new Map(),imports=new Map(),targets=new Map(),batches=[];let loseAck=true,externalRequests=0,plaintextRequests=0,publicationWrites=0,browser;
+  const server=http.createServer(async(request,response)=>{
+    if(request.url==='/'){response.writeHead(200,{'Content-Type':'text/html'});response.end('<!doctype html><title>Synthetic sync</title><script src="/bundle.js"></script>');return;}
+    if(request.url==='/bundle.js'){response.writeHead(200,{'Content-Type':'application/javascript'});response.end(bundled.outputFiles[0].text);return;}
+    const json=value=>{response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify(value));};
+    if(request.url.startsWith('/source/')){json(envelopes.get(request.url.slice(8))??{});return;}
+    if(request.url.startsWith('/sources?')){const url=new URL(request.url,'http://localhost');json(Array.from(envelopes,([id,data])=>({id,data})).filter(entry=>entry.data.deviceId===url.searchParams.get('deviceId')&&entry.data.direction===url.searchParams.get('direction')&&entry.data.status==='queued'));return;}
+    const match=/^\/(publication|import)\/(status|publish|cancel|prepare|apply)$/.exec(request.url||'');if(!match||request.method!=='POST'){response.writeHead(404);response.end();return;}
+    try{
+      let raw='';for await(const bytes of request){raw+=bytes;if(raw.length>4000000)throw Error();}
+      if(raw.includes('SYNTHETIC_OUTBOX_PRIVATE_583')||raw.includes('SYNTHETIC_OUTBOX_TITLE_583')||raw.includes('"d":'))plaintextRequests++;
+      const mode=match[2],value=JSON.parse(raw);let reply;
+      if(match[1]==='publication'){
+        const input=parseSyncPublication(value),digest=hash(input);let record=publications.get(input.envelopeId);if(record&&record.digest!==digest)throw Error();
+        if(mode==='publish'&&!record){record={envelopeId:input.envelopeId,digest,status:'published',createdAt:Date.now(),delivery:'queued',imported:0,conflicts:0};publications.set(input.envelopeId,record);publicationWrites++;
+          envelopes.set(input.envelopeId,{id:input.envelopeId,ownerUid:'alice',deviceId:input.deviceId,direction:input.direction,payloadType:input.payloadType,status:'queued',senderPublicKeyJwk:input.senderPublicKeyJwk,encryptedPayload:input.encryptedPayload,memoryCount:input.memoryCount,tombstoneIds:input.tombstoneIds,expiresAt:input.expiresAt});
+          if(loseAck){loseAck=false;response.writeHead(200,{'Content-Type':'application/json'});response.end('{');return;}}
+        const progress=imports.get(input.envelopeId);
+        if(mode==='cancel'&&!progress){record={envelopeId:input.envelopeId,digest,status:record?'published':'cancelled',createdAt:record?.createdAt??Date.now(),delivery:'cancelled',imported:0,conflicts:0};publications.set(input.envelopeId,record);const envelope=envelopes.get(input.envelopeId);if(envelope)envelope.status='failed';}
+        reply=record?{...record,...(progress?{delivery:progress.status,imported:progress.imported,conflicts:progress.conflicts}:{})}:{envelopeId:input.envelopeId,digest,status:'unknown',createdAt:null,delivery:'none',imported:0,conflicts:0};
+      }else{
+        const input=mode==='apply'?parseSyncImportBatch(value):mode==='prepare'?parseSyncImportPreparation(value):parseSyncImportStatusInput(value),envelope=envelopes.get(input.envelopeId);if(!envelope||hash(envelope.encryptedPayload)!==input.payloadDigest)throw Error();
+        let state=imports.get(input.envelopeId)||{envelopeId:input.envelopeId,payloadDigest:input.payloadDigest,memoryCount:envelope.memoryCount,cursor:0,imported:0,conflicts:0,status:'unknown'};reply=state;
+        if(mode==='prepare')reply={status:state,targets:input.sessionIds.map(sessionId=>targets.get(sessionId)??{sessionId,exists:false,stateHash:null,metadataHash:null,revision:null,timestamp:null,deleted:false,enc:null})};
+        if(mode==='apply'){
+          if(input.cursor!==state.cursor)throw Error();batches.push(input);
+          for(const change of input.changes){const old=targets.get(change.sessionId);if(change.expectedStateHash!==(old?.stateHash??null))throw Error();if(['create','update','tombstone'].includes(change.action))targets.set(change.sessionId,{sessionId:change.sessionId,exists:true,stateHash:hash(change),metadataHash:hash(normalizedSyncMetadata(change.metadata)),revision:change.incomingRevision,timestamp:change.timestamp,deleted:change.action==='tombstone',enc:change.enc});}
+          state={...state,cursor:state.cursor+input.changes.length,imported:state.imported+input.changes.filter(change=>!['skip','conflict'].includes(change.action)).length,conflicts:state.conflicts+input.changes.filter(change=>change.action==='conflict').length,status:state.cursor+input.changes.length===envelope.memoryCount?'complete':'pending'};imports.set(input.envelopeId,state);if(state.status==='complete')envelope.status='pulled';reply=state;
+        }
+      }
+      json(reply);
+    }catch{response.writeHead(400);response.end('{}');}
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin=`http://127.0.0.1:${server.address().port}`;
+  try{
+    phase='browser-launch';browser=await chromium.launch({headless:true});const context=await browser.newContext();await context.route('**/*',route=>{if(route.request().url().startsWith(origin+'/'))return route.continue();externalRequests++;return route.abort();});
+    const first=await context.newPage();await first.goto(origin);await first.waitForFunction(()=>Boolean(window.syncOutboxTest));
+    phase='lost-publication-ack';const fixture=await first.evaluate(()=>window.syncOutboxTest.make('desktop-to-mobile',13,false));
+    const staged=await first.evaluate(async fixture=>{const api=window.syncOutboxTest;let failed=false;try{await api.queue(fixture);}catch{failed=true;}const raw=localStorage.getItem(api.outbox.mobileSyncOutboxKey('alice',fixture.device.deviceId,fixture.direction));return failed&&Boolean(raw)&&api.vault.isEncryptedMemoryEnvelope(JSON.parse(raw))&&!raw.includes('SYNTHETIC_OUTBOX_PRIVATE')&&!localStorage.getItem(api.outbox.mobileSyncIndexKey('alice',fixture.device.deviceId,fixture.direction));},fixture);assert.equal(staged,true);assert.equal(publicationWrites,1);
+    const second=await context.newPage();await second.goto(origin);await second.waitForFunction(()=>Boolean(window.syncOutboxTest));
+    phase='cross-tab-recovery';const queued=await second.evaluate(async fixture=>{const api=window.syncOutboxTest;return api.outbox.recoverPendingSyncOutbox('alice',fixture.device.deviceId,fixture.direction,api.outDeps('alice',fixture));},fixture);assert.equal(queued.delivery,'queued');assert.equal(publicationWrites,1);
+    phase='owner-vault-binding';const bound=await second.evaluate(async fixture=>{const api=window.syncOutboxTest,key=api.outbox.mobileSyncOutboxKey('alice',fixture.device.deviceId,fixture.direction),bob=api.outbox.mobileSyncOutboxKey('bob',fixture.device.deviceId,fixture.direction);localStorage.setItem(bob,localStorage.getItem(key));let owner=false,wrong=false;
+      try{await api.outbox.recoverPendingSyncOutbox('bob',fixture.device.deviceId,fixture.direction,api.outDeps('bob',fixture));}catch{owner=true;}localStorage.removeItem(bob);api.vault.setMemoryCryptoMnemonic(['abandon','ability','able','about','above','absent','absorb','abstract','absurd','abuse','access','zoo']);try{await api.outbox.recoverPendingSyncOutbox('alice',fixture.device.deviceId,fixture.direction,api.outDeps('alice',fixture));}catch{wrong=true;}api.reset();return owner&&wrong&&Boolean(localStorage.getItem(key));},fixture);assert.equal(bound,true);
+    phase='actual-receiver-import';const received=await second.evaluate(fixture=>window.syncOutboxTest.receive(fixture),fixture);assert.equal(received.importedMemories,13);assert.deepEqual(batches.map(batch=>batch.changes.length),[10,3]);
+    phase='receiver-ack-index';const indexed=await first.evaluate(async fixture=>{const api=window.syncOutboxTest,deps=api.outDeps('alice',fixture);deps.enabled=()=>false;deps.device=async()=>{throw Error('Synthetic revoked');};const result=await api.outbox.recoverPendingSyncOutbox('alice',fixture.device.deviceId,fixture.direction,deps),raw=localStorage.getItem(api.outbox.mobileSyncIndexKey('alice',fixture.device.deviceId,fixture.direction)),index=JSON.parse((await api.vault.decryptMemoryEnvelope(JSON.parse(raw))).text);const unchanged=await api.queue(fixture);return result.delivery==='complete'&&result.imported===13&&index.entries.length===13&&!raw.includes(fixture.sessions[0].id)&&unchanged.delivery==='unchanged'&&!localStorage.getItem(api.outbox.mobileSyncOutboxKey('alice',fixture.device.deviceId,fixture.direction));},fixture);assert.equal(indexed,true);
+    phase='same-revision-metadata-only-conflict';const originalFirst=fixture.sessions[0];fixture.sessions=[{...originalFirst,tags:['SYNTHETIC_METADATA_583'],category:'Changed',position:[1,2,3]}];
+    await first.evaluate(fixture=>window.syncOutboxTest.queue(fixture),fixture);const metadataOnly=await second.evaluate(fixture=>window.syncOutboxTest.receive(fixture),fixture);assert.equal(metadataOnly.conflicts,1);assert.equal(metadataOnly.importedMemories,0);
+    await first.evaluate(async fixture=>{const api=window.syncOutboxTest;return api.outbox.recoverPendingSyncOutbox('alice',fixture.device.deviceId,fixture.direction,api.outDeps('alice',fixture));},fixture);
+    phase='same-revision-conflict';fixture.sessions=[{...fixture.sessions[0],text:'SYNTHETIC_OUTBOX_PRIVATE_583 edited at the same revision'}];await first.evaluate(fixture=>window.syncOutboxTest.queue(fixture),fixture);const changed=await second.evaluate(fixture=>window.syncOutboxTest.receive(fixture),fixture);assert.equal(changed.conflicts,1);assert.equal(changed.importedMemories,0);assert.equal(publicationWrites,3);
+    const acknowledged=await first.evaluate(async fixture=>{const api=window.syncOutboxTest;return api.outbox.recoverPendingSyncOutbox('alice',fixture.device.deviceId,fixture.direction,api.outDeps('alice',fixture));},fixture);assert.equal(acknowledged.conflicts,1);assert.equal(acknowledged.delivery,'complete');
+    phase='newer-metadata-replacement';fixture.sessions=[{...originalFirst,updatedAt:100}];await first.evaluate(fixture=>window.syncOutboxTest.queue(fixture),fixture);const newer=await second.evaluate(fixture=>window.syncOutboxTest.receive(fixture),fixture);assert.equal(newer.importedMemories,1);assert.equal(newer.conflicts,0);assert.equal(batches.at(-1).changes[0].action,'update');assert.deepEqual(batches.at(-1).changes[0].metadata,{});
+    await first.evaluate(async fixture=>{const api=window.syncOutboxTest;return api.outbox.recoverPendingSyncOutbox('alice',fixture.device.deviceId,fixture.direction,api.outDeps('alice',fixture));},fixture);
+    phase='mobile-key-large-unicode';const mobile=await second.evaluate(()=>window.syncOutboxTest.make('mobile-to-desktop',1,true));assert.equal((await second.evaluate(fixture=>window.syncOutboxTest.queue(fixture),mobile)).delivery,'queued');assert.equal((await first.evaluate(fixture=>window.syncOutboxTest.receive(fixture),mobile)).importedMemories,1);assert.equal((await second.evaluate(async fixture=>{const api=window.syncOutboxTest;return api.outbox.recoverPendingSyncOutbox('alice',fixture.device.deviceId,fixture.direction,api.outDeps('alice',fixture));},mobile)).delivery,'complete');
+    const decrypted=await first.evaluate(async({cipher,text})=>(await window.syncOutboxTest.vault.decryptMemoryEnvelope(cipher)).text===text,{cipher:batches.at(-1).changes[0].enc,text:mobile.sessions[0].text});assert.equal(decrypted,true);
+    phase='web-lock';await first.evaluate(fixture=>{window.lockHeld=false;navigator.locks.request(window.syncOutboxTest.outbox.mobileSyncOutboxKey('alice',fixture.device.deviceId,fixture.direction),async()=>{window.lockHeld=true;await new Promise(resolve=>{window.releaseLock=resolve;});});},mobile);await first.waitForFunction(()=>window.lockHeld);const busy=await second.evaluate(async fixture=>{try{await window.syncOutboxTest.queue(fixture);return false;}catch{return true;}},mobile);assert.equal(busy,true);await first.evaluate(()=>window.releaseLock());assert.equal(publicationWrites,5);
+    assert.equal(externalRequests,0);assert.equal(plaintextRequests,0);process.stdout.write(JSON.stringify({v:1,browser:'Chromium',rpc:'synthetic-localhost',realEcdhBothDirections:true,realVaultCrypto:true,realLocalStorage:true,realWebLocks:true,largeUnicodeRoundTrip:true,lostPublicationAckRecoveredAcrossTabs:true,receiverCompletionAdvancesEncryptedIndex:true,sameRevisionEditPreservedAsConflict:true,sameRevisionMetadataOnlyConflict:true,newerMetadataReplacement:true,closedGateConfirmationAfterRevocation:true,transplantedOwnerRejected:true,wrongVaultRejected:true,plaintextRequests,externalRequests,productionMutations:0})+'\n');
+  }finally{if(browser)await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+}
+main().catch(()=>{process.stderr.write(JSON.stringify({status:'failed',phase})+'\n');process.exitCode=1;});

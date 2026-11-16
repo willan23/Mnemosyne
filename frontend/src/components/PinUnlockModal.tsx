@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { KeyRound, Lock, Shield } from 'lucide-react';
 import { unlockWithLocalPin, isLocalPinEnabled } from '../utils/localPin';
+import { assertWebAuthnGate, readWebAuthnCredentialId } from '../utils/webauthnVault';
 
 interface PinUnlockModalProps {
   isOpen: boolean;
@@ -25,6 +26,10 @@ export const PinUnlockModal: React.FC<PinUnlockModalProps> = ({
     setError(null);
     setBusy(true);
     try {
+      const passed = await assertWebAuthnGate();
+      if (!passed) {
+        throw new Error('Autenticação do dispositivo cancelada.');
+      }
       const words = await unlockWithLocalPin(pin);
       setPin('');
       onUnlocked(words);
@@ -68,6 +73,9 @@ export const PinUnlockModal: React.FC<PinUnlockModalProps> = ({
                 <p className="mt-1 text-xs leading-relaxed text-slate-400">
                   O PIN só existe neste dispositivo. A mnemónica permanece cifrada e não sai do teu
                   ambiente.
+                  {readWebAuthnCredentialId()
+                    ? ' Será pedida também a autenticação do dispositivo (Windows Hello / biometria).'
+                    : ''}
                 </p>
               </div>
             </div>
@@ -80,11 +88,11 @@ export const PinUnlockModal: React.FC<PinUnlockModalProps> = ({
                 </span>
                 <input
                   type="password"
-                  inputMode="numeric"
+                  inputMode="text"
                   autoComplete="off"
                   autoFocus
                   value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                  onChange={(e) => setPin(e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 12))}
                   className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-center font-mono text-lg tracking-[0.35em] text-cyan-50 outline-none transition focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/15"
                   placeholder="••••"
                 />

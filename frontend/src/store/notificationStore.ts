@@ -13,6 +13,8 @@ export interface Notification {
   senderUid?: string;
   senderName?: string;
   isPulsing?: boolean;
+  /** Account-bound events must not render in another account, including before Auth callbacks. */
+  ownerUid?: string;
 }
 
 interface NotificationActions {

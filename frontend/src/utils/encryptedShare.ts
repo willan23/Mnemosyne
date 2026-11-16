@@ -7,7 +7,9 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 function bytesToBase64(bytes: Uint8Array): string {
-  return window.btoa(String.fromCharCode(...bytes));
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+  return window.btoa(binary);
 }
 
 function base64ToBytes(value: string): Uint8Array {

@@ -1,39 +1,25 @@
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
+import { loadEnv } from 'vite'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { createVersionPayload, writeVersionFiles } from './scripts/write-version'
+import { mnemosyneVersionPlugin } from './scripts/versionPlugin'
+import { generationFunctionsBase } from '../functions/src/generationHttpPolicy'
 
-/** Emite version.json e define VITE_APP_* para deteção de updates no cliente. */
-function mnemosyneVersionPlugin(): Plugin {
-  let payload = createVersionPayload()
-  return {
-    name: 'mnemosyne-version',
-    config() {
-      payload = createVersionPayload()
-      writeVersionFiles(payload)
-      return {
-        define: {
-          'import.meta.env.VITE_APP_VERSION': JSON.stringify(payload.version),
-          'import.meta.env.VITE_APP_BUILD_ID': JSON.stringify(payload.buildId),
-          'import.meta.env.VITE_APP_BUILT_AT': JSON.stringify(payload.builtAt),
-        },
-      }
-    },
-    buildStart() {
-      payload = createVersionPayload()
-      writeVersionFiles(payload)
-    },
-    closeBundle() {
-      writeVersionFiles(payload)
-    },
-  }
+function generationEndpointPreflight(): Plugin {
+  return { name: 'mnemosyne-generation-endpoint', config(_config, context) {
+    const env = loadEnv(context.mode, fileURLToPath(new URL('.', import.meta.url)), 'VITE_')
+    generationFunctionsBase({ projectId: env.VITE_FIREBASE_PROJECT_ID || 'mnemosyne-one',
+      development: context.command === 'serve' && context.mode !== 'production',
+      emulatorOrigin: env.VITE_FIREBASE_FUNCTIONS_EMULATOR_ORIGIN || undefined })
+  } }
 }
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [
+    generationEndpointPreflight(),
     mnemosyneVersionPlugin(),
     react(),
     tailwindcss(),
@@ -66,6 +52,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
+    // Bound parallel jsdom/crypto workers so the same suite remains reliable on Windows and CI.
+    maxWorkers: 4,
+    // Real vault crypto and complete settings dialogs can exceed five seconds under parallel load.
+    testTimeout: 10000,
     setupFiles: './src/test/setup.ts',
     include: ['src/**/*.test.{ts,tsx}', 'src/**/*.spec.{ts,tsx}'],
     exclude: ['node_modules', 'dist', 'dev-dist', '../**'],

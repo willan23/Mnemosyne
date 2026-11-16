@@ -1,9 +1,17 @@
 import englishWordlist from 'bip39/src/wordlists/english.json';
 
 const BIP39_WORDLIST = englishWordlist as string[];
-const volatileIdentities = new Map<string, { publicKey: CryptoKey, privateKey: CryptoKey, pemPublic: string }>();
+type LocalIdentity={publicKey:CryptoKey;privateKey:CryptoKey;pemPublic:string};
+const volatileIdentities = new Map<string, {identity:LocalIdentity;raw:string|null}>();
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const bytesToBase64 = (bytes: Uint8Array): string => {
+    const chunks: string[] = [];
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+        chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
+    }
+    return window.btoa(chunks.join(''));
+};
 
 // Cleanup legacy keys once on load
 if (typeof window !== 'undefined' && window.localStorage) {
@@ -36,6 +44,11 @@ export async function sha256Hex(value: string): Promise<string> {
     return Array.from(new Uint8Array(digest))
         .map((byte) => byte.toString(16).padStart(2, '0'))
         .join('');
+}
+
+/** Identity fingerprints bind the exact public-key bytes, including case and newlines. */
+export async function sha256ExactHex(value: string): Promise<string> {
+    return Array.from(await sha256(encoder.encode(value)), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export async function generateBip39Mnemonic(): Promise<string[]> {
@@ -77,20 +90,27 @@ export async function validateBip39Mnemonic(mnemonic: string | string[]): Promis
     return checksumBits === expectedChecksum;
 }
 
-// Deriva uma chave AES-GCM 256-bit a partir da mnemônica usando PBKDF2.
-export async function deriveAesKeyFromMnemonic(mnemonic: string[], salt: string = 'mnemosyne:local-vault', iterations: number = 250000): Promise<CryptoKey> {
-    const mnemonicString = normalizeMnemonic(mnemonic);
+function toSaltBytes(salt: string | Uint8Array): Uint8Array {
+    return typeof salt === 'string' ? encoder.encode(salt) : salt;
+}
+
+async function deriveAesGcmKey(
+    secret: string,
+    salt: string | Uint8Array,
+    iterations: number
+): Promise<CryptoKey> {
+    const saltBytes = toSaltBytes(salt);
     const keyMaterial = await window.crypto.subtle.importKey(
         'raw',
-        encoder.encode(mnemonicString),
+        encoder.encode(secret),
         { name: 'PBKDF2' },
         false,
         ['deriveKey']
     );
-    return await window.crypto.subtle.deriveKey(
+    return window.crypto.subtle.deriveKey(
         {
             name: 'PBKDF2',
-            salt: encoder.encode(salt),
+            salt: saltBytes.buffer.slice(saltBytes.byteOffset, saltBytes.byteOffset + saltBytes.byteLength) as ArrayBuffer,
             iterations,
             hash: 'SHA-256'
         },
@@ -100,6 +120,21 @@ export async function deriveAesKeyFromMnemonic(mnemonic: string[], salt: string 
         ['encrypt', 'decrypt']
     );
 }
+
+// Deriva uma chave AES-GCM 256-bit a partir da mnemônica usando PBKDF2.
+export async function deriveAesKeyFromMnemonic(mnemonic: string[], salt: string = 'mnemosyne:local-vault', iterations: number = 250000): Promise<CryptoKey> {
+    return deriveAesGcmKey(normalizeMnemonic(mnemonic), salt, iterations);
+}
+
+/** Deriva AES-GCM-256 a partir de uma passphrase (export cifrado, vaults pontuais). */
+export async function deriveAesKeyFromPassphrase(
+    passphrase: string,
+    salt: string | Uint8Array = 'mnemosyne:export-vault',
+    iterations: number = 250000
+): Promise<CryptoKey> {
+    return deriveAesGcmKey(passphrase.normalize('NFKD'), salt, iterations);
+}
+
 // utilitário criptográfico Soberano (Zero-Knowledge) usando Web Crypto API
 // As operações acontecem 100% no cliente (browser/Rust) e nunca são enviadas ao servidor em texto limpo.
 
@@ -141,7 +176,7 @@ export async function encryptTextAesGcm(plaintext: string, key: CryptoKey): Prom
     const encrypted = await encryptBytesAesGcm(encoder.encode(plaintext).buffer as ArrayBuffer, key);
     return {
         iv: encrypted.iv,
-        data: window.btoa(String.fromCharCode(...new Uint8Array(encrypted.cipherBytes))),
+        data: bytesToBase64(new Uint8Array(encrypted.cipherBytes)),
     };
 }
 
@@ -239,28 +274,49 @@ export function clearIdentityVault(scope: string = 'session'): void {
 }
 
 // Identidade criptográfica soberana. Com mnemónica, a chave privada é guardada apenas cifrada.
-export async function getOrCreateIdentity(scope: string = 'session', mnemonic?: string[] | null): Promise<{ publicKey: CryptoKey, privateKey: CryptoKey, pemPublic: string }> {
+export function clearVolatileIdentities(): void { volatileIdentities.clear(); }
+/** Prepare a replacement without changing primary storage or the unlocked cache. */
+export async function createEncryptedIdentityCandidate(scope:string,mnemonic:string[],guard:()=>void=()=>{}){
+    const words=[...mnemonic];guard();const vaultKey=await deriveAesKeyFromMnemonic(words,`mnemosyne:identity:${scope}`);guard();
+    const pair=await generateRSAKeyPair();guard();const publicJwk=await window.crypto.subtle.exportKey('jwk',pair.publicKey),privateJwk=await window.crypto.subtle.exportKey('jwk',pair.privateKey);guard();
+    const vaultRaw=JSON.stringify(await encryptTextAesGcm(JSON.stringify({publicJwk,privateJwk}),vaultKey));guard();const pemPublic=await exportPublicKey(pair.publicKey);guard();
+    return{vaultRaw,identity:{publicKey:pair.publicKey,privateKey:pair.privateKey,pemPublic}};
+}
+/** Open a retained encrypted identity without publishing it to primary storage or cache. */
+export async function openEncryptedIdentity(scope:string,mnemonic:string[],vaultRaw:string,guard:()=>void=()=>{}):Promise<LocalIdentity>{
+    guard();if(typeof vaultRaw!=='string'||vaultRaw.length>16_384)throw new Error('Identidade local indisponível.');
+    const envelope=JSON.parse(vaultRaw);if(!envelope||typeof envelope!=='object'||Object.keys(envelope).sort().join(',')!=='data,iv'||typeof envelope.iv!=='string'||typeof envelope.data!=='string')throw new Error('Identidade local indisponível.');
+    const key=await deriveAesKeyFromMnemonic([...mnemonic],`mnemosyne:identity:${scope}`);guard();const fields=JSON.parse(await decryptTextAesGcm(envelope,key));guard();
+    if(!fields?.publicJwk||!fields?.privateJwk||fields.publicJwk.n!==fields.privateJwk.n||fields.publicJwk.e!==fields.privateJwk.e||fields.publicJwk.kty!=='RSA'||fields.privateJwk.kty!=='RSA')throw new Error('Identidade local indisponível.');
+    const publicKey=await importRsaPublicJwk(fields.publicJwk),privateKey=await importRsaPrivateJwk(fields.privateJwk);guard();const pemPublic=await exportPublicKey(publicKey);guard();return{publicKey,privateKey,pemPublic};
+}
+export async function getOrCreateIdentity(scope: string = 'session', mnemonic?: string[] | null, guard:()=>void=()=>{}): Promise<{ publicKey: CryptoKey, privateKey: CryptoKey, pemPublic: string }> {
+    guard();mnemonic=mnemonic?[...mnemonic]:mnemonic;
     const mnemonicFingerprint = mnemonic ? await sha256Hex(normalizeMnemonic(mnemonic)) : null;
+    guard();
     const cacheScope = mnemonicFingerprint ? `${scope}:vault:${mnemonicFingerprint}` : scope;
     const cachedIdentity = volatileIdentities.get(cacheScope);
-    if (cachedIdentity) return cachedIdentity;
+    if(cachedIdentity&&(!mnemonic||localStorage.getItem(identityVaultKey(scope))===cachedIdentity.raw))return cachedIdentity.identity;
+    if(cachedIdentity)volatileIdentities.delete(cacheScope);
 
     if (mnemonic && mnemonic.length > 0) {
         const vaultKey = await deriveAesKeyFromMnemonic(mnemonic, `mnemosyne:identity:${scope}`);
+        guard();
         const storedVault = localStorage.getItem(identityVaultKey(scope));
 
         if (storedVault) {
             try {
+                if(storedVault.length>16_384)throw new Error('Identity envelope exceeds local bound');
                 const parsedVault = JSON.parse(storedVault) as { iv: string, data: string };
                 const identityJson = JSON.parse(await decryptTextAesGcm(parsedVault, vaultKey)) as { publicJwk: JsonWebKey, privateJwk: JsonWebKey };
                 const publicKey = await importRsaPublicJwk(identityJson.publicJwk);
                 const privateKey = await importRsaPrivateJwk(identityJson.privateJwk);
                 const pemPublic = await exportPublicKey(publicKey);
                 const identity = { publicKey, privateKey, pemPublic };
-                volatileIdentities.set(cacheScope, identity);
+                guard();if(localStorage.getItem(identityVaultKey(scope))!==storedVault)throw new Error('Identity changed');
+                volatileIdentities.set(cacheScope, {identity,raw:storedVault});
                 return identity;
-            } catch (error) {
-                console.error('Unable to unlock encrypted identity vault', error);
+            } catch {
                 throw new Error('Não foi possível desbloquear a identidade local com esta mnemónica.');
             }
         }
@@ -269,18 +325,21 @@ export async function getOrCreateIdentity(scope: string = 'session', mnemonic?: 
         const publicJwk = await window.crypto.subtle.exportKey('jwk', keyPair.publicKey);
         const privateJwk = await window.crypto.subtle.exportKey('jwk', keyPair.privateKey);
         const encryptedVault = await encryptTextAesGcm(JSON.stringify({ publicJwk, privateJwk }), vaultKey);
+        guard();if(localStorage.getItem(identityVaultKey(scope))!==storedVault)throw new Error('Não foi possível confirmar a identidade local.');
         localStorage.setItem(identityVaultKey(scope), JSON.stringify(encryptedVault));
 
         const pemPublic = await exportPublicKey(keyPair.publicKey);
+        guard();if(localStorage.getItem(identityVaultKey(scope))!==JSON.stringify(encryptedVault))throw new Error('Não foi possível confirmar a identidade local.');
         const identity = { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey, pemPublic };
-        volatileIdentities.set(cacheScope, identity);
+        volatileIdentities.set(cacheScope, {identity,raw:JSON.stringify(encryptedVault)});
         return identity;
     }
 
     const keyPair = await generateRSAKeyPair();
     const pemPublic = await exportPublicKey(keyPair.publicKey);
+    guard();
     const identity = { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey, pemPublic };
-    volatileIdentities.set(cacheScope, identity);
+    volatileIdentities.set(cacheScope, {identity,raw:null});
     return identity;
 }
 

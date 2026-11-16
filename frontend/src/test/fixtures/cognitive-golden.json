@@ -1,0 +1,1152 @@
+{
+  "v": 1,
+  "syntheticOnly": true,
+  "notInferenceQualityEvaluation": true,
+  "baseline": {
+    "insightEngineSha256": "2008f188aa56ff19244d2dcb561677595d4b4e8774bc20ea678ada7168ef1a73",
+    "cognitivePulseSha256": "cc1a29b79e352781bca06542a905f4791f8a6869e89066d145d40c6792105ef5"
+  },
+  "now": 1700000000000,
+  "cases": [
+    {
+      "name": "empty",
+      "rows": [],
+      "insights": [],
+      "pulse": {
+        "dateKey": "2023-11-14",
+        "title": "Pulso · 14/11 · Vazio fértil",
+        "subtitle": "Ainda não há memórias. Escreve o primeiro pensamento e o universo ganha forma.",
+        "highlights": [],
+        "stats": {
+          "memories": 0,
+          "connections": 0,
+          "orphans": 0,
+          "resurfacing": 0,
+          "contradictions": 0
+        },
+        "constellationLabel": "Vazio fértil"
+      }
+    },
+    {
+      "name": "duplicates and title-only records",
+      "rows": [
+        {
+          "id": "z",
+          "uid": "synthetic-actor",
+          "text": "Nota sintética de soberania contextual.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [
+            "Produto",
+            "produto"
+          ],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "a",
+          "uid": "synthetic-actor",
+          "text": "Nota sintética do produto privado.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [
+            "produto"
+          ],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "b",
+          "uid": "synthetic-actor",
+          "text": "",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [
+            "produto"
+          ],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "title": "Título sintético sem corpo"
+        },
+        {
+          "id": "outside",
+          "uid": "synthetic-actor",
+          "text": "Outra nota sintética.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [
+            "missing"
+          ],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        }
+      ],
+      "insights": [
+        {
+          "id": "pattern-tag-produto",
+          "kind": "pattern",
+          "severity": "low",
+          "title": "Padrao recorrente: #produto",
+          "summary": "4 memorias convergem nesta etiqueta.",
+          "memoryIds": [
+            "z",
+            "z",
+            "a",
+            "b"
+          ],
+          "evidence": [
+            "Nota sintética de soberania contextual.",
+            "Nota sintética de soberania contextual.",
+            "Nota sintética do produto privado."
+          ],
+          "score": 0.4
+        },
+        {
+          "id": "orphan-cluster",
+          "kind": "orphan",
+          "severity": "low",
+          "title": "3 memorias sem ligacoes",
+          "summary": "Estas memorias existem no grafo, mas ainda nao foram conectadas semanticamente.",
+          "memoryIds": [
+            "z",
+            "a",
+            "b"
+          ],
+          "evidence": [
+            "45d - Nota sintética de soberania contextual.",
+            "45d - Nota sintética do produto privado.",
+            "45d - "
+          ],
+          "score": 0.375
+        }
+      ],
+      "pulse": {
+        "dateKey": "2023-11-14",
+        "title": "Pulso · 14/11 · Constelação por ligar",
+        "subtitle": "Um mapa vivo do teu conhecimento — escolhe um destaque e aterra no grafo.",
+        "highlights": [
+          {
+            "id": "pattern-tag-produto",
+            "kind": "pattern",
+            "title": "Padrao recorrente: #produto",
+            "summary": "4 memorias convergem nesta etiqueta.",
+            "memoryIds": [
+              "z",
+              "z",
+              "a",
+              "b"
+            ],
+            "evidence": [
+              "Nota sintética de soberania contextual.",
+              "Nota sintética de soberania contextual.",
+              "Nota sintética do produto privado."
+            ],
+            "score": 0.4
+          },
+          {
+            "id": "orphan-cluster",
+            "kind": "orphan",
+            "title": "3 memorias sem ligacoes",
+            "summary": "Estas memorias existem no grafo, mas ainda nao foram conectadas semanticamente.",
+            "memoryIds": [
+              "z",
+              "a",
+              "b"
+            ],
+            "evidence": [
+              "45d - Nota sintética de soberania contextual.",
+              "45d - Nota sintética do produto privado.",
+              "45d - "
+            ],
+            "score": 0.375
+          }
+        ],
+        "stats": {
+          "memories": 4,
+          "connections": 1,
+          "orphans": 3,
+          "resurfacing": 0,
+          "contradictions": 0
+        },
+        "constellationLabel": "Constelação por ligar"
+      }
+    },
+    {
+      "name": "polarity time windows model spaces and source ties",
+      "rows": [
+        {
+          "id": "m0",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [
+            "m1"
+          ],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-other-space"
+        },
+        {
+          "id": "m1",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m2",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m3",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m4",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-other-space"
+        },
+        {
+          "id": "m5",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [
+            "m6"
+          ],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m6",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m7",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m8",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-other-space"
+        },
+        {
+          "id": "m9",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m10",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [
+            "m11"
+          ],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m11",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m12",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-other-space"
+        },
+        {
+          "id": "m13",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m14",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m15",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [
+            "m16"
+          ],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m16",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-other-space"
+        },
+        {
+          "id": "m17",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m18",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo estudar memória contextual privada do produto.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            0.9,
+            0.1,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        },
+        {
+          "id": "m19",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou estudar memória contextual privada do produto.",
+          "timestamp": 1699913600000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ],
+          "embeddingModel": "synthetic-reviewed-space"
+        }
+      ],
+      "insights": [
+        {
+          "id": "contradiction-m1-m3",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / estudar",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "m1",
+            "m3"
+          ],
+          "evidence": [
+            "Sempre vou estudar memória contextual privada do produto.",
+            "Nunca devo estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "contradiction-m1-m9",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / estudar",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "m1",
+            "m9"
+          ],
+          "evidence": [
+            "Sempre vou estudar memória contextual privada do produto.",
+            "Nunca devo estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "contradiction-m1-m15",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / estudar",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "m1",
+            "m15"
+          ],
+          "evidence": [
+            "Sempre vou estudar memória contextual privada do produto.",
+            "Nunca devo estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "contradiction-m3-m5",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / estudar",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "m3",
+            "m5"
+          ],
+          "evidence": [
+            "Nunca devo estudar memória contextual privada do produto.",
+            "Sempre vou estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "contradiction-m3-m7",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / estudar",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "m3",
+            "m7"
+          ],
+          "evidence": [
+            "Nunca devo estudar memória contextual privada do produto.",
+            "Sempre vou estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "contradiction-m3-m11",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / estudar",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "m3",
+            "m11"
+          ],
+          "evidence": [
+            "Nunca devo estudar memória contextual privada do produto.",
+            "Sempre vou estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-m0-m3",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual, estudar, memoria",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "m0",
+            "m3"
+          ],
+          "evidence": [
+            "Nunca devo estudar memória contextual privada do produto.",
+            "Nunca devo estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-m0-m9",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual, estudar, memoria",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "m0",
+            "m9"
+          ],
+          "evidence": [
+            "Nunca devo estudar memória contextual privada do produto.",
+            "Nunca devo estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-m0-m15",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual, estudar, memoria",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "m0",
+            "m15"
+          ],
+          "evidence": [
+            "Nunca devo estudar memória contextual privada do produto.",
+            "Nunca devo estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-m2-m1",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual, estudar, memoria",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "m2",
+            "m1"
+          ],
+          "evidence": [
+            "Sempre vou estudar memória contextual privada do produto.",
+            "Sempre vou estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-m2-m5",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual, estudar, memoria",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "m2",
+            "m5"
+          ],
+          "evidence": [
+            "Sempre vou estudar memória contextual privada do produto.",
+            "Sempre vou estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "orphan-cluster",
+          "kind": "orphan",
+          "severity": "medium",
+          "title": "8 memorias sem ligacoes",
+          "summary": "Estas memorias existem no grafo, mas ainda nao foram conectadas semanticamente.",
+          "memoryIds": [
+            "m2",
+            "m4",
+            "m6",
+            "m8",
+            "m12",
+            "m14",
+            "m16",
+            "m18"
+          ],
+          "evidence": [
+            "45d - Sempre vou estudar memória contextual privada do produto.",
+            "45d - Sempre vou estudar memória contextual privada do produto.",
+            "45d - Nunca devo estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        },
+        {
+          "id": "pattern-concept-contextual",
+          "kind": "pattern",
+          "severity": "medium",
+          "title": "Conceito insistente: contextual",
+          "summary": "20 memorias mencionam este nucleo sem depender de IA externa.",
+          "memoryIds": [
+            "m0",
+            "m1",
+            "m2",
+            "m3",
+            "m4",
+            "m5",
+            "m6",
+            "m7"
+          ],
+          "evidence": [
+            "Nunca devo estudar memória contextual privada do produto.",
+            "Sempre vou estudar memória contextual privada do produto.",
+            "Sempre vou estudar memória contextual privada do produto."
+          ],
+          "score": 1
+        }
+      ],
+      "pulse": {
+        "dateKey": "2023-11-14",
+        "title": "Pulso · 14/11 · Constelação em tensão",
+        "subtitle": "Há tensões produtivas no teu pensamento. Revê-as antes de cristalizar novas decisões.",
+        "highlights": [
+          {
+            "id": "contradiction-m1-m3",
+            "kind": "contradiction",
+            "title": "Tensao em contextual / estudar",
+            "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+            "memoryIds": [
+              "m1",
+              "m3"
+            ],
+            "evidence": [
+              "Sempre vou estudar memória contextual privada do produto.",
+              "Nunca devo estudar memória contextual privada do produto."
+            ],
+            "score": 1
+          },
+          {
+            "id": "contradiction-m1-m9",
+            "kind": "contradiction",
+            "title": "Tensao em contextual / estudar",
+            "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+            "memoryIds": [
+              "m1",
+              "m9"
+            ],
+            "evidence": [
+              "Sempre vou estudar memória contextual privada do produto.",
+              "Nunca devo estudar memória contextual privada do produto."
+            ],
+            "score": 1
+          },
+          {
+            "id": "contradiction-m1-m15",
+            "kind": "contradiction",
+            "title": "Tensao em contextual / estudar",
+            "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+            "memoryIds": [
+              "m1",
+              "m15"
+            ],
+            "evidence": [
+              "Sempre vou estudar memória contextual privada do produto.",
+              "Nunca devo estudar memória contextual privada do produto."
+            ],
+            "score": 1
+          },
+          {
+            "id": "contradiction-m3-m5",
+            "kind": "contradiction",
+            "title": "Tensao em contextual / estudar",
+            "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+            "memoryIds": [
+              "m3",
+              "m5"
+            ],
+            "evidence": [
+              "Nunca devo estudar memória contextual privada do produto.",
+              "Sempre vou estudar memória contextual privada do produto."
+            ],
+            "score": 1
+          },
+          {
+            "id": "contradiction-m3-m7",
+            "kind": "contradiction",
+            "title": "Tensao em contextual / estudar",
+            "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+            "memoryIds": [
+              "m3",
+              "m7"
+            ],
+            "evidence": [
+              "Nunca devo estudar memória contextual privada do produto.",
+              "Sempre vou estudar memória contextual privada do produto."
+            ],
+            "score": 1
+          }
+        ],
+        "stats": {
+          "memories": 20,
+          "connections": 4,
+          "orphans": 16,
+          "resurfacing": 5,
+          "contradictions": 6
+        },
+        "constellationLabel": "Constelação em tensão"
+      }
+    },
+    {
+      "name": "Portuguese English French text regression not inference quality",
+      "rows": [
+        {
+          "id": "pt1",
+          "uid": "synthetic-actor",
+          "text": "Sempre vou investigar memória contextual privada e soberana.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "pt2",
+          "uid": "synthetic-actor",
+          "text": "Nunca devo investigar memória contextual privada e soberana.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "en1",
+          "uid": "synthetic-actor",
+          "text": "I will always research private contextual memory and knowledge.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "en2",
+          "uid": "synthetic-actor",
+          "text": "I will never research private contextual memory and knowledge.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "fr1",
+          "uid": "synthetic-actor",
+          "text": "Je vais étudier la mémoire contextuelle privée et souveraine.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1696112000000,
+          "connections": [],
+          "tags": [
+            "mémoire"
+          ],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "fr2",
+          "uid": "synthetic-actor",
+          "text": "Je ne vais jamais étudier la mémoire contextuelle privée et souveraine.",
+          "timestamp": 1696112000000,
+          "updatedAt": 1699913600000,
+          "connections": [],
+          "tags": [
+            "mémoire"
+          ],
+          "embedding": [
+            1,
+            0,
+            0
+          ]
+        }
+      ],
+      "insights": [
+        {
+          "id": "contradiction-pt2-pt1",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / investigar",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "pt2",
+            "pt1"
+          ],
+          "evidence": [
+            "Nunca devo investigar memória contextual privada e soberana.",
+            "Sempre vou investigar memória contextual privada e soberana."
+          ],
+          "score": 1
+        },
+        {
+          "id": "contradiction-en2-en1",
+          "kind": "contradiction",
+          "severity": "high",
+          "title": "Tensao em contextual / knowledge",
+          "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+          "memoryIds": [
+            "en2",
+            "en1"
+          ],
+          "evidence": [
+            "I will never research private contextual memory and knowledge.",
+            "I will always research private contextual memory and knowledge."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-pt1-pt2",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual, investigar, memoria",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "pt1",
+            "pt2"
+          ],
+          "evidence": [
+            "Sempre vou investigar memória contextual privada e soberana.",
+            "Nunca devo investigar memória contextual privada e soberana."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-pt1-en2",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "pt1",
+            "en2"
+          ],
+          "evidence": [
+            "Sempre vou investigar memória contextual privada e soberana.",
+            "I will never research private contextual memory and knowledge."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-pt1-fr2",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema antigo regressou",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "pt1",
+            "fr2"
+          ],
+          "evidence": [
+            "Sempre vou investigar memória contextual privada e soberana.",
+            "Je ne vais jamais étudier la mémoire contextuelle privée et souveraine."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-en1-pt2",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "en1",
+            "pt2"
+          ],
+          "evidence": [
+            "I will always research private contextual memory and knowledge.",
+            "Nunca devo investigar memória contextual privada e soberana."
+          ],
+          "score": 1
+        },
+        {
+          "id": "resurface-en1-en2",
+          "kind": "resurface",
+          "severity": "high",
+          "title": "Tema regressou: contextual, knowledge, memory",
+          "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+          "memoryIds": [
+            "en1",
+            "en2"
+          ],
+          "evidence": [
+            "I will always research private contextual memory and knowledge.",
+            "I will never research private contextual memory and knowledge."
+          ],
+          "score": 1
+        },
+        {
+          "id": "orphan-cluster",
+          "kind": "orphan",
+          "severity": "low",
+          "title": "3 memorias sem ligacoes",
+          "summary": "Estas memorias existem no grafo, mas ainda nao foram conectadas semanticamente.",
+          "memoryIds": [
+            "pt1",
+            "en1",
+            "fr1"
+          ],
+          "evidence": [
+            "45d - Sempre vou investigar memória contextual privada e soberana.",
+            "45d - I will always research private contextual memory and knowledge.",
+            "45d - Je vais étudier la mémoire contextuelle privée et souveraine."
+          ],
+          "score": 0.375
+        },
+        {
+          "id": "pattern-concept-contextual",
+          "kind": "pattern",
+          "severity": "low",
+          "title": "Conceito insistente: contextual",
+          "summary": "4 memorias mencionam este nucleo sem depender de IA externa.",
+          "memoryIds": [
+            "pt1",
+            "pt2",
+            "en1",
+            "en2"
+          ],
+          "evidence": [
+            "Sempre vou investigar memória contextual privada e soberana.",
+            "Nunca devo investigar memória contextual privada e soberana.",
+            "I will always research private contextual memory and knowledge."
+          ],
+          "score": 0.3333333333333333
+        }
+      ],
+      "pulse": {
+        "dateKey": "2023-11-14",
+        "title": "Pulso · 14/11 · Constelação em tensão",
+        "subtitle": "Há tensões produtivas no teu pensamento. Revê-as antes de cristalizar novas decisões.",
+        "highlights": [
+          {
+            "id": "contradiction-pt2-pt1",
+            "kind": "contradiction",
+            "title": "Tensao em contextual / investigar",
+            "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+            "memoryIds": [
+              "pt2",
+              "pt1"
+            ],
+            "evidence": [
+              "Nunca devo investigar memória contextual privada e soberana.",
+              "Sempre vou investigar memória contextual privada e soberana."
+            ],
+            "score": 1
+          },
+          {
+            "id": "contradiction-en2-en1",
+            "kind": "contradiction",
+            "title": "Tensao em contextual / knowledge",
+            "summary": "Duas memorias parecem falar do mesmo tema com polaridades diferentes.",
+            "memoryIds": [
+              "en2",
+              "en1"
+            ],
+            "evidence": [
+              "I will never research private contextual memory and knowledge.",
+              "I will always research private contextual memory and knowledge."
+            ],
+            "score": 1
+          },
+          {
+            "id": "resurface-pt1-pt2",
+            "kind": "resurface",
+            "title": "Tema regressou: contextual, investigar, memoria",
+            "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+            "memoryIds": [
+              "pt1",
+              "pt2"
+            ],
+            "evidence": [
+              "Sempre vou investigar memória contextual privada e soberana.",
+              "Nunca devo investigar memória contextual privada e soberana."
+            ],
+            "score": 1
+          },
+          {
+            "id": "resurface-pt1-en2",
+            "kind": "resurface",
+            "title": "Tema regressou: contextual",
+            "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+            "memoryIds": [
+              "pt1",
+              "en2"
+            ],
+            "evidence": [
+              "Sempre vou investigar memória contextual privada e soberana.",
+              "I will never research private contextual memory and knowledge."
+            ],
+            "score": 1
+          },
+          {
+            "id": "resurface-pt1-fr2",
+            "kind": "resurface",
+            "title": "Tema antigo regressou",
+            "summary": "Uma memoria antiga voltou a rimar com algo recente.",
+            "memoryIds": [
+              "pt1",
+              "fr2"
+            ],
+            "evidence": [
+              "Sempre vou investigar memória contextual privada e soberana.",
+              "Je ne vais jamais étudier la mémoire contextuelle privée et souveraine."
+            ],
+            "score": 1
+          }
+        ],
+        "stats": {
+          "memories": 6,
+          "connections": 0,
+          "orphans": 6,
+          "resurfacing": 5,
+          "contradictions": 2
+        },
+        "constellationLabel": "Constelação em tensão"
+      }
+    }
+  ]
+}

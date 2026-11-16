@@ -36,7 +36,8 @@ android {
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
-            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+            // Hosting installers include previous APKs and Windows binaries. Package app assets only.
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:downloads'
         }
     }
     signingConfigs {
@@ -53,11 +54,27 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             if (hasReleaseSigning) {
-                logger.lifecycle("Release signing store: ${releaseStoreFile}")
                 signingConfig signingConfigs.release
-            } else {
-                logger.warn("Release signing is disabled. Create frontend/android/keystore.properties or set MNEMOSYNE_RELEASE_STORE_FILE, MNEMOSYNE_RELEASE_STORE_PASSWORD, MNEMOSYNE_RELEASE_KEY_ALIAS, and MNEMOSYNE_RELEASE_KEY_PASSWORD to produce a signed release build.")
             }
+        }
+    }
+}
+
+// Reject release graphs before executing tasks; never report an unsigned release as ready.
+gradle.taskGraph.whenReady { graph ->
+    def releaseRequested = graph.allTasks.any { task -> task.project == project && task.name in ['assembleRelease', 'bundleRelease', 'packageRelease', 'packageReleaseBundle', 'signReleaseBundle'] }
+    if (releaseRequested) {
+        if (!hasReleaseSigning) {
+            throw new GradleException('Release signing configuration is required. Configure it privately; debug builds remain available.')
+        }
+        def explicitCode = findProperty('MNEMOSYNE_VERSION_CODE')
+        def explicitName = findProperty('MNEMOSYNE_VERSION_NAME')
+        if (!explicitCode || !explicitName || !(explicitCode ==~ /[1-9][0-9]*/) || explicitCode.toLong() > 2100000000L || !(explicitName ==~ /[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?/)) {
+            throw new GradleException('Release requires explicit MNEMOSYNE_VERSION_CODE and MNEMOSYNE_VERSION_NAME project properties.')
+        }
+        def webVersion = new groovy.json.JsonSlurper().parse(rootProject.file('../package.json')).version
+        if (explicitName != webVersion) {
+            throw new GradleException('Release version name must match the frontend package.')
         }
     }
 }

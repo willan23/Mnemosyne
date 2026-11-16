@@ -11,11 +11,13 @@ import {
   createStarShell,
   type PointCloudData,
 } from '../../engines/space3dBackdrop';
+import { getUniverseTheme } from '../../engines/universeThemes';
 
 interface Space3DBackdropProps {
   universeType: UniverseType;
   detailLevel: UniverseDetailLevel;
   starCount: number;
+  reduceEffects?: boolean;
 }
 
 interface PointLayerProps {
@@ -56,8 +58,9 @@ const PointLayer: React.FC<PointLayerProps> = ({
     return pointCloud;
   }, [geometry, material, rotation]);
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     points.rotation.y += delta * rotationSpeed;
+    material.opacity = opacity * (0.9 + 0.1 * Math.sin(state.clock.elapsedTime * 0.28 + rotationSpeed * 18));
   });
 
   useEffect(() => () => {
@@ -103,84 +106,157 @@ const NebulaHaze: React.FC<{
   return <primitive object={mesh} />;
 };
 
+const AccretionDisk: React.FC<{
+  color: string;
+  opacity: number;
+  detailLevel: UniverseDetailLevel;
+}> = ({ color, opacity, detailLevel }) => {
+  const geometry = useMemo(
+    () => new THREE.RingGeometry(3.2, 11.5, detailLevel === 'high' ? 96 : 48),
+    [detailLevel],
+  );
+  const material = useMemo(() => new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  }), [color, opacity]);
+
+  const mesh = useMemo(() => {
+    const disk = new THREE.Mesh(geometry, material);
+    disk.rotation.x = Math.PI / 2.15;
+    return disk;
+  }, [geometry, material]);
+
+  useFrame((_, delta) => {
+    mesh.rotation.z += delta * 0.08;
+  });
+
+  useEffect(() => () => {
+    geometry.dispose();
+    material.dispose();
+  }, [geometry, material]);
+
+  return <primitive object={mesh} />;
+};
+
 export const Space3DBackdrop: React.FC<Space3DBackdropProps> = ({
   universeType,
   detailLevel,
   starCount,
+  reduceEffects = false,
 }) => {
-  const detailMultiplier = detailLevel === 'low' ? 0.55 : detailLevel === 'medium' ? 0.78 : 1;
+  const theme = getUniverseTheme(universeType);
+  const bd = theme.backdrop;
+
+  const detailMultiplier = reduceEffects
+    ? 0.5
+    : detailLevel === 'low'
+      ? 0.55
+      : detailLevel === 'medium'
+        ? 0.78
+        : 1;
+
   const farStars = useMemo(() => createStarShell({
-    count: Math.max(500, Math.floor(starCount * 0.62 * detailMultiplier)),
+    count: Math.max(220, Math.floor(starCount * 0.62 * detailMultiplier * bd.farStarMul)),
     radiusMin: 95,
     radiusMax: 190,
     seed: `${universeType}:far`,
-    eccentricity: [1.25, 0.92, 1.1],
-    planeBias: 0.18,
-  }), [detailMultiplier, starCount, universeType]);
+    eccentricity: bd.planeEccentricity,
+    planeBias: Math.min(0.35, bd.planeBias * 0.35),
+    palette: [...bd.starPalette],
+  }), [bd.farStarMul, bd.planeBias, bd.planeEccentricity, bd.starPalette, detailMultiplier, starCount, universeType]);
 
   const planeStars = useMemo(() => createStarShell({
-    count: Math.max(260, Math.floor(starCount * 0.22 * detailMultiplier)),
+    count: Math.max(120, Math.floor(starCount * 0.22 * detailMultiplier * bd.planeStarMul)),
     radiusMin: 62,
     radiusMax: 145,
     seed: `${universeType}:plane`,
-    eccentricity: [1.45, 0.2, 1.25],
-    planeBias: 0.92,
-  }), [detailMultiplier, starCount, universeType]);
+    eccentricity: bd.planeEccentricity,
+    planeBias: bd.planeBias,
+    palette: [...bd.starPalette],
+  }), [bd.planeBias, bd.planeEccentricity, bd.planeStarMul, bd.starPalette, detailMultiplier, starCount, universeType]);
 
-  const galaxy = useMemo(() => createSpiralGalaxy({
-    count: detailLevel === 'low' ? 520 : detailLevel === 'medium' ? 780 : 1100,
-    arms: universeType === 'void' ? 3 : 5,
-    radius: 42,
-    thickness: 7,
-    seed: `${universeType}:spiral`,
-  }), [detailLevel, universeType]);
+  const galaxy = useMemo(() => {
+    if (bd.spiralWeight <= 0.05) return null;
+    const baseCount = reduceEffects || detailLevel === 'low' ? 520 : detailLevel === 'medium' ? 780 : 1100;
+    return createSpiralGalaxy({
+      count: Math.max(80, Math.floor(baseCount * bd.spiralWeight)),
+      arms: bd.spiralArms,
+      radius: bd.spiralRadius,
+      thickness: bd.spiralThickness,
+      seed: `${universeType}:spiral`,
+      coreColor: bd.spiralCoreColor,
+      armColorA: bd.spiralArmA,
+      armColorB: bd.spiralArmB,
+    });
+  }, [bd, detailLevel, reduceEffects, universeType]);
 
   const nebulae = useMemo(
-    () => createNebulaClouds(universeType, 'mnemosyne-space3d', detailLevel === 'low' ? 3 : 5),
-    [detailLevel, universeType]
+    () => createNebulaClouds(
+      universeType,
+      'mnemosyne-space3d',
+      reduceEffects || detailLevel === 'low'
+        ? Math.max(1, Math.min(bd.nebulaCount, 3))
+        : bd.nebulaCount,
+      bd.nebulaOpacityMul,
+    ),
+    [bd.nebulaCount, bd.nebulaOpacityMul, detailLevel, reduceEffects, universeType],
   );
 
   const dust = useMemo(
     () => createCosmicDust(
-      detailLevel === 'low' ? 420 : detailLevel === 'medium' ? 720 : 1100,
+      Math.max(
+        80,
+        Math.floor((reduceEffects ? 280 : detailLevel === 'low' ? 420 : detailLevel === 'medium' ? 720 : 1100) * bd.dustMul),
+      ),
       `${universeType}:near-dust`,
-      52
+      52,
     ),
-    [detailLevel, universeType]
+    [bd.dustMul, detailLevel, reduceEffects, universeType],
   );
 
   const core = useMemo(
     () => createGalacticCore(
       detailLevel === 'low' ? 180 : detailLevel === 'medium' ? 280 : 420,
-      `${universeType}:core`
+      `${universeType}:core`,
     ),
-    [detailLevel, universeType]
+    [detailLevel, universeType],
   );
 
   return (
     <group>
-      {/* Núcleo luminoso — âncora visual do universo */}
       <mesh>
-        <sphereGeometry args={[2.4, detailLevel === 'high' ? 48 : 24, detailLevel === 'high' ? 48 : 24]} />
+        <sphereGeometry args={[bd.coreSize, detailLevel === 'high' ? 48 : 24, detailLevel === 'high' ? 48 : 24]} />
         <meshBasicMaterial
-          color="#fff1c4"
+          color={bd.coreColor}
           transparent
-          opacity={0.09}
+          opacity={universeType === 'void' ? 0.04 : 0.1}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </mesh>
       <mesh>
-        <sphereGeometry args={[6.5, 24, 24]} />
+        <sphereGeometry args={[bd.coreSize * 2.7, 24, 24]} />
         <meshBasicMaterial
-          color={universeType === 'solar' ? '#ff9f1c' : universeType === 'void' ? '#4c1d95' : '#7c5cff'}
+          color={bd.coreGlowColor}
           transparent
-          opacity={0.035}
+          opacity={bd.coreGlowOpacity}
           depthWrite={false}
           side={THREE.BackSide}
           blending={THREE.AdditiveBlending}
         />
       </mesh>
+
+      {bd.showAccretionDisk && bd.accretionOpacity > 0 && (
+        <AccretionDisk
+          color={bd.accretionColor}
+          opacity={bd.accretionOpacity}
+          detailLevel={detailLevel}
+        />
+      )}
 
       {nebulae.map((cloud) => (
         <NebulaHaze key={cloud.id} cloud={cloud} detailLevel={detailLevel} />
@@ -198,26 +274,30 @@ export const Space3DBackdrop: React.FC<Space3DBackdropProps> = ({
         rotationSpeed={-0.005}
         rotation={[0.18, 0.35, -0.08]}
       />
-      <PointLayer
-        data={galaxy}
-        size={0.24}
-        opacity={0.52}
-        rotationSpeed={0.012}
-        rotation={[0.74, -0.22, 0.18]}
-      />
+      {galaxy && (
+        <PointLayer
+          data={galaxy}
+          size={0.24}
+          opacity={0.42 + bd.spiralWeight * 0.2}
+          rotationSpeed={0.012}
+          rotation={bd.spiralTilt}
+        />
+      )}
       <PointLayer
         data={core}
         size={0.18}
-        opacity={0.78}
+        opacity={universeType === 'void' ? 0.35 : 0.78}
         rotationSpeed={0.02}
       />
-      <PointLayer
-        data={dust}
-        size={0.09}
-        opacity={0.38}
-        rotationSpeed={0.008}
-        rotation={[0.1, -0.4, 0.05]}
-      />
+      {!reduceEffects && bd.dustMul > 0.2 && (
+        <PointLayer
+          data={dust}
+          size={0.09}
+          opacity={0.38}
+          rotationSpeed={0.008}
+          rotation={[0.1, -0.4, 0.05]}
+        />
+      )}
     </group>
   );
 };

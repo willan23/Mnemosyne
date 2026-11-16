@@ -1,0 +1,37 @@
+# Seleção de listas e do Universo no Worker — 28 de outubro de 2026
+
+`MemoryListView` e `Universe3D` passam a usar `useMemoryView` e um Worker local para selecionar os IDs que devem mostrar. A lista deixa de filtrar e ordenar toda a coleção durante o render React antes de mostrar uma página de 100 resultados. O Universo deixa de cruzar IDs com `includes` repetidos e de ordenar todos os objetos no render antes de aplicar o seu orçamento visual.
+
+O índice do Worker mantém projeções dos documentos. Uma nova publicação compara referências imutáveis em tarefas de até 256 objetos e só envia os campos dos objetos alterados. A ordem de IDs acompanha uma coleção nova; uma consulta ou página sobre a mesma coleção não volta a enviar projeções nem a ordem. Esta preparação ainda percorre os IDs no thread principal, de forma cancelável. Não é ainda um protocolo de deltas entre o publicador e todas as vistas, nem elimina todo o trabalho linear por escrita.
+
+## Semântica preservada e dados enviados
+
+A lista mantém a pesquisa por substring em título, texto desbloqueado, categoria e tags, usando a locale selecionada. Campos diferentes não são concatenados de forma a criar correspondências artificiais. A ordem continua timestamp descendente, com desempate pela ordem de entrada. A normalização é reutilizada por objeto/locale. A contagem considera todos os resultados, mas uma heap conserva apenas a página pedida para ordenação final.
+
+O Universo aplica taxonomia e IDs filtrados antes do ranking. Conserva a fórmula de prioridade, incluindo objeto selecionado, conexões desse objeto, importância e recência, bem como os limiares de detalhe e limites existentes. Quando o conjunto cabe no orçamento, conserva a ordem de entrada anterior; nos restantes casos, seleciona os melhores objetos e desempata por ID. O custo de filtragem permanece linear dentro do Worker; a seleção evita ordenar todo o conjunto. Os cálculos de posições e constelações visíveis continuam no renderizador 3D.
+
+A projeção da lista não contém vetores, posições, identidade, ciphertext, relações ou importância real. O texto bloqueado é excluído. A projeção do Universo não contém texto, título, tags ou categoria: usa os campos necessários à prioridade/taxonomia e os IDs das conexões. A resposta contém apenas IDs e contagem. Não há persistência nem pedidos de rede neste índice. As projeções continuam a ser dados sensíveis locais, especialmente o texto de pesquisa e as conexões.
+
+A autorização permanece nos hooks que publicam o corpus da aplicação. O cliente das vistas exige que cada ID devolvido pertença à coleção atual e revalida os filtros do Universo; não substitui ACL do servidor ou dos hooks. Mudanças de coleção/opções escondem imediatamente os resultados antigos. Mudanças de chave pessoal/equipa terminam o Worker e impedem repetir a projeção da mesma coleção retirada, até chegar uma nova coleção. Abort, desmontagem, timeout, erro de transporte ou resposta inválida também retiram o Worker e a cache. Erros aparecem como indisponibilidade, com nova tentativa explícita, em vez de serem apresentados como cofre vazio.
+
+## Acessibilidade e validação
+
+A lista e tabela mantêm a pesquisa por teclado e a seleção. Depois de “Mostrar mais”, o foco passa para o primeiro resultado da nova página, incluindo a última página parcial. Durante a preparação, o elemento principal sinaliza `aria-busy`; a contagem usa uma mensagem de carregamento. As mensagens de falha e nova tentativa existem nos quatro idiomas.
+
+Passaram 48 testes focados em cinco ficheiros. Incluem paridade com a ordenação anterior do Universo nas fronteiras de 140/141, 320/321 e 420/421 objetos e num conjunto de 10.000; 100 edições/pesquisas determinísticas comparadas à ordenação estável completa; normalização por locale; filtros; projeções incrementais; exclusão de texto bloqueado; protocolos inválidos; abort e timeout; retirada de chaves; páginas, foco e recuperação de falha. Os mocks do transporte usam `structuredClone` e o índice real, mas não simulam o escalonamento de um Worker real.
+
+O lint inicial identificou uma escrita de ref durante o render no hook novo e dois avisos existentes nas vistas. A referência passa a ser atualizada num layout effect, a paginação reinicia no evento de pesquisa e o controlo de órbita tem tipo explícito. O lint posterior dos 15 ficheiros passou sem erros ou avisos. As tentativas iniciais são conservadas na evidência privada.
+
+A suíte final passou **2.066 testes em 223 ficheiros**, sem falhas ou omissões, mais 41 casos do que a prova anterior. Os 48 testes focados foram repetidos nas fontes finais. TypeScript e o build de produção passaram; o aviso de chunks grandes permanece. Os comandos verificaram que as fontes e os downloads públicos não mudaram durante a execução.
+
+O Chromium montou o componente real da lista, o hook e o cliente, usando o Worker compilado pelo build sem alterar os seus bytes, sob a CSP nativa. Com 10.000 memórias sintéticas, mostrou 100 resultados, passou a 200 com foco no primeiro novo botão, processou uma edição com uma projeção e reutilizou o corpus nas mudanças de pesquisa/página. Passaram pesquisa, exclusão do texto bloqueado, retirada de chave e substituição da coleção. O cliente do Universo selecionou 220 de 10.000, coincidindo com a ordenação anterior; a combinação de filtros devolveu os 300 objetos elegíveis. Um pedido pendente foi cancelado e os três Workers foram terminados no final.
+
+A amostra mediu aproximadamente 429 ms até à primeira página, com 54 avanços do temporizador, e 192 ms para preparar/selecionar o Universo. Inclui preparação em tarefas e instrumentação; não é um benchmark do produto completo. O componente da lista foi montado sem o CSS de produção. Auth, Firestore, cifra real, WebGL e a aplicação nativa não foram exercitados; a mudança de chave foi um evento simulado. O primeiro harness terminou por timeout; o diagnóstico revelou JSX clássico incompatível com os componentes, antes do primeiro render. A configuração foi alinhada com o JSX automático da aplicação e passou sem alterar fontes do produto ou Worker. Ambas as tentativas foram conservadas.
+
+## Limites e estado do lançamento
+
+A preparação de referências/IDs continua linear em tarefas no cliente. O Worker ainda percorre os candidatos por consulta; não se afirma que exista um índice invertido de substring. A comparação de referências depende de publicações imutáveis, como as fornecidas atualmente pelos hooks/store. Continuam necessários deltas até aos consumidores, carregamento inicial progressivo, redução dos percursos das facetas e do motor de gravação, métricas da aplicação completa e pilotos operacionais. Este incremento não encerra a fase 5.
+
+Não há migração de dados. Um rollback requer recompilar o frontend e repor as vistas anteriores; não altera cifra, formatos, ranking semântico ou documentos. Functions/Rules não foram alteradas: as execuções de 594 Functions e 322/23 Rules mantêm o âmbito anterior. Não houve inferência cloud, download de modelos, leitura de secrets privados ou mutação de produção. A política cloud mantém-se exclusivamente gratuita. Instaladores, pilotos Windows/Android, CI e os restantes requisitos das fases 0–6 continuam exigidos.
+
+**49 gates permanecem fechados; lançamento completo não concluído e sem deploy.** Prova privada: `W:/real/mnemosyne-launch-evidence/memory-views-local-validation-20261028.json`. As fontes, comandos e limites desta etapa ficam em `memory-views-validation-20261028/`; não certificam o checkout inteiro.

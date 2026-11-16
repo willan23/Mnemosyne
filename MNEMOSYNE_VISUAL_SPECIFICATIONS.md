@@ -984,3 +984,8 @@ Esta especificação visual define:
 Todos os elementos visuais servem a **cognição** — não são decorativos, são **funcionais**.
 
 O resultado é um universo que parece **10 anos à frente** do mercado atual.
+
+
+[Secret Manager: HUGGINGFACE_API_KEY, versão 1]
+
+[Secret Manager: NVIDIA_API_KEY, versão 1]

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Instalar o Clipper · Mnemosyne</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(99, 102, 241, 0.22), transparent 34rem),
+        #050816;
+      color: #e5e7eb;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 48px 20px 72px; }
+    article {
+      border: 1px solid rgba(255,255,255,0.11);
+      border-radius: 20px;
+      background: rgba(255,255,255,0.045);
+      padding: clamp(24px, 4vw, 44px);
+    }
+    .eyebrow { color: #67e8f9; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; font-weight: 700; }
+    h1 { margin: 8px 0 12px; color: #fff; font-size: clamp(28px, 5vw, 40px); }
+    h2 { margin: 28px 0 10px; color: #c7d2fe; font-size: 20px; }
+    p, li { color: #cbd5e1; line-height: 1.7; }
+    a { color: #a5b4fc; }
+    code { color: #e2e8f0; background: rgba(0,0,0,0.35); padding: 0.1em 0.4em; border-radius: 6px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+      <p class="eyebrow">Captura</p>
+      <h1>Instalar o Clipper</h1>
+      <p>Extensão Chrome/Edge (Manifest V3). Envia título, URL e seleção para esta web app. A cifra E2EE só acontece depois de desbloqueares a sessão — a extensão não tem a mnemónica.</p>
+      <h2>Carregar unpacked</h2>
+      <ol>
+        <li>Abre <code>chrome://extensions</code> (ou <code>edge://extensions</code>).</li>
+        <li>Liga <strong>Developer mode</strong> / modo de programador.</li>
+        <li><strong>Load unpacked</strong> e escolhe a pasta <code>frontend/extensions/clipper/</code> do repositório Mnemosyne.</li>
+        <li>Clica no ícone da extensão, revê o recorte e envia. Precisas de sessão desbloqueada em <code>https://mnemosyne-one.web.app</code>.</li>
+      </ol>
+      <h2>Limitações</h2>
+      <ul>
+        <li>Query máxima ~1.5 KB — textos longos são truncados.</li>
+        <li>Páginas <code>chrome://</code> e PDFs nativos podem não expor a seleção.</li>
+        <li>O atalho desktop <code>Ctrl+Shift+M</code> é da app Tauri, não da extensão.</li>
+      </ul>
+      <p><a href="/">Voltar ao Mnemosyne</a></p>
+    </article>
+  </main>
+</body>
+</html>

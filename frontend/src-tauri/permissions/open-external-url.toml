@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Allows opening http(s) URLs in the system browser for desktop auth."
+commands.allow = ["open_external_url"]

@@ -24,30 +24,31 @@ export const RelatedMemories: React.FC<RelatedMemoriesProps> = ({
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (currentMemory && currentMemory.text) {
-            findRelated();
-        }
-    }, [currentMemory.id]);
+        if (!currentMemory?.text) return;
+        let cancelled = false;
 
-    const findRelated = async () => {
-        setIsLoading(true);
-        setError(null);
+        const findRelated = async () => {
+            setIsLoading(true);
+            setError(null);
+            try {
+                const similar = await embeddingService.findSimilarMemories(
+                    currentMemory,
+                    allMemories,
+                    0.6,
+                    5
+                );
+                if (!cancelled) setRelatedMemories(similar);
+            } catch (err) {
+                console.error('Erro ao encontrar memórias relacionadas:', err);
+                if (!cancelled) setError('Erro ao analisar conexões');
+            } finally {
+                if (!cancelled) setIsLoading(false);
+            }
+        };
 
-        try {
-            const similar = await embeddingService.findSimilarMemories(
-                currentMemory,
-                allMemories,
-                0.6, // Threshold de similaridade
-                5    // Máximo de resultados
-            );
-            setRelatedMemories(similar);
-        } catch (err) {
-            console.error('Erro ao encontrar memórias relacionadas:', err);
-            setError('Erro ao analisar conexões');
-        } finally {
-            setIsLoading(false);
-        }
-    };
+        void findRelated();
+        return () => { cancelled = true; };
+    }, [currentMemory, allMemories]);
 
     // Não mostrar se não houver memórias relacionadas
     if (relatedMemories.length === 0 && !isLoading && !error) {
@@ -150,7 +151,7 @@ export const RelatedMemories: React.FC<RelatedMemoriesProps> = ({
             <div className="mt-3 pt-3 border-t border-white/5">
                 <p className="text-[10px] text-gray-600 italic flex items-center gap-1">
                     <Sparkles className="w-3 h-3" />
-                    Análise semântica 100% local com AI - seus dados nunca saem do navegador
+                    Análise semântica no dispositivo. Embeddings podem ser sincronizados em claro; memórias antigas podem precisar de migração de cifra.
                 </p>
             </div>
         </motion.div>

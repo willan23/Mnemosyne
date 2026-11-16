@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Brain, Clock, AlertCircle, Download, Lock, Shield, Inbox, Loader2, LogIn } from 'lucide-react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
-import { auth, db } from '../firebase';
-import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
+import { auth } from '../firebase';
+import { publicCapsuleService, type PublicCapsuleOpening } from '../services/publicCapsuleService';
 import {
     decryptSharePayload,
     isEncryptedShare,
@@ -13,6 +13,11 @@ import {
 import { readPassphraseFromHash } from '../utils/deepLinks';
 import { importCapsuleAsMemory } from '../services/learningService';
 import toast from 'react-hot-toast';
+import {useSyncFeedback} from '../hooks/useSyncFeedback';
+import {PersonalMemoryMutationError} from '../services/personalMemoryMutation';
+import {ObsidianImportRecoveryPanel} from '../components/ObsidianImportRecoveryPanel';
+import {isMemoryCryptoReady} from '../services/memoryCrypto';
+import {decodeCapsulePack} from '../services/capsuleService';
 
 export const ShareView: React.FC = () => {
     const { shareId } = useParams<{ shareId: string }>();
@@ -20,13 +25,20 @@ export const ShareView: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [shareMeta, setShareMeta] = useState<Record<string, unknown> | null>(null);
     const [plainText, setPlainText] = useState<string | null>(null);
+    const decodedPack=React.useMemo(()=>plainText?decodeCapsulePack(plainText):null,[plainText]);
     const [passphrase, setPassphrase] = useState('');
     const [unlocking, setUnlocking] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [unlockError, setUnlockError] = useState<string | null>(null);
     const [user, setUser] = useState<User | null>(() => auth.currentUser);
     const [importing, setImporting] = useState(false);
-    const [importedId, setImportedId] = useState<string | null>(null);
+    const [imported, setImported] = useState<{id:string;uid:string;shareId:string;feedbackEpoch:number}|null>(null);
+    const feedback=useSyncFeedback();const shareEpoch=useRef(0);const routeEpoch=useRef(0);
+    const importedId=imported&&imported.uid===user?.uid&&imported.uid===auth.currentUser?.uid&&imported.shareId===shareId&&imported.feedbackEpoch===feedback.epoch&&isMemoryCryptoReady()?imported.id:null;
+    const openingRef=useRef<{shareId:string;id:string;intent:PublicCapsuleOpening|null}|null>(null);
+    useLayoutEffect(()=>{const epoch=shareEpoch;epoch.current++;return()=>{epoch.current++;};},[shareId,feedback.epoch]);
+    useLayoutEffect(()=>{const epoch=routeEpoch;epoch.current++;return()=>{epoch.current++;};},[shareId]);
+    useEffect(()=>{setImported(null);setImporting(false);},[shareId,feedback.epoch]);
 
     useEffect(() => {
         const unsub = onAuthStateChanged(auth, setUser);
@@ -34,6 +46,11 @@ export const ShareView: React.FC = () => {
     }, []);
 
     useEffect(() => {
+        let active=true;const observedRoute=routeEpoch.current;const current=()=>active&&routeEpoch.current===observedRoute;
+        setLoading(true);setShareMeta(null);setPlainText(null);setPassphrase('');setUnlocking(false);setError(null);setUnlockError(null);
+        if(!shareId)openingRef.current=null;
+        else if(openingRef.current?.shareId!==shareId)openingRef.current={shareId,id:crypto.randomUUID(),intent:null};
+        const capturedOpening=openingRef.current;
         const loadShare = async () => {
             if (!shareId) {
                 setError('Link inválido');
@@ -42,45 +59,32 @@ export const ShareView: React.FC = () => {
             }
 
             try {
-                const shareDoc = await getDoc(doc(db, 'shares', shareId));
-
-                if (!shareDoc.exists()) {
-                    setError('Esta cápsula não existe ou foi removida.');
-                    setLoading(false);
-                    return;
-                }
-
-                const data = shareDoc.data() as Record<string, unknown>;
-
-                if (data.expiresAt && typeof data.expiresAt === 'number' && data.expiresAt < Date.now()) {
-                    setError('Este link expirou.');
-                    setLoading(false);
-                    return;
-                }
+                const loaded = await publicCapsuleService.read(shareId,current);
+                if(!current())return;
+                const data:Record<string,unknown>={...loaded,encrypted:true};
 
                 setShareMeta(data);
-
-                if (typeof data.text === 'string' && !isEncryptedShare(data)) {
-                    setPlainText(data.text);
-                }
 
                 const fromHash = readPassphraseFromHash(window.location.hash);
                 if (fromHash) {
                     setPassphrase(fromHash);
                 }
 
-                updateDoc(doc(db, 'shares', shareId), {
-                    views: increment(1),
-                }).catch(() => undefined);
-            } catch (e) {
-                console.error('Erro ao carregar cápsula:', e);
-                setError('Erro ao carregar a cápsula.');
+                const opening=capturedOpening;
+                if(!opening||openingRef.current!==opening)return;
+                if(!opening.intent)opening.intent={v:1,shareId,openingId:opening.id,sourceDigest:loaded.sourceDigest,viewDeadline:loaded.viewDeadline};
+                if(opening.intent.sourceDigest===loaded.sourceDigest)void publicCapsuleService.opening(opening.intent,current).then(views=>{
+                    if(current())setShareMeta(previous=>previous?.sourceDigest===loaded.sourceDigest?{...previous,views:Math.max(typeof previous.views==='number'?previous.views:0,views)}:previous);
+                }).catch(()=>undefined);
+            } catch {
+                if(current())setError('Erro ao carregar a cápsula.');
             } finally {
-                setLoading(false);
+                if(current())setLoading(false);
             }
         };
 
         void loadShare();
+        return()=>{active=false;};
     }, [shareId]);
 
     useEffect(() => {
@@ -89,35 +93,38 @@ export const ShareView: React.FC = () => {
         const fromHash = readPassphraseFromHash(window.location.hash);
         if (!fromHash) return;
         let cancelled = false;
+        const sourceEpoch=shareEpoch.current;
         (async () => {
             try {
                 const ciphertext = shareMeta.ciphertext as EncryptedSharePayload;
                 const text = await decryptSharePayload(ciphertext, fromHash);
-                if (!cancelled) setPlainText(text);
+                if (!cancelled&&shareEpoch.current===sourceEpoch) setPlainText(text);
             } catch {
                 // keep UI for manual unlock
             }
         })();
         return () => { cancelled = true; };
-    }, [shareMeta, plainText]);
+    }, [shareMeta, plainText, shareId, feedback.epoch]);
 
     const unlock = async () => {
         if (!shareMeta || !isEncryptedShare(shareMeta)) return;
         setUnlocking(true);
         setUnlockError(null);
+        const epoch=shareEpoch.current;
         try {
             const ciphertext = shareMeta.ciphertext as EncryptedSharePayload;
             const text = await decryptSharePayload(ciphertext, passphrase);
+            if(shareEpoch.current!==epoch)return;
             setPlainText(text);
         } catch {
-            setUnlockError('Passphrase incorreta ou cápsula corrompida.');
+            if(shareEpoch.current===epoch)setUnlockError('Passphrase incorreta ou cápsula corrompida.');
         } finally {
-            setUnlocking(false);
+            if(shareEpoch.current===epoch)setUnlocking(false);
         }
     };
 
     const downloadAsFile = () => {
-        if (!plainText) return;
+        if (!plainText||shareMeta?.shareId!==shareId) return;
         const blob = new Blob([plainText], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -130,38 +137,42 @@ export const ShareView: React.FC = () => {
     };
 
     const importToUniverse = async () => {
-        if (!plainText || !user) {
-            navigate(`/?next=${encodeURIComponent(window.location.pathname + window.location.search + window.location.hash)}`);
+        if (!plainText || !user || shareMeta?.shareId!==shareId) {
+            navigate('/');
             return;
         }
+        if(importing||importedId)return;
+        const actor=user.uid;const current=feedback.capture(actor);const epoch=shareEpoch.current;
+        const guard=()=>{if(!current()||shareEpoch.current!==epoch)throw new PersonalMemoryMutationError();};
+        if(!current())return;
         setImporting(true);
         try {
-            const ownerUid = typeof shareMeta?.uid === 'string' ? shareMeta.uid : null;
             const result = await importCapsuleAsMemory(
-                user.uid,
+                actor,
                 {
                     text: plainText,
-                    titleHint: typeof shareMeta?.titleHint === 'string' ? shareMeta.titleHint : null,
+                    titleHint: null,
                     shareId: shareId || null,
-                    ownerUid,
+                    ownerUid: null,
                 },
                 [],
+                guard,
             );
-            setImportedId(result.id);
+            guard();
+            setImported({id:result.id,uid:actor,shareId:shareId!,feedbackEpoch:feedback.epoch});
             toast.success(
                 result.importedCount > 1
                     ? `${result.importedCount} memórias assimiladas no teu universo.`
                     : 'Cápsula importada para o teu universo.',
             );
-        } catch (e) {
-            console.error(e);
-            toast.error(e instanceof Error ? e.message : 'Não foi possível importar a cápsula.');
+        } catch {
+            if(current()&&shareEpoch.current===epoch)toast.error('Não foi possível concluir. Recupera ou cancela a importação pendente.');
         } finally {
-            setImporting(false);
+            if(current()&&shareEpoch.current===epoch)setImporting(false);
         }
     };
 
-    if (loading) {
+    if (loading || shareMeta && shareMeta.shareId!==shareId) {
         return (
             <div className="flex min-h-screen items-center justify-center bg-[#020617]">
                 <motion.div
@@ -186,6 +197,7 @@ export const ShareView: React.FC = () => {
                     <p className="mb-6 text-sm text-slate-500">
                         O link pode ter expirado ou a cápsula foi removida.
                     </p>
+                    <ObsidianImportRecoveryPanel />
                     <button type="button" onClick={() => navigate('/')} className="mnem-btn-primary">
                         Ir para Mnemosyne
                     </button>
@@ -195,7 +207,6 @@ export const ShareView: React.FC = () => {
     }
 
     const encrypted = shareMeta ? isEncryptedShare(shareMeta) : false;
-    const legacyPlain = Boolean(shareMeta && typeof shareMeta.text === 'string' && !encrypted);
 
     return (
         <div className="min-h-screen bg-[#020617] text-slate-100">
@@ -235,10 +246,10 @@ export const ShareView: React.FC = () => {
                         <div>
                             <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-violet-400/25 bg-violet-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-violet-200">
                                 <Shield className="h-3 w-3" />
-                                {encrypted ? 'Cápsula cifrada' : legacyPlain ? 'Link legado' : 'Cápsula'}
+                                {encrypted ? 'Cápsula cifrada' : 'Cápsula'}
                             </div>
                             <h2 className="text-xl font-semibold text-white">
-                                {(shareMeta?.titleHint as string) || 'Memória partilhada'}
+                                Memória partilhada
                             </h2>
                             {typeof shareMeta?.createdAt === 'number' && (
                                 <div className="mt-2 flex items-center gap-1 text-xs text-slate-500">
@@ -263,13 +274,6 @@ export const ShareView: React.FC = () => {
                             </div>
                         )}
                     </div>
-
-                    {legacyPlain && plainText && (
-                        <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 text-xs text-amber-100/90">
-                            Este link foi criado no formato antigo (texto em claro na cloud). Novas partilhas
-                            usam apenas cápsulas cifradas ou Comms E2E.
-                        </div>
-                    )}
 
                     {encrypted && !plainText && (
                         <div className="space-y-4">
@@ -304,12 +308,11 @@ export const ShareView: React.FC = () => {
                         </div>
                     )}
 
+                    <ObsidianImportRecoveryPanel />
                     {plainText && (
                         <>
                             <div className="prose prose-invert max-w-none">
-                                <p className="whitespace-pre-wrap text-base leading-relaxed text-slate-100 md:text-lg">
-                                    {plainText}
-                                </p>
+                                {decodedPack?decodedPack.items.map((item,index)=><article key={index} className="mb-6"><h3 className="text-lg font-semibold">{item.title||'Memória '+(index+1)}</h3><p className="whitespace-pre-wrap text-base leading-relaxed text-slate-100 md:text-lg">{item.text}</p></article>):<p className="whitespace-pre-wrap text-base leading-relaxed text-slate-100 md:text-lg">{plainText}</p>}
                             </div>
 
                             <div className="mt-6 rounded-xl border border-cyan-400/20 bg-cyan-500/[0.07] p-4">
@@ -320,10 +323,10 @@ export const ShareView: React.FC = () => {
                                             Importar para o teu universo
                                         </p>
                                         <p className="mt-1 text-xs leading-relaxed text-slate-400">
-                                            Cria memória(s) no teu universo com embeddings e autolink.
+                                            Cria memórias cifradas no teu universo com enriquecimento local.
                                             Packs multi-memória expandem-se em várias estrelas. A cápsula original não muda.
-                                            {typeof shareMeta?.itemCount === 'number' && shareMeta.itemCount > 1
-                                                ? ` Este pack tem ${shareMeta.itemCount} itens.`
+                                            {decodedPack&&decodedPack.items.length > 1
+                                                ? ` Este pack tem ${decodedPack.items.length} itens.`
                                                 : ''}
                                         </p>
                                         {importedId ? (
@@ -339,7 +342,7 @@ export const ShareView: React.FC = () => {
                                             <button
                                                 type="button"
                                                 onClick={() => void importToUniverse()}
-                                                disabled={importing}
+                                                disabled={importing||!isMemoryCryptoReady()}
                                                 className="mt-3 inline-flex items-center gap-2 rounded-xl border border-cyan-300/30 bg-cyan-400/15 px-4 py-2.5 text-sm font-semibold text-cyan-50 transition hover:bg-cyan-400/25 disabled:opacity-50"
                                             >
                                                 {importing ? (
@@ -364,6 +367,7 @@ export const ShareView: React.FC = () => {
                                                 Entrar para importar
                                             </button>
                                         )}
+                                        {user&&!isMemoryCryptoReady()&&<p className="mt-2 text-xs text-cyan-100">Abre a app e desbloqueia o cofre antes de assimilar a cápsula. <button type="button" className="underline" onClick={()=>navigate('/')}>Continuar na app</button></p>}
                                     </div>
                                 </div>
                             </div>
@@ -388,6 +392,7 @@ export const ShareView: React.FC = () => {
                     <button type="button" onClick={() => navigate('/')} className="mnem-btn-primary">
                         Começar grátis
                     </button>
+                    {user&&<button type="button" onClick={()=>navigate('/capsules')} className="ml-3 rounded-lg border border-white/15 px-4 py-2 text-sm">Gerir as minhas cápsulas</button>}
                 </motion.div>
             </div>
         </div>

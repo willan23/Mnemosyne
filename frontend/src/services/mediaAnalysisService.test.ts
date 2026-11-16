@@ -12,6 +12,8 @@ describe('mediaAnalysisService pure helpers', () => {
     expect(mediaKindForFile(new File(['x'], 'clip.mp4', { type: '' }))).toBe('video');
     expect(mediaKindForFile(new File(['x'], 'voice.wav', { type: '' }))).toBe('audio');
     expect(mediaKindForFile(new File(['x'], 'report.pdf', { type: 'application/pdf' }))).toBeNull();
+    expect(mediaKindForFile(new File(['export {}'], 'app.ts', { type: 'video/mp2t' }))).toBeNull();
+    expect(mediaKindForFile(new File(['#'], 'notes.md', { type: '' }))).toBeNull();
   });
 
   it('selects stable video frame times across short and long videos', () => {

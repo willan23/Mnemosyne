@@ -5,6 +5,8 @@ export const isTauriRuntime = (): boolean => {
 };
 
 const ignoredPatterns = [
+  /[\\/]\.obsidian[\\/]/,
+  /[\\/]\.trash[\\/]/,
   /[\\/]\.git[\\/]/,
   /[\\/]\.vscode[\\/]/,
   /[\\/]node_modules[\\/]/,
@@ -63,7 +65,8 @@ function isIgnoredPath(path: string, fileName: string): boolean {
 /**
  * Recursively reads a directory path and returns File objects compatible with learnDocumentBatch
  */
-export const selectAndReadTauriDirectory = async (selectedPath: string): Promise<File[]> => {
+export const selectAndReadTauriDirectory = async (selectedPath: string,assertCurrent:()=>void=()=>{}): Promise<File[]> => {
+  assertCurrent();
   const filesList: File[] = [];
 
   // Normalize separator
@@ -73,8 +76,11 @@ export const selectAndReadTauriDirectory = async (selectedPath: string): Promise
   
   // Helper for recursion
   const recurse = async (currentPath: string) => {
+    assertCurrent();
     const entries = await readDir(currentPath);
+    assertCurrent();
     for (const entry of entries) {
+      assertCurrent();
       const fullPath = `${currentPath}/${entry.name}`;
       const relativePath = fullPath.substring(baseDir.length + 1).replace(/\\/g, '/');
       const virtualRelativePath = `${rootFolderName}/${relativePath}`;
@@ -88,6 +94,7 @@ export const selectAndReadTauriDirectory = async (selectedPath: string): Promise
       } else if (entry.isFile) {
         try {
           const content = await readFile(fullPath);
+          assertCurrent();
           const mimeType = getMimeType(entry.name);
           const file = new File([content], entry.name, { type: mimeType });
           
@@ -99,13 +106,15 @@ export const selectAndReadTauriDirectory = async (selectedPath: string): Promise
           });
           
           filesList.push(file);
-        } catch (error) {
-          console.warn(`Failed to read file ${fullPath}:`, error);
+        } catch {
+          assertCurrent();
+          throw new Error('Não foi possível ler um ficheiro da pasta selecionada.');
         }
       }
     }
   };
 
   await recurse(baseDir);
+  assertCurrent();
   return filesList;
 };

@@ -4,11 +4,12 @@
  * resurfacing, tensões e órfãs como um "pulso" do teu pensamento.
  */
 
-import type { SessionData } from '../hooks/useSessions';
 import {
   generateCognitiveInsights,
   type CognitiveInsight,
   type InsightKind,
+  type InsightMemory,
+  type InsightSignalCache,
 } from './insightEngine';
 
 export interface CognitivePulseHighlight {
@@ -99,9 +100,9 @@ const titleFromPulse = (label: string, dateKeyValue: string): string => {
   return `Pulso · ${day}/${month} · ${label}`;
 };
 
-export function buildCognitivePulse(sessions: SessionData[], now = Date.now()): CognitivePulse {
+export function buildCognitivePulse(sessions: readonly InsightMemory[], now = Date.now(), cache?: InsightSignalCache): CognitivePulse {
   const active = sessions.filter((s) => !s.deletedAt && (s.text?.trim() || s.title?.trim()));
-  const insights = generateCognitiveInsights(active, now);
+  const insights = generateCognitiveInsights(active, now, cache);
 
   const connectionSet = new Set<string>();
   let orphans = 0;
